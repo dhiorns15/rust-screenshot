@@ -48,7 +48,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tar -czf "rsnip-$GITHUB_REF_NAME-linux-x64.tar.gz" -C target/release rsnip -C "$GITHUB_WORKSPACE" README.md LICENSE
+          mkdir -p dist/rsnip
+          cp target/release/rsnip installer/linux/install.sh README.md LICENSE dist/rsnip/
+          chmod 755 dist/rsnip/rsnip dist/rsnip/install.sh
+          tar -czf "rsnip-$GITHUB_REF_NAME-linux-x64.tar.gz" -C dist rsnip
           gh release upload "$GITHUB_REF_NAME" "rsnip-$GITHUB_REF_NAME-linux-x64.tar.gz"
 
   # Updates the previous release to this one with `rsnip --update`, as users' copies will.

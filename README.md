@@ -26,7 +26,7 @@ From the [Releases page](https://github.com/dhiorns15/rust-screenshot/releases),
   settings are kept.
 - **`rsnip.exe`** on its own: a single self-contained exe; put it anywhere and run it.
 
-On Linux (x86-64), get `rsnip-vX.Y.Z-linux-x64.tar.gz`, extract it and run `./rsnip`.
+On Linux (x86-64), get `rsnip-vX.Y.Z-linux-x64.tar.gz` and see [Installing on Linux](#installing-on-linux).
 
 ## Build
 
@@ -49,18 +49,49 @@ The installer is written to `target\installer`.
 
 The library and editor also run on Linux (X11 or Wayland). Capturing is left to your desktop's
 screenshot tool (or Flameshot, `grim`/`slurp`, …): RSnip browses `~/Pictures/Screenshots` and
-annotates what's there.
+annotates what's there. Pinning, OCR, copying as files, dragging files out, and capture/recording
+are Windows-only.
+
+#### Installing on Linux
+
+The download runs on any x86-64 distribution with glibc 2.39 or later (for example Ubuntu 24.04,
+Debian 13, Fedora 40, Arch, openSUSE Tumbleweed, or newer). It installs for your user only, no
+`sudo`:
 
 ```
+tar -xzf rsnip-vX.Y.Z-linux-x64.tar.gz
+cd rsnip
+./install.sh
+```
+
+This copies `rsnip` to `~/.local/bin` and adds **RSnip Library** (with its icon, and a *Settings*
+action) to your app menu, so you can pin it to the dock. It then checks for what RSnip uses (the
+graphics and keyboard libraries for your session, X11 or Wayland, plus `xdg-open`, `fc-match` and
+`curl`/`wget`) and, if anything is missing, prints the command that installs it on your
+distribution (apt, dnf, pacman or zypper). It never installs system packages itself, and stops
+before copying anything if this build can't run on your system (e.g. an older glibc).
+
+- `./install.sh --check` only runs that check.
+- Run `./install.sh` from a newer download to upgrade.
+- `./install.sh --uninstall` removes it; your screenshots and settings are kept.
+
+Then use your desktop's screenshot tool as usual; screenshots saved to `~/Pictures/Screenshots` show
+up in the library. To open a capture straight in the editor, bind a key to a command such as
+`grim -g "$(slurp)" ~/Pictures/Screenshots/shot-$(date +%s).png && rsnip` (Wayland, wlroots
+desktops) or `flameshot gui -p ~/Pictures/Screenshots`. `rsnip file.png` opens one file.
+
+Settings live in `~/.config/rsnip/settings.json`, or open *Settings* from the library. When a new
+version is out, the library's status bar links to it. It checks once each time the library opens,
+using `curl` or, if that isn't installed (as on Ubuntu), `wget`; turn it off in *Settings → Updates*.
+There is no self-updater on Linux: download the new version and run `./install.sh` again.
+
+To build it yourself instead:
+
+```
+# Needs Rust (rustup.rs) and a C compiler, e.g. build-essential or gcc.
 cargo build --release
 ./target/release/rsnip [file]
 ```
-
-For example, bind a key to `grim -g "$(slurp)" ~/Pictures/Screenshots/shot-$(date +%s).png && rsnip`
-to capture an area and open it straight in the editor. Pinning, OCR, copying as files, dragging files
-out, and capture/recording are Windows-only. Settings live in `~/.config/rsnip/settings.json`.
-When a new version is out, the library's status bar links to it (checked with `curl` each time the
-library opens; set `"CheckUpdates": 0` in the settings file to turn that off).
 
 ### Tests
 

@@ -29,7 +29,8 @@ pub fn run() {
             .with_title(TITLE)
             .with_inner_size([800.0, 580.0])
             .with_min_inner_size([660.0, 460.0])
-            .with_icon(super::window_icon()),
+            .with_icon(super::window_icon())
+            .with_app_id(super::APP_ID),
         ..Default::default()
     };
     let _ = eframe::run_native(TITLE, options, Box::new(|cc| Ok(Box::new(SettingsApp::new(&cc.egui_ctx, Env::real())))));

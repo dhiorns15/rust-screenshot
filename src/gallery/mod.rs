@@ -37,6 +37,9 @@ use env::Env;
 use theme::{icon, Appearance, IconButton};
 
 pub const TITLE: &str = "RSnip Library";
+/// What Linux desktops know the windows by; matches `StartupWMClass` in the menu entry that
+/// installer/linux/install.sh writes.
+const APP_ID: &str = "rsnip";
 const THUMB: Vec2 = Vec2::new(200.0, 112.0);
 const RESCAN_EVERY: Duration = Duration::from_secs(2);
 
@@ -54,7 +57,8 @@ pub fn run(file: Option<PathBuf>) {
             .with_title(TITLE)
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([760.0, 480.0])
-            .with_icon(window_icon()),
+            .with_icon(window_icon())
+            .with_app_id(APP_ID),
         ..Default::default()
     };
     let _ = eframe::run_native(TITLE, options, Box::new(move |cc| Ok(Box::new(App::new(&cc.egui_ctx, Env::real(), file)))));
@@ -879,6 +883,14 @@ fn window_icon() -> Arc<egui::IconData> {
     let bgra = crate::icon_art::render(size);
     let rgba = bgra.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
     Arc::new(egui::IconData { rgba, width: size as u32, height: size as u32 })
+}
+
+/// Saves RSnip's icon as a PNG, for the menu entry installer/linux/install.sh writes.
+#[cfg(not(windows))]
+pub fn write_icon(path: &Path) -> Result<(), String> {
+    let size = 256;
+    let rgba: Vec<u8> = crate::icon_art::render(size).chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+    image::save_buffer(path, &rgba, size as u32, size as u32, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())
 }
 
 /// The toolbar's tools split into its groups, in order.

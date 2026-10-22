@@ -19,6 +19,13 @@ fn main() {
     if std::env::args().any(|a| a == "--settings") {
         return gallery::run_settings();
     }
+    if let Some(path) = std::env::args().skip_while(|a| a != "--write-icon").nth(1) {
+        if let Err(e) = gallery::write_icon(std::path::Path::new(&path)) {
+            eprintln!("Couldn't write the icon: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let file = std::env::args().skip(1).find(|a| !a.starts_with("--")).map(std::path::PathBuf::from);
     gallery::run(file);
 }
