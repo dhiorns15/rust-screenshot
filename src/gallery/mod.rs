@@ -6,6 +6,7 @@ mod dragout;
 mod library;
 mod platform;
 mod editor;
+mod env;
 mod theme;
 
 use std::collections::{HashMap, HashSet};
@@ -23,25 +24,21 @@ use eframe::egui::{
 use crate::update;
 use doc::{apply_effects, flatten, render, Doc, Effects};
 use editor::{Editor, Tool, ToolState, GROUP_STARTS, PALETTE, TEXT_SIZES, TOOLS};
+use env::Env;
 use theme::{icon, IconButton};
 
 pub const TITLE: &str = "RSnip Library";
 const THUMB: Vec2 = Vec2::new(200.0, 112.0);
 const RESCAN_EVERY: Duration = Duration::from_secs(2);
 
-/// Another `--gallery` launch drops the file it wants opened here.
-fn request_file() -> PathBuf {
-    std::env::temp_dir().join("rsnip-gallery-request.txt")
-}
-
 pub fn run(file: Option<PathBuf>) {
     if !platform::claim_single_instance(TITLE) {
         // The running library picks this up and opens the file.
         let request = file.map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-        let _ = std::fs::write(request_file(), request);
+        let _ = std::fs::write(env::request_file(), request);
         return;
     }
-    let _ = std::fs::remove_file(request_file());
+    let _ = std::fs::remove_file(env::request_file());
 
     let size = 64;
     let bgra = crate::icon_art::render(size);
@@ -54,7 +51,7 @@ pub fn run(file: Option<PathBuf>) {
             .with_icon(Arc::new(egui::IconData { rgba, width: size as u32, height: size as u32 })),
         ..Default::default()
     };
-    let _ = eframe::run_native(TITLE, options, Box::new(move |cc| Ok(Box::new(App::new(cc, file)))));
+    let _ = eframe::run_native(TITLE, options, Box::new(move |cc| Ok(Box::new(App::new(&cc.egui_ctx, Env::real(), file)))));
 }
 
 struct Entry {
@@ -81,17 +78,24 @@ enum Dock {
 impl Dock {
     const SETTING: &'static str = "LibraryDock";
 
-    fn load() -> Dock {
-        if platform::setting(Dock::SETTING) == Some(1) {
-            Dock::Bottom
-        } else {
-            Dock::Left
+    /// Unknown values (or none) mean the default, on the left.
+    fn from_setting(value: Option<u32>) -> Dock {
+        match value {
+            Some(1) => Dock::Bottom,
+            _ => Dock::Left,
+        }
+    }
+
+    fn to_setting(self) -> u32 {
+        match self {
+            Dock::Left => 0,
+            Dock::Bottom => 1,
         }
     }
 }
 
 struct App {
-    dir: PathBuf,
+    env: Env,
     entries: Vec<Entry>,
     last_scan: Instant,
     filter: String,
@@ -123,8 +127,8 @@ struct App {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext, file: Option<PathBuf>) -> App {
-        theme::apply(&cc.egui_ctx);
+    fn new(ctx: &egui::Context, env: Env, file: Option<PathBuf>) -> App {
+        theme::apply(ctx);
         let font_bytes = doc::load_font_bytes();
         let mut fonts = egui::FontDefinitions::default();
         theme::add_icons(&mut fonts);
@@ -135,10 +139,10 @@ impl App {
                 vec![editor::ANNOTATION_FONT.to_owned()],
             );
         }
-        cc.egui_ctx.set_fonts(fonts);
+        ctx.set_fonts(fonts);
         let (thumb_tx, jobs) = channel::<(PathBuf, SystemTime)>();
         let (results, thumb_rx) = channel();
-        let ctx = cc.egui_ctx.clone();
+        let repaint = ctx.clone();
         std::thread::spawn(move || {
             for (path, modified) in jobs {
                 let thumb = image::open(&path).ok().map(|img| {
@@ -148,12 +152,11 @@ impl App {
                 if results.send((path, modified, thumb)).is_err() {
                     break;
                 }
-                ctx.request_repaint();
+                repaint.request_repaint();
             }
         });
 
         let mut app = App {
-            dir: platform::screenshots_dir(),
             entries: Vec::new(),
             last_scan: Instant::now(),
             filter: String::new(),
@@ -167,17 +170,18 @@ impl App {
             pending: None,
             allow_close: false,
             status: None,
-            effects: load_effects(),
+            effects: load_effects(&env),
             ocr: None,
             newer: None,
-            update_rx: check_for_update(&cc.egui_ctx),
+            update_rx: env.check_updates.then(|| check_for_update(ctx)),
             selected: HashSet::new(),
             anchor: None,
-            dock: Dock::load(),
+            dock: Dock::from_setting(env.setting(Dock::SETTING)),
             actions_width: 320.0,
+            env,
         };
         app.rescan();
-        doc::prune_layers(&app.dir);
+        doc::prune_layers(&app.env.dir);
         match file {
             Some(file) => app.open(&file),
             None => {
@@ -191,7 +195,7 @@ impl App {
 
     fn rescan(&mut self) {
         self.last_scan = Instant::now();
-        let Ok(dir) = std::fs::read_dir(&self.dir) else { return };
+        let Ok(dir) = std::fs::read_dir(&self.env.dir) else { return };
         let mut entries: Vec<Entry> = dir
             .flatten()
             .filter(|e| {
@@ -209,7 +213,7 @@ impl App {
         let listed: HashSet<&Path> = entries.iter().map(|e| e.path.as_path()).collect();
         let vanished = self.entries.iter().any(|e| !listed.contains(e.path.as_path()));
         if vanished {
-            doc::prune_layers(&self.dir);
+            doc::prune_layers(&self.env.dir);
         }
         self.entries = entries;
     }
@@ -254,11 +258,11 @@ impl App {
 
     fn set_effects(&mut self, effects: Effects) {
         self.effects = effects;
-        platform::set_setting("ExportBorder", effects.border.is_some() as u32);
+        self.env.set_setting("ExportBorder", effects.border.is_some() as u32);
         if let Some(c) = effects.border {
-            platform::set_setting("ExportBorderColor", u32::from_be_bytes([0, c.r(), c.g(), c.b()]));
+            self.env.set_setting("ExportBorderColor", u32::from_be_bytes([0, c.r(), c.g(), c.b()]));
         }
-        platform::set_setting("ExportShadow", effects.shadow as u32);
+        self.env.set_setting("ExportShadow", effects.shadow as u32);
     }
 
     fn save(&mut self, as_copy: bool) -> bool {
@@ -402,8 +406,8 @@ impl App {
         if self.last_scan.elapsed() >= RESCAN_EVERY {
             self.rescan();
         }
-        if let Ok(request) = std::fs::read_to_string(request_file()) {
-            let _ = std::fs::remove_file(request_file());
+        if let Ok(request) = std::fs::read_to_string(&self.env.request_file) {
+            let _ = std::fs::remove_file(&self.env.request_file);
             ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(ViewportCommand::Focus);
             self.rescan();
@@ -453,7 +457,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             ui.add_enabled_ui(enabled, |ui| self.tool_buttons(ui));
-            fits = ui.available_width() >= self.actions_width + 12.0;
+            fits = actions_fit(ui.available_width(), self.actions_width);
             if fits {
                 self.actions_row(ui, enabled);
             }
@@ -465,14 +469,7 @@ impl App {
 
     /// The tools as icon buttons, one rounded group per kind of tool.
     fn tool_buttons(&mut self, ui: &mut egui::Ui) {
-        let mut groups: Vec<Vec<_>> = Vec::new();
-        for entry in TOOLS {
-            if groups.is_empty() || GROUP_STARTS.contains(&entry.0) {
-                groups.push(Vec::new());
-            }
-            groups.last_mut().unwrap().push(entry);
-        }
-        for group in groups {
+        for group in tool_groups() {
             theme::group(ui, |ui| {
                 for (tool, label, _, help) in group {
                     let button = IconButton::new(theme::tool_icon(tool)).selected(self.tools.tool == tool);
@@ -788,13 +785,26 @@ impl eframe::App for App {
     }
 }
 
-/// "name (edited).png", "name (edited 2).png", ...
-/// Looks for a newer release in the background, unless `CheckUpdates` is off. On Windows the tray
-/// app does this (and can install it), so the library only checks on other systems.
-fn check_for_update(ctx: &egui::Context) -> Option<Receiver<update::Release>> {
-    if cfg!(windows) || platform::setting("CheckUpdates") == Some(0) {
-        return None;
+/// The toolbar's tools split into its groups, in order.
+fn tool_groups() -> Vec<Vec<(Tool, &'static str, Key, &'static str)>> {
+    let mut groups: Vec<Vec<_>> = Vec::new();
+    for entry in TOOLS {
+        if groups.is_empty() || GROUP_STARTS.contains(&entry.0) {
+            groups.push(Vec::new());
+        }
+        groups.last_mut().unwrap().push(entry);
     }
+    groups
+}
+
+/// Whether the toolbar's actions fit beside the tools, with a gap, or need a row of their own.
+fn actions_fit(available: f32, actions_width: f32) -> bool {
+    available >= actions_width + 12.0
+}
+
+/// Looks for a newer release in the background (see `Env::check_updates`: on Windows the tray app
+/// does this, and can install it).
+fn check_for_update(ctx: &egui::Context) -> Receiver<update::Release> {
     let (tx, rx) = channel();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
@@ -803,9 +813,10 @@ fn check_for_update(ctx: &egui::Context) -> Option<Receiver<update::Release>> {
             ctx.request_repaint();
         }
     });
-    Some(rx)
+    rx
 }
 
+/// "name (edited).png", "name (edited 2).png", ...
 fn copy_path(path: &Path, ext: &str) -> PathBuf {
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
     let dir = path.parent().unwrap_or(Path::new("."));
@@ -833,8 +844,8 @@ fn open_with_shell(path: &Path) {
     platform::open(path);
 }
 
-fn load_effects() -> Effects {
-    let get = platform::setting;
+fn load_effects(env: &Env) -> Effects {
+    let get = |name| env.setting(name);
     let [_, r, g, b] = get("ExportBorderColor").unwrap_or(0x202020).to_be_bytes();
     Effects {
         border: (get("ExportBorder") == Some(1)).then_some(Color32::from_rgb(r, g, b)),
@@ -844,6 +855,77 @@ fn load_effects() -> Effects {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// An empty folder of its own for one test.
+    pub(crate) fn sandbox_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rsnip-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn tools_are_grouped_in_order() {
+        let groups = tool_groups();
+        let flat: Vec<Tool> = groups.iter().flatten().map(|t| t.0).collect();
+        assert_eq!(flat, TOOLS.map(|t| t.0), "every tool once, in toolbar order");
+        let starts: Vec<Tool> = groups.iter().skip(1).map(|g| g[0].0).collect();
+        assert_eq!(starts, GROUP_STARTS);
+        assert_eq!(groups[0].iter().map(|t| t.0).collect::<Vec<_>>(), [Tool::Select]);
+    }
+
+    #[test]
+    fn actions_move_to_their_own_row_when_they_dont_fit() {
+        assert!(actions_fit(600.0, 320.0));
+        assert!(actions_fit(332.0, 320.0));
+        assert!(!actions_fit(331.0, 320.0), "needs a gap beside the tools");
+    }
+
+    #[test]
+    fn dock_setting_round_trips_and_ignores_junk() {
+        for dock in [Dock::Left, Dock::Bottom] {
+            assert!(Dock::from_setting(Some(dock.to_setting())) == dock);
+        }
+        assert!(Dock::from_setting(None) == Dock::Left);
+        assert!(Dock::from_setting(Some(7)) == Dock::Left);
+    }
+
+    #[test]
+    fn export_effects_load_from_settings_and_survive_junk() {
+        let env = Env::sandbox(sandbox_dir("effects"));
+        assert!(!load_effects(&env).any(), "off by default");
+        env.set_setting("ExportBorder", 1);
+        env.set_setting("ExportBorderColor", 0x00FF8000);
+        env.set_setting("ExportShadow", 1);
+        let fx = load_effects(&env);
+        assert_eq!(fx.border, Some(Color32::from_rgb(255, 128, 0)));
+        assert!(fx.shadow);
+        // Junk in the top byte or unexpected flag values doesn't break anything.
+        env.set_setting("ExportBorderColor", 0xFFFF_FFFF);
+        env.set_setting("ExportShadow", 9);
+        let fx = load_effects(&env);
+        assert_eq!(fx.border, Some(Color32::WHITE));
+        assert!(!fx.shadow);
+    }
+
+    #[test]
+    fn library_opens_in_a_sandbox() {
+        let dir = sandbox_dir("library");
+        for (name, shade) in [("Screenshot a.png", 40u8), ("Screenshot b.png", 200)] {
+            image::RgbaImage::from_pixel(64, 32, image::Rgba([shade, shade, shade, 255])).save(dir.join(name)).unwrap();
+        }
+        let env = Env::sandbox(dir.clone());
+        env.set_setting(Dock::SETTING, Dock::Bottom.to_setting());
+        let ctx = egui::Context::default();
+        let app = App::new(&ctx, env, None);
+        assert_eq!(app.entries.len(), 2);
+        assert!(app.dock == Dock::Bottom, "the dock comes from the sandbox's settings");
+        assert!(app.editor.is_some(), "the newest screenshot opens");
+        assert!(app.update_rx.is_none(), "no network in tests");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn saves_jpg_copies_beside_the_original() {
         let dir = std::env::temp_dir().join(format!("rsnip-jpg-{}", std::process::id()));

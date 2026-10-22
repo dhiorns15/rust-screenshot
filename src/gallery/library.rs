@@ -19,6 +19,27 @@ const GROUP_GAP: f32 = 14.0;
 /// The bottom library panel: header row, date labels, thumbnails, scroll bar and margins.
 pub const STRIP_HEIGHT: f32 = 34.0 + LABEL_HEIGHT + ROW_HEIGHT + 16.0;
 
+/// Where each filmstrip column starts, with a gap where the date changes; and the total width.
+fn strip_columns(labels: &[String]) -> (Vec<f32>, f32) {
+    let mut xs = Vec::with_capacity(labels.len());
+    let mut x = 0.0;
+    for (n, label) in labels.iter().enumerate() {
+        if n > 0 && *label != labels[n - 1] {
+            x += GROUP_GAP;
+        }
+        xs.push(x);
+        x += COLUMN_WIDTH;
+    }
+    (xs, x)
+}
+
+/// Where the label of a date spanning `start..end` goes when the strip is scrolled to `scroll`: at
+/// its first column, or held at the left edge while its columns are scrolled past, but never beyond
+/// its last column.
+fn sticky_label_x(start: f32, end: f32, scroll: f32) -> f32 {
+    scroll.clamp(start, (end - COLUMN_WIDTH).max(start))
+}
+
 fn search_hint() -> String {
     format!("{}  Search", icon::MAGNIFYING_GLASS)
 }
@@ -166,14 +187,14 @@ impl App {
 
     /// Where the library goes (left or bottom), and the screenshots folder; added right to left.
     fn library_buttons(&mut self, ui: &mut egui::Ui) {
-        if ui.add(IconButton::new(icon::FOLDER_OPEN)).on_hover_text(format!("Open the folder\n{}", self.dir.display())).clicked() {
-            open_with_shell(&self.dir);
+        if ui.add(IconButton::new(icon::FOLDER_OPEN)).on_hover_text(format!("Open the folder\n{}", self.env.dir.display())).clicked() {
+            open_with_shell(&self.env.dir);
         }
         theme::group(ui, |ui| {
             for (dock, icon, tip) in [(Dock::Bottom, icon::SQUARE_HALF_BOTTOM, "Library along the bottom"), (Dock::Left, icon::SIDEBAR_SIMPLE, "Library on the left")] {
                 if ui.add(IconButton::new(icon).selected(self.dock == dock)).on_hover_text(tip).clicked() && self.dock != dock {
                     self.dock = dock;
-                    platform::set_setting(Dock::SETTING, (dock == Dock::Bottom) as u32);
+                    self.env.set_setting(Dock::SETTING, dock.to_setting());
                 }
             }
         });
@@ -230,17 +251,7 @@ impl App {
     /// The bottom filmstrip: thumbnails side by side, with each date's label above its first one
     /// (kept in view while its screenshots are). Only columns in view are drawn.
     fn strip(&mut self, ui: &mut egui::Ui, visible: &[usize], labels: &[String]) -> Option<Action> {
-        // Where each column starts, with a gap between dates.
-        let mut xs = Vec::with_capacity(visible.len());
-        let mut x = 0.0;
-        for n in 0..visible.len() {
-            if n > 0 && labels[n] != labels[n - 1] {
-                x += GROUP_GAP;
-            }
-            xs.push(x);
-            x += COLUMN_WIDTH;
-        }
-        let total = x;
+        let (xs, total) = strip_columns(labels);
 
         let mut action = None;
         egui::ScrollArea::horizontal().auto_shrink(false).show_viewport(ui, |ui, viewport| {
@@ -259,7 +270,7 @@ impl App {
                 let end = (n..visible.len()).find(|&m| labels[m] != labels[n]).unwrap_or(visible.len());
                 let (start_x, end_x) = (xs[n], xs[end - 1] + COLUMN_WIDTH);
                 if end_x >= viewport.min.x && start_x <= viewport.max.x {
-                    let label_x = viewport.min.x.clamp(start_x, (end_x - COLUMN_WIDTH).max(start_x));
+                    let label_x = sticky_label_x(start_x, end_x, viewport.min.x);
                     let at = origin + Vec2::new(label_x + 4.0, LABEL_HEIGHT - 4.0);
                     ui.painter().text(at, Align2::LEFT_BOTTOM, &labels[n], egui::FontId::proportional(13.0), theme::MUTED);
                     for m in n..end {
@@ -412,6 +423,28 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filmstrip_gaps_only_where_the_date_changes() {
+        let labels: Vec<String> = ["Today", "Today", "Yesterday", "March 2026", "March 2026"].map(String::from).into();
+        let (xs, total) = strip_columns(&labels);
+        let c = COLUMN_WIDTH;
+        assert_eq!(xs, [0.0, c, 2.0 * c + GROUP_GAP, 3.0 * c + 2.0 * GROUP_GAP, 4.0 * c + 2.0 * GROUP_GAP]);
+        assert_eq!(total, 5.0 * c + 2.0 * GROUP_GAP);
+        assert_eq!(strip_columns(&[]), (vec![], 0.0));
+    }
+
+    #[test]
+    fn date_labels_stick_to_the_left_edge_within_their_columns() {
+        let c = COLUMN_WIDTH;
+        // A date with three columns starting at 100.
+        let (start, end) = (100.0, 100.0 + 3.0 * c);
+        assert_eq!(sticky_label_x(start, end, 0.0), start, "not scrolled to yet: at its first column");
+        assert_eq!(sticky_label_x(start, end, 150.0), 150.0, "scrolled into: held at the edge");
+        assert_eq!(sticky_label_x(start, end, end), end - c, "scrolled past: stays over its last column");
+        // A single column never moves.
+        assert_eq!(sticky_label_x(start, start + c, 160.0), start);
+    }
 
     fn day(year: i32, month: u32, day: u32) -> Day {
         Day { year, month, day }
