@@ -169,6 +169,32 @@ fn narrow_window_keeps_every_toolbar_button_clear() {
 }
 
 #[test]
+fn typing_a_hex_code_sets_the_colour() {
+    let mut h = harness("kittest-hex");
+    click(&mut h, "Arrow");
+    click(&mut h, "Pick any colour");
+    use egui::accesskit::Role::TextInput;
+    h.get_by_role_and_label(TextInput, "Hex").focus();
+    settle(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    settle(&mut h);
+    h.get_by_role_and_label(TextInput, "Hex").type_text("#12ab34");
+    settle(&mut h);
+    assert_eq!(*h.state_mut().tools.color_mut(), Color32::from_rgb(0x12, 0xAB, 0x34));
+    assert!(shows(&h, "Pick any colour"), "the picker stays open while typing");
+}
+
+#[test]
+fn opening_the_picker_leaves_the_colour_alone() {
+    let mut h = harness("kittest-picker-noop");
+    click(&mut h, "Arrow");
+    let before = *h.state_mut().tools.color_mut();
+    click(&mut h, "Pick any colour");
+    settle(&mut h);
+    assert_eq!(*h.state_mut().tools.color_mut(), before);
+}
+
+#[test]
 fn ctrl_and_shift_click_select_several() {
     let mut h = harness("kittest-select");
     click(&mut h, "Screenshot a");

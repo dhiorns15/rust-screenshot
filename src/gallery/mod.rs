@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod app_tests;
+mod color;
 mod doc;
 #[cfg(windows)]
 mod dragout;
@@ -611,7 +612,7 @@ impl App {
         let response = response.on_hover_text("Pick any colour");
         egui::Popup::from_toggle_button_response(&response)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show(|ui| egui::color_picker::color_picker_color32(ui, self.tools.color_mut(), egui::color_picker::Alpha::Opaque));
+            .show(|ui| color::picker(ui, self.tools.color_mut()));
     }
 
     fn export_menu(&mut self, ui: &mut egui::Ui) {
