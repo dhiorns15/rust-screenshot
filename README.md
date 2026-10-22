@@ -7,7 +7,8 @@ A small, open-source, Snagit-style screenshot tool for Windows, written in Rust.
 - **Copies every capture to the clipboard** and saves a PNG to your Screenshots folder.
 - **Remappable hotkey**: pick any key combination from the tray menu.
 - **Library and editor**: browse every screenshot and annotate it with arrows, boxes, ellipses,
-  highlighter, blur, pen, text, numbered steps and crop, with undo/redo.
+  highlighter, blur, pen, text, numbered steps and crop, with undo/redo. Everything stays
+  selectable to move, resize, restyle or delete.
 
 ## Build
 
@@ -51,6 +52,7 @@ Settings are stored in `HKCU\Software\RSnip`.
 
 | Tool | Key | |
 | --- | --- | --- |
+| Select | V | click an annotation to select it; drag to move it, drag its handles to resize it (arrows: drag either end) |
 | Arrow | A | drag |
 | Box | B | drag |
 | Ellipse | E | drag |
@@ -60,6 +62,11 @@ Settings are stored in `HKCU\Software\RSnip`.
 | Text | T | click, type, Enter. *Shadow* (on by default) adds a soft drop shadow for readability. Click existing text (or double-click it with any shape tool) to select and edit it; drag text to move it. While selected, resize it with the Size slider or the corner handle, and move it with the grip on its top-left corner. Clear it to delete |
 | Step | N | click to drop 1, 2, 3… markers |
 | Crop | C | drag to select an area, adjust it by dragging its edges, corners or middle, then click *Crop* (or press Enter, or double-click inside it). *Cancel* or Esc discards it. Undoable |
+
+Whatever you just drew stays selected (except pen strokes), so you can adjust it straight away; the
+Select tool picks any annotation. While something is selected, the toolbar's colours, *Size* and
+*Shadow* change it, Delete removes it, arrow keys nudge it (Shift: 10 px) and Esc deselects it.
+Each move, resize or restyle is one undo step.
 
 Annotations stay editable after saving: the saved PNG is flattened for sharing, and the original
 image plus your annotations are kept in a hidden `.rsnip` folder beside it, so reopening the

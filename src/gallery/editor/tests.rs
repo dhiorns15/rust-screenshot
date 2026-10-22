@@ -223,3 +223,148 @@ fn crop_selection_can_be_adjusted() {
     assert!(h.editor.crop.is_none());
     assert_eq!(h.editor.doc.size(), Vec2::new(800.0, 400.0));
 }
+
+/// Drags between two points given in image pixels.
+fn drag(h: &mut Harness, from: (f32, f32), to: (f32, f32)) {
+    let (a, b) = (image_point(h, from.0, from.1), image_point(h, to.0, to.1));
+    h.drag_screen(a, b);
+}
+
+fn first_rect(h: &Harness) -> Rect {
+    match &h.editor.doc.current().shapes[0] {
+        Shape::Box { rect, .. } => *rect,
+        _ => panic!("not a box"),
+    }
+}
+
+fn r(x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
+    Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(x1, y1))
+}
+
+#[test]
+fn drawn_shape_stays_selected_and_moves() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Box;
+    drag(&mut h, (100.0, 100.0), (300.0, 200.0));
+    assert_eq!(first_rect(&h), r(100.0, 100.0, 300.0, 200.0));
+    assert!(h.tools.selection.is_some_and(|s| s.kind == Tool::Box), "new box is selected");
+
+    // Grab the outline away from the handles and move it.
+    drag(&mut h, (150.0, 100.0), (200.0, 150.0));
+    assert_eq!(first_rect(&h), r(150.0, 150.0, 350.0, 250.0));
+    assert_eq!(h.editor.doc.current().shapes.len(), 1, "moving shouldn't draw another box");
+    h.editor.doc.undo();
+    assert_eq!(first_rect(&h), r(100.0, 100.0, 300.0, 200.0), "a move is one undo step");
+}
+
+#[test]
+fn handles_resize_shapes() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Box;
+    drag(&mut h, (100.0, 100.0), (300.0, 200.0));
+    drag(&mut h, (300.0, 200.0), (400.0, 300.0));
+    assert_eq!(first_rect(&h), r(100.0, 100.0, 400.0, 300.0));
+    // Edge midpoint handles stretch one side.
+    drag(&mut h, (100.0, 200.0), (50.0, 200.0));
+    assert_eq!(first_rect(&h), r(50.0, 100.0, 400.0, 300.0));
+
+    h.tools.tool = Tool::Arrow;
+    drag(&mut h, (100.0, 350.0), (300.0, 350.0));
+    drag(&mut h, (300.0, 350.0), (300.0, 250.0));
+    match &h.editor.doc.current().shapes[1] {
+        Shape::Arrow { from, to, .. } => assert_eq!((*from, *to), (Pos2::new(100.0, 350.0), Pos2::new(300.0, 250.0))),
+        _ => panic!("not an arrow"),
+    }
+}
+
+#[test]
+fn text_resizes_from_its_corner() {
+    let mut h = Harness::new();
+    h.click(100.0, 100.0);
+    h.type_text("Hi");
+    h.click(600.0, 350.0);
+    h.tools.tool = Tool::Select;
+    h.frame(vec![]);
+    let b = h.editor.doc.current().shapes[0].bounds(h.font.as_ref());
+    h.click(b.center().x, b.center().y);
+    assert!(h.tools.selection.is_some_and(|s| s.kind == Tool::Text));
+    drag(&mut h, (b.max.x, b.max.y), (b.max.x, b.max.y + b.height()));
+    match &h.editor.doc.current().shapes[0] {
+        Shape::Text { size, pos, .. } => {
+            assert!((size - 176.0).abs() < 2.0, "size {size}");
+            assert_eq!(*pos, Pos2::new(100.0, 100.0), "the opposite corner stays put");
+        }
+        _ => panic!("not text"),
+    }
+}
+
+#[test]
+fn select_tool_picks_and_keys_edit() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Box;
+    drag(&mut h, (100.0, 100.0), (300.0, 200.0));
+    h.tools.tool = Tool::Select;
+    h.frame(vec![]);
+    assert!(h.tools.selection.is_none(), "switching tools deselects");
+
+    // Inside an outline-only box is empty space.
+    h.click(200.0, 150.0);
+    assert!(h.tools.selection.is_none());
+    h.click(150.0, 100.0);
+    assert!(h.tools.selection.is_some());
+
+    key(&mut h, Key::ArrowRight);
+    key(&mut h, Key::ArrowRight);
+    assert_eq!(first_rect(&h), r(102.0, 100.0, 302.0, 200.0));
+    h.editor.doc.undo();
+    assert_eq!(first_rect(&h), r(100.0, 100.0, 300.0, 200.0), "nudges share an undo step");
+
+    h.click(150.0, 100.0);
+    key(&mut h, Key::Escape);
+    assert!(h.tools.selection.is_none());
+    h.click(150.0, 100.0);
+    key(&mut h, Key::Delete);
+    assert!(h.editor.doc.current().shapes.is_empty());
+}
+
+#[test]
+fn toolbar_restyles_the_selection() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Box;
+    drag(&mut h, (100.0, 100.0), (300.0, 200.0));
+    let blue = Color32::from_rgb(30, 120, 240);
+    *h.tools.color_mut() = blue;
+    h.frame(vec![]);
+    for w in [8.0, 10.0] {
+        *h.tools.width_mut() = w;
+        h.frame(vec![]);
+    }
+    let style = |h: &Harness| match &h.editor.doc.current().shapes[0] {
+        Shape::Box { color, width, .. } => (*color, *width),
+        _ => panic!("not a box"),
+    };
+    assert_eq!(style(&h), (blue, 10.0));
+    assert_eq!(h.tools.width, 4.0, "the Box tool's own default is untouched");
+    h.editor.doc.undo();
+    assert_eq!(style(&h), (blue, 4.0), "slider changes share an undo step");
+    h.editor.doc.undo();
+    assert_eq!(style(&h).1, 4.0);
+    assert_ne!(style(&h).0, blue);
+}
+
+#[test]
+fn highlights_can_start_inside_the_last_one() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Highlight;
+    drag(&mut h, (100.0, 100.0), (400.0, 130.0));
+    drag(&mut h, (150.0, 120.0), (450.0, 160.0));
+    assert_eq!(h.editor.doc.current().shapes.len(), 2);
+    // The Select tool still moves them by the body.
+    h.tools.tool = Tool::Select;
+    h.frame(vec![]);
+    drag(&mut h, (300.0, 150.0), (300.0, 250.0));
+    match &h.editor.doc.current().shapes[1] {
+        Shape::Highlight { rect, .. } => assert_eq!(rect.min, Pos2::new(150.0, 220.0)),
+        _ => panic!("not a highlight"),
+    }
+}

@@ -1,7 +1,9 @@
 //! The annotation canvas: tools, mouse handling and live previews.
 
 mod crop;
+mod handles;
 mod preview;
+mod select;
 #[cfg(test)]
 mod tests;
 mod text;
@@ -11,10 +13,11 @@ use ab_glyph::FontVec;
 use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Ui, Vec2};
 
 use super::doc::{render, Doc, Shape};
-use crop::{CropDrag, CropEdges, CropSelection};
-use preview::preview;
-use text::{MovingText, PendingText};
-pub use tools::{Tool, ToolState, ANNOTATION_FONT, PALETTE, TEXT_SIZES, TOOLS};
+use crop::{crop_grab, CropDrag, CropSelection};
+use preview::{preview, shape_from_drag};
+use select::{Grab, Manip, Selection, PICK_SLACK};
+use text::PendingText;
+pub use tools::{Style, Tool, ToolState, ANNOTATION_FONT, PALETTE, TEXT_SIZES, TOOLS};
 
 struct Drag {
     start: Pos2,
@@ -34,7 +37,10 @@ pub struct Editor {
     text: Option<PendingText>,
     /// Where the image was drawn last frame, in screen points.
     canvas: Rect,
-    moving: Option<MovingText>,
+    manip: Option<Manip>,
+    selection: Option<Selection>,
+    /// The tool active last frame; switching tools drops the selection.
+    last_tool: Tool,
     crop: Option<CropSelection>,
     crop_drag: Option<CropDrag>,
 }
@@ -50,7 +56,9 @@ impl Editor {
             drag: None,
             text: None,
             canvas: Rect::NOTHING,
-            moving: None,
+            manip: None,
+            selection: None,
+            last_tool: Tool::Select,
             crop: None,
             crop_drag: None,
         }
@@ -58,7 +66,7 @@ impl Editor {
 
     /// The shape left out of the rendered canvas because it's being edited or dragged.
     fn hidden_index(&self) -> Option<usize> {
-        self.editing_index().or(self.moving.as_ref().map(|m| m.index))
+        self.editing_index().or(self.manip.as_ref().map(|m| m.index))
     }
 
     fn update_texture(&mut self, ctx: &egui::Context, font: Option<&FontVec>) {
@@ -91,6 +99,7 @@ impl Editor {
     }
 
     pub fn ui(&mut self, ui: &mut Ui, tools: &mut ToolState, font: Option<&FontVec>) {
+        self.sync_selection(tools);
         self.update_texture(ui.ctx(), font);
         let size = self.doc.size();
         let avail = ui.available_size();
@@ -130,12 +139,13 @@ impl Editor {
                 self.crop_drag = None;
             }
             let crop_screen = self.crop.as_ref().map(|c| Rect::from_two_pos(to_screen(c.rect.min), to_screen(c.rect.max)));
-            let crop_hover = crop_screen.zip(response.hover_pos()).and_then(|(r, p)| CropEdges::at(r, p));
+            let crop_hover = crop_screen.zip(response.hover_pos()).and_then(|(r, p)| crop_grab(r, p));
 
             if response.hovered() {
                 let cursor = match (tools.tool, crop_hover) {
                     (Tool::Text, _) => egui::CursorIcon::Text,
                     (_, Some(edges)) => edges.cursor(),
+                    (Tool::Select, _) => egui::CursorIcon::Default,
                     _ => egui::CursorIcon::Crosshair,
                 };
                 ui.ctx().set_cursor_icon(cursor);
@@ -144,26 +154,39 @@ impl Editor {
             if response.drag_started() {
                 let press = ui.input(|i| i.pointer.press_origin());
                 let origin = press.map(to_img);
-                let crop_grab = crop_screen.zip(press).and_then(|(r, p)| Some((CropEdges::at(r, p)?, p)));
-                if let (Some((edges, origin)), Some(sel)) = (crop_grab, &self.crop) {
+                let on_crop = crop_screen.zip(press).and_then(|(r, p)| Some((crop_grab(r, p)?, p)));
+                let on_selection = press.and_then(|p| Some((self.selection_grab(p, to_screen, to_img, scale, font)?, p)));
+                if let (Some((edges, origin)), Some(sel)) = (on_crop, &self.crop) {
                     // Dragging the crop selection's edges or inside it adjusts it.
                     self.crop_drag = Some(CropDrag { edges, start: sel.rect, origin });
+                } else if let (Some((grab, p)), Some(index)) = (on_selection, self.selection.as_ref().map(|s| s.index)) {
+                    self.begin_manip(index, grab, p, true, font);
                 } else if tools.tool == Tool::Text {
+                    // With the Text tool, dragging existing text moves it.
                     self.finish_text(tools);
-                    self.start_moving_text(origin, font);
+                    if let (Some(index), Some(p)) = (origin.and_then(|o| self.doc.text_at(o, font)), press) {
+                        self.begin_manip(index, Grab::Move, p, false, font);
+                    }
+                } else if tools.tool == Tool::Select {
+                    self.finish_text(tools);
+                    match (origin.and_then(|o| self.doc.shape_at(o, PICK_SLACK / scale, font)), press) {
+                        (Some(index), Some(p)) => self.begin_manip(index, Grab::Move, p, true, font),
+                        _ => self.deselect(tools),
+                    }
                 } else if tools.tool != Tool::Step {
                     self.finish_text(tools);
                     self.crop = None;
+                    self.deselect(tools);
                     if let Some(start) = origin {
                         self.drag = Some(Drag { start, current: start, points: vec![start] });
                     }
                 }
             }
-            self.drag_moving_text(response.interact_pointer_pos().map(to_img));
+            self.update_manip(response.interact_pointer_pos(), scale);
             if response.drag_stopped() {
-                self.drop_moving_text();
+                self.end_manip(tools);
             }
-            self.paint_moving_text(&painter, scale, to_screen, font.is_some());
+            self.paint_manip(&painter, scale, to_screen, font.is_some());
             if let (Some(drag), Some(pos)) = (&mut self.drag, response.interact_pointer_pos()) {
                 let p = to_img(pos);
                 drag.current = p;
@@ -184,6 +207,7 @@ impl Editor {
                 self.crop_drag = None;
             }
 
+            self.selection_hover(ui, &painter, response.hover_pos(), tools, to_screen, to_img, scale, font);
             let text_hover = response.hover_pos().filter(|_| self.crop.is_none()).map(to_img);
             self.text_hover(ui, &response, &painter, text_hover, tools, font, to_screen);
             // Double-clicking text edits it with any tool whose single click does nothing.
@@ -204,22 +228,33 @@ impl Editor {
                     let p = to_img(pos);
                     // Clicking the image is what deselects text being edited.
                     self.finish_text(tools);
+                    let on_selection = self.selection_grab(pos, to_screen, to_img, scale, font).is_some();
                     match tools.tool {
+                        Tool::Select => match self.doc.shape_at(p, PICK_SLACK / scale, font) {
+                            Some(i) => self.select(i, tools),
+                            None => self.deselect(tools),
+                        },
                         Tool::Text => {
                             match self.doc.text_at(p, font) {
                                 Some(i) => self.edit_text(i, tools),
                                 None => self.text = Some(PendingText { pos: p, text: String::new(), focused: false, editing: None, field: Rect::NOTHING }),
                             }
                         }
-                        Tool::Step => {
+                        Tool::Step if !on_selection => {
                             self.doc.add(Shape::Step {
                                 center: p,
                                 number: self.doc.next_step_number(),
                                 color: tools.color(),
                                 diameter: tools.step_diameter(),
                             });
+                            self.select(self.doc.current().shapes.len() - 1, tools);
                         }
-                        Tool::Pen => self.doc.add(Shape::Pen { points: vec![p], color: tools.color(), width: tools.width }),
+                        Tool::Pen => {
+                            self.deselect(tools);
+                            self.doc.add(Shape::Pen { points: vec![p], color: tools.color(), width: tools.width });
+                        }
+                        // Clicking off the selection with a drawing tool deselects it.
+                        _ if !on_selection => self.deselect(tools),
                         _ => {}
                     }
                 }
@@ -228,6 +263,8 @@ impl Editor {
             if let Some(drag) = &self.drag {
                 preview(&painter, drag, tools, scale, to_screen, bounds, rect);
             }
+            self.paint_selection(&painter, to_screen, font);
+            self.selection_keys(ui, tools);
             self.crop_confirm(ui, &painter, to_screen, font);
             if tools.tool == Tool::Step && response.hovered() {
                 if let Some(pos) = response.hover_pos() {
@@ -241,27 +278,22 @@ impl Editor {
         });
     }
 
-    fn commit_drag(&mut self, drag: Drag, tools: &ToolState) {
-        let rect = Rect::from_two_pos(drag.start, drag.current);
-        let big_enough = rect.width() >= 2.0 && rect.height() >= 2.0;
-        let color = tools.color();
-        let width = tools.width;
-        let shape = match tools.tool {
-            Tool::Box if big_enough => Shape::Box { rect, color, width },
-            Tool::Ellipse if big_enough => Shape::Ellipse { rect, color, width },
-            Tool::Highlight if big_enough => Shape::Highlight { rect, color },
-            Tool::Blur if big_enough => Shape::Blur { rect },
-            Tool::Arrow if drag.start.distance(drag.current) >= 4.0 => {
-                Shape::Arrow { from: drag.start, to: drag.current, color, width }
-            }
-            Tool::Pen => Shape::Pen { points: drag.points, color, width },
-            Tool::Crop if big_enough => {
+    fn commit_drag(&mut self, drag: Drag, tools: &mut ToolState) {
+        if tools.tool == Tool::Crop {
+            let rect = Rect::from_two_pos(drag.start, drag.current);
+            if rect.width() >= 2.0 && rect.height() >= 2.0 {
                 // Held until the user confirms it.
                 self.crop = Some(CropSelection { rect, version: self.doc.version });
-                return;
             }
-            _ => return,
-        };
+            return;
+        }
+        let Some(shape) = shape_from_drag(&drag, tools) else { return };
+        let pen = matches!(shape, Shape::Pen { .. });
         self.doc.add(shape);
+        // What was just drawn stays selected so it can be adjusted straight away. Not freehand
+        // strokes, which are often drawn over each other.
+        if !pen {
+            self.select(self.doc.current().shapes.len() - 1, tools);
+        }
     }
 }

@@ -14,7 +14,7 @@ use tiny_skia::{
 const MAX_HISTORY: usize = 200;
 
 /// Annotations, in image pixel coordinates.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub enum Shape {
     Box { rect: Rect, color: Color32, width: f32 },
     Ellipse { rect: Rect, color: Color32, width: f32 },
@@ -24,6 +24,100 @@ pub enum Shape {
     Pen { points: Vec<Pos2>, color: Color32, width: f32 },
     Text { pos: Pos2, text: String, color: Color32, size: f32, shadow: bool },
     Step { center: Pos2, number: u32, color: Color32, diameter: f32 },
+}
+
+impl Shape {
+    /// The area the shape covers (text without its click padding).
+    pub fn bounds(&self, font: Option<&FontVec>) -> Rect {
+        match self {
+            Shape::Box { rect, .. } | Shape::Ellipse { rect, .. } | Shape::Highlight { rect, .. } | Shape::Blur { rect } => *rect,
+            Shape::Arrow { from, to, .. } => Rect::from_two_pos(*from, *to),
+            Shape::Pen { points, .. } => Rect::from_points(points),
+            Shape::Text { pos, text, size, .. } => text_bounds(*pos, text, *size, font).shrink(4.0),
+            Shape::Step { center, diameter, .. } => Rect::from_center_size(*center, Vec2::splat(*diameter)),
+        }
+    }
+
+    /// Whether `p` is on the shape, with `tol` pixels of slack. Outlines only count their line,
+    /// so things drawn inside a box stay clickable.
+    pub fn hit(&self, p: Pos2, tol: f32, font: Option<&FontVec>) -> bool {
+        match self {
+            Shape::Box { rect, width, .. } => {
+                let reach = width / 2.0 + tol;
+                let inner = rect.shrink(reach);
+                rect.expand(reach).contains(p) && !(inner.is_positive() && inner.contains(p))
+            }
+            Shape::Ellipse { rect, width, .. } => polyline_distance(&ellipse_points(*rect), true, p) <= width / 2.0 + tol,
+            // The head is wider than the shaft.
+            Shape::Arrow { from, to, width, .. } => segment_distance(p, *from, *to) <= width * 1.5 + tol,
+            Shape::Pen { points, width, .. } => polyline_distance(points, false, p) <= width / 2.0 + tol,
+            _ => self.bounds(font).expand(tol).contains(p),
+        }
+    }
+
+    pub fn translated(&self, d: Vec2) -> Shape {
+        let mut s = self.clone();
+        match &mut s {
+            Shape::Box { rect, .. } | Shape::Ellipse { rect, .. } | Shape::Highlight { rect, .. } | Shape::Blur { rect } => {
+                *rect = rect.translate(d)
+            }
+            Shape::Arrow { from, to, .. } => {
+                *from += d;
+                *to += d;
+            }
+            Shape::Pen { points, .. } => points.iter_mut().for_each(|p| *p += d),
+            Shape::Text { pos, .. } => *pos += d,
+            Shape::Step { center, .. } => *center += d,
+        }
+        s
+    }
+
+    /// The shape stretched so its bounds `from` land on `to`. Text and steps scale with the height
+    /// and width respectively, so callers keep their aspect ratio.
+    pub fn resized(&self, from: Rect, to: Rect) -> Shape {
+        let map = |p: Pos2| to.min + (p - from.min) / from.size().max(Vec2::splat(0.001)) * to.size();
+        let mut s = self.clone();
+        match &mut s {
+            Shape::Box { rect, .. } | Shape::Ellipse { rect, .. } | Shape::Highlight { rect, .. } | Shape::Blur { rect } => *rect = to,
+            Shape::Arrow { from: a, to: b, .. } => {
+                *a = map(*a);
+                *b = map(*b);
+            }
+            Shape::Pen { points, .. } => points.iter_mut().for_each(|p| *p = map(*p)),
+            Shape::Text { pos, size, .. } => {
+                *size *= to.height() / from.height().max(1.0);
+                *pos = to.min;
+            }
+            Shape::Step { center, diameter, .. } => {
+                *diameter = to.width().max(1.0);
+                *center = to.center();
+            }
+        }
+        s
+    }
+}
+
+/// Points around the ellipse inscribed in `rect`.
+pub fn ellipse_points(rect: Rect) -> Vec<Pos2> {
+    (0..64)
+        .map(|i| {
+            let t = i as f32 / 64.0 * std::f32::consts::TAU;
+            rect.center() + Vec2::new(t.cos() * rect.width() / 2.0, t.sin() * rect.height() / 2.0)
+        })
+        .collect()
+}
+
+fn segment_distance(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let t = if ab.length_sq() > 0.0 { ((p - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0) } else { 0.0 };
+    p.distance(a + ab * t)
+}
+
+fn polyline_distance(points: &[Pos2], closed: bool, p: Pos2) -> f32 {
+    let Some(&first) = points.first() else { return f32::INFINITY };
+    let closing = closed.then(|| (*points.last().unwrap(), first));
+    let segments = points.windows(2).map(|w| (w[0], w[1])).chain(closing);
+    segments.map(|(a, b)| segment_distance(p, a, b)).fold(p.distance(first), f32::min)
 }
 
 #[derive(Clone)]
@@ -40,13 +134,15 @@ pub struct Doc {
     saved: Option<usize>,
     /// Bumped whenever the current snapshot changes, so views know to re-render.
     pub version: u64,
+    /// The shape and property the current step's `amend` changed, so further changes merge into it.
+    amending: Option<(usize, &'static str)>,
 }
 
 impl Doc {
     #[cfg(test)]
     pub fn from_image(img: RgbaImage) -> Doc {
         let snapshot = Snapshot { base: Arc::new(img), shapes: Vec::new() };
-        Doc { path: PathBuf::new(), history: vec![snapshot], index: 0, saved: Some(0), version: 0 }
+        Doc { path: PathBuf::new(), history: vec![snapshot], index: 0, saved: Some(0), version: 0, amending: None }
     }
 
     /// Opens a screenshot, restoring its editable annotations if RSnip saved them.
@@ -58,7 +154,7 @@ impl Doc {
                 Snapshot { base: Arc::new(img.to_rgba8()), shapes: Vec::new() }
             }
         };
-        Ok(Doc { path: path.to_path_buf(), history: vec![snapshot], index: 0, saved: Some(0), version: 0 })
+        Ok(Doc { path: path.to_path_buf(), history: vec![snapshot], index: 0, saved: Some(0), version: 0, amending: None })
     }
 
     /// Records the un-annotated image and the annotations next to the just-saved PNG at
@@ -91,6 +187,7 @@ impl Doc {
     }
 
     fn push(&mut self, snapshot: Snapshot) {
+        self.amending = None;
         self.history.truncate(self.index + 1);
         if self.saved.is_some_and(|s| s > self.index) {
             self.saved = None;
@@ -121,6 +218,23 @@ impl Doc {
             }
         }
         self.push(next);
+    }
+
+    /// Replaces the shape at `index` like `replace`, except that repeated changes to the same
+    /// shape's same property (e.g. while dragging a slider) share one undo step.
+    pub fn amend(&mut self, index: usize, shape: Shape, property: &'static str) {
+        if self.amending == Some((index, property)) && self.saved != Some(self.index) {
+            self.history[self.index].shapes[index] = shape;
+            self.version += 1;
+        } else {
+            self.replace(index, Some(shape));
+            self.amending = Some((index, property));
+        }
+    }
+
+    /// The top-most annotation under `p`, with `tol` pixels of slack.
+    pub fn shape_at(&self, p: Pos2, tol: f32, font: Option<&FontVec>) -> Option<usize> {
+        self.current().shapes.iter().rposition(|s| s.hit(p, tol, font))
     }
 
     /// The top-most text annotation under `p`.
@@ -158,6 +272,7 @@ impl Doc {
 
     pub fn undo(&mut self) {
         if self.can_undo() {
+            self.amending = None;
             self.index -= 1;
             self.version += 1;
         }
@@ -165,6 +280,7 @@ impl Doc {
 
     pub fn redo(&mut self) {
         if self.can_redo() {
+            self.amending = None;
             self.index += 1;
             self.version += 1;
         }
@@ -557,13 +673,7 @@ mod tests {
     #[test]
     fn renders_and_undoes() {
         let base = RgbaImage::from_pixel(40, 30, image::Rgba([255, 255, 255, 255]));
-        let mut doc = Doc {
-            path: PathBuf::new(),
-            history: vec![Snapshot { base: Arc::new(base), shapes: vec![] }],
-            index: 0,
-            saved: Some(0),
-            version: 0,
-        };
+        let mut doc = Doc::from_image(base);
         doc.add(Shape::Box { rect: Rect::from_min_max(Pos2::new(5.0, 5.0), Pos2::new(20.0, 20.0)), color: Color32::RED, width: 2.0 });
         doc.add(Shape::Blur { rect: Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(40.0, 30.0)) });
         assert!(doc.dirty());
@@ -621,13 +731,7 @@ mod tests {
     #[test]
     fn edits_text_in_place() {
         let base = RgbaImage::from_pixel(200, 100, image::Rgba([255, 255, 255, 255]));
-        let mut doc = Doc {
-            path: PathBuf::new(),
-            history: vec![Snapshot { base: Arc::new(base), shapes: vec![] }],
-            index: 0,
-            saved: Some(0),
-            version: 0,
-        };
+        let mut doc = Doc::from_image(base);
         let text = |s: &str| Shape::Text { pos: Pos2::new(10.0, 10.0), text: s.into(), color: Color32::RED, size: 20.0, shadow: true };
         doc.add(text("hello"));
         let hit = doc.text_at(Pos2::new(15.0, 20.0), None);
@@ -639,5 +743,51 @@ mod tests {
         assert!(doc.current().shapes.is_empty());
         doc.undo();
         assert_eq!(doc.current().shapes.len(), 1);
+    }
+
+    #[test]
+    fn hit_testing_follows_the_drawn_lines() {
+        let rect = Rect::from_min_max(Pos2::new(10.0, 10.0), Pos2::new(110.0, 60.0));
+        let boxed = Shape::Box { rect, color: Color32::RED, width: 4.0 };
+        assert!(boxed.hit(Pos2::new(60.0, 11.0), 3.0, None), "on the outline");
+        assert!(!boxed.hit(Pos2::new(60.0, 35.0), 3.0, None), "inside an outline is empty");
+        let ellipse = Shape::Ellipse { rect, color: Color32::RED, width: 4.0 };
+        assert!(ellipse.hit(Pos2::new(60.0, 10.0), 3.0, None));
+        assert!(!ellipse.hit(Pos2::new(12.0, 12.0), 3.0, None), "the corner is outside an ellipse");
+        let arrow = Shape::Arrow { from: Pos2::new(0.0, 0.0), to: Pos2::new(100.0, 0.0), color: Color32::RED, width: 4.0 };
+        assert!(arrow.hit(Pos2::new(50.0, 5.0), 3.0, None));
+        assert!(!arrow.hit(Pos2::new(50.0, 20.0), 3.0, None));
+        let highlight = Shape::Highlight { rect, color: Color32::YELLOW };
+        assert!(highlight.hit(Pos2::new(60.0, 35.0), 3.0, None), "filled shapes hit inside");
+
+        let pen = Shape::Pen { points: vec![Pos2::new(0.0, 0.0), Pos2::new(10.0, 10.0)], color: Color32::RED, width: 2.0 };
+        let to = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(20.0, 40.0));
+        match pen.resized(pen.bounds(None), to) {
+            Shape::Pen { points, .. } => assert_eq!(points, vec![Pos2::new(0.0, 0.0), Pos2::new(20.0, 40.0)]),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn amends_merge_per_property() {
+        let mut doc = Doc::from_image(RgbaImage::new(50, 50));
+        let rect = Rect::from_min_max(Pos2::new(5.0, 5.0), Pos2::new(20.0, 20.0));
+        let boxed = |width: f32, color: Color32| Shape::Box { rect, color, width };
+        doc.add(boxed(2.0, Color32::RED));
+        doc.amend(0, boxed(3.0, Color32::RED), "width");
+        doc.amend(0, boxed(5.0, Color32::RED), "width");
+        doc.amend(0, boxed(5.0, Color32::BLUE), "color");
+        doc.undo();
+        assert!(doc.current().shapes[0] == boxed(5.0, Color32::RED), "colour change is its own step");
+        doc.undo();
+        assert!(doc.current().shapes[0] == boxed(2.0, Color32::RED), "width changes merged");
+
+        // Never merge into the saved state, so saving still marks the change dirty.
+        doc.amend(0, boxed(3.0, Color32::RED), "width");
+        doc.mark_saved(PathBuf::new());
+        doc.amend(0, boxed(4.0, Color32::RED), "width");
+        assert!(doc.dirty());
+        doc.undo();
+        assert!(doc.current().shapes[0] == boxed(3.0, Color32::RED));
     }
 }

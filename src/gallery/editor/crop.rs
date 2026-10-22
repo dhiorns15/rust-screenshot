@@ -3,6 +3,7 @@
 use ab_glyph::FontVec;
 use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Rect, Ui, Vec2, Stroke};
 
+use super::handles::{paint_handles, Edges};
 use super::Editor;
 
 /// A crop area waiting for the user to apply or cancel it.
@@ -13,53 +14,15 @@ pub(super) struct CropSelection {
     pub(super) version: u64,
 }
 
-/// Which edges of the crop selection a drag moves; none set means the whole selection moves.
-#[derive(Clone, Copy, Default)]
-pub(super) struct CropEdges {
-    left: bool,
-    right: bool,
-    top: bool,
-    bottom: bool,
-}
-
-impl CropEdges {
-    fn any(self) -> bool {
-        self.left || self.right || self.top || self.bottom
-    }
-
-    pub(super) fn cursor(self) -> egui::CursorIcon {
-        use egui::CursorIcon::*;
-        match (self.left, self.right, self.top, self.bottom) {
-            (true, _, true, _) | (_, true, _, true) => ResizeNwSe,
-            (true, _, _, true) | (_, true, true, _) => ResizeNeSw,
-            (true, _, _, _) | (_, true, _, _) => ResizeHorizontal,
-            (_, _, true, _) | (_, _, _, true) => ResizeVertical,
-            _ => Move,
-        }
-    }
-
-    /// What dragging from `p` does to the selection `r`, both in screen points.
-    pub(super) fn at(r: Rect, p: Pos2) -> Option<CropEdges> {
-        const REACH: f32 = 8.0;
-        let grown = r.expand(REACH);
-        if !grown.contains(p) {
-            return None;
-        }
-        // On a tiny selection both edges are in reach; take the closer one.
-        let (dl, dr, dt, db) = ((p.x - r.min.x).abs(), (p.x - r.max.x).abs(), (p.y - r.min.y).abs(), (p.y - r.max.y).abs());
-        let edges = CropEdges {
-            left: dl <= REACH && dl <= dr,
-            right: dr <= REACH && dr < dl,
-            top: dt <= REACH && dt <= db,
-            bottom: db <= REACH && db < dt,
-        };
-        (edges.any() || r.contains(p)).then_some(edges)
-    }
+/// What dragging from `p` does to the crop area `r`, both in screen points: its edges, or (no
+/// edges) moving it when `p` is inside.
+pub(super) fn crop_grab(r: Rect, p: Pos2) -> Option<Edges> {
+    Edges::near(r, p, false).or_else(|| r.contains(p).then(Edges::default))
 }
 
 /// The crop selection being resized or moved.
 pub(super) struct CropDrag {
-    pub(super) edges: CropEdges,
+    pub(super) edges: Edges,
     pub(super) start: Rect,
     pub(super) origin: Pos2,
 }
@@ -67,19 +30,13 @@ pub(super) struct CropDrag {
 impl CropDrag {
     /// The selection after dragging by `delta` image pixels, kept inside `bounds`.
     pub(super) fn adjusted(&self, delta: Vec2, bounds: Rect) -> Rect {
-        let e = self.edges;
-        if !e.any() {
-            let r = self.start.translate(delta);
-            let dx = (bounds.min.x - r.min.x).max(0.0) + (bounds.max.x - r.max.x).min(0.0);
-            let dy = (bounds.min.y - r.min.y).max(0.0) + (bounds.max.y - r.max.y).min(0.0);
-            return r.translate(Vec2::new(dx, dy));
+        let r = self.edges.apply(self.start, delta);
+        if self.edges.any() {
+            return r.intersect(bounds);
         }
-        let (mut min, mut max) = (self.start.min, self.start.max);
-        if e.left { min.x += delta.x }
-        if e.right { max.x += delta.x }
-        if e.top { min.y += delta.y }
-        if e.bottom { max.y += delta.y }
-        Rect::from_two_pos(min, max).intersect(bounds)
+        let dx = (bounds.min.x - r.min.x).max(0.0) + (bounds.max.x - r.max.x).min(0.0);
+        let dy = (bounds.min.y - r.min.y).max(0.0) + (bounds.max.y - r.max.y).min(0.0);
+        r.translate(Vec2::new(dx, dy))
     }
 }
 
@@ -135,18 +92,7 @@ pub(super) fn crop_shade(painter: &egui::Painter, r: Rect, canvas: Rect, size: V
     painter.rect_filled(Rect::from_min_max(Pos2::new(r.max.x, r.min.y), Pos2::new(c.max.x, r.max.y)), 0.0, shade);
     painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, Color32::WHITE));
     if handles {
-        let accent = Color32::from_rgb(30, 120, 240);
-        let (xs, ys) = ([r.min.x, r.center().x, r.max.x], [r.min.y, r.center().y, r.max.y]);
-        for (i, &x) in xs.iter().enumerate() {
-            for (j, &y) in ys.iter().enumerate() {
-                if i == 1 && j == 1 {
-                    continue;
-                }
-                let h = Rect::from_center_size(Pos2::new(x, y), Vec2::splat(8.0));
-                painter.rect_filled(h, 1.0, Color32::WHITE);
-                painter.rect_stroke(h, 1.0, Stroke::new(1.0f32, accent));
-            }
-        }
+        paint_handles(painter, r, false);
     }
     let label = format!("{} × {}", size.x.round(), size.y.round());
     let (at, align) = if r.min.y - c.min.y >= 18.0 {

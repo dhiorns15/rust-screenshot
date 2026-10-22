@@ -343,15 +343,20 @@ impl App {
                 }
                 egui::color_picker::color_edit_button_srgba(ui, self.tools.color_mut(), egui::color_picker::Alpha::Opaque);
             });
-            if self.tools.tool == Tool::Text {
-                // Resizes the selected text live, as well as setting the size for new text.
-                ui.add_enabled(enabled, egui::Slider::new(&mut self.tools.text_size, TEXT_SIZES).step_by(1.0).text("Size"))
+            // These edit the selected annotation when there is one, otherwise the tool's defaults.
+            if self.tools.style_tool() == Tool::Text {
+                ui.add_enabled(enabled, egui::Slider::new(self.tools.text_size_mut(), TEXT_SIZES).step_by(1.0).text("Size"))
                     .on_hover_text("Text size. Or drag the handle on the selected text's corner.");
-                ui.add_enabled(enabled, egui::Checkbox::new(&mut self.tools.text_shadow, "Shadow"))
+                ui.add_enabled(enabled, egui::Checkbox::new(self.tools.shadow_mut(), "Shadow"))
                     .on_hover_text("Drop shadow behind text, for readability on busy backgrounds");
             } else {
-                let size_applies = !matches!(self.tools.tool, Tool::Highlight | Tool::Blur | Tool::Crop);
-                ui.add_enabled(enabled && size_applies, egui::Slider::new(&mut self.tools.width, 1.0..=24.0).step_by(1.0).text("Size"));
+                let size_applies = self.tools.uses_width();
+                ui.add_enabled(enabled && size_applies, egui::Slider::new(self.tools.width_mut(), 1.0..=24.0).step_by(1.0).text("Size"));
+            }
+            if self.tools.selection.is_some() && ui.button("Delete").on_hover_text("Delete the selected annotation (Del)").clicked() {
+                if let Some(editor) = &mut self.editor {
+                    editor.delete_selected(&mut self.tools);
+                }
             }
             ui.separator();
 

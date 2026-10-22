@@ -16,14 +16,6 @@ pub(super) struct PendingText {
     pub(super) field: Rect,
 }
 
-/// A committed text annotation being dragged to a new spot.
-pub(super) struct MovingText {
-    pub(super) index: usize,
-    /// Pointer position relative to the text's top-left, in image pixels.
-    pub(super) grab: Vec2,
-    pub(super) pos: Pos2,
-}
-
 /// The font the text preview is drawn with: the renderer's own font when it's available.
 pub(super) fn preview_font(size: f32, matching_font: bool) -> FontId {
     let family = if matching_font {
@@ -60,11 +52,7 @@ impl Editor {
         };
         match editing {
             Some(i) => {
-                let unchanged = matches!((&self.doc.current().shapes[i], &shape),
-                    (Shape::Text { pos: pa, text: a, color: ca, size: sa, shadow: ha },
-                     Shape::Text { pos: pb, text: b, color: cb, size: sb, shadow: hb })
-                        if pa == pb && a == b && ca == cb && sa == sb && ha == hb);
-                if !unchanged {
+                if self.doc.current().shapes[i] != shape {
                     self.doc.replace(i, (!empty).then_some(shape));
                 }
             }
@@ -79,7 +67,9 @@ impl Editor {
             return;
         };
         tools.tool = Tool::Text;
-        *tools.color_mut() = color;
+        // Not via the toolbar accessors, which would restyle a selected shape instead.
+        self.deselect(tools);
+        tools.colors[Tool::Text as usize] = color;
         tools.text_size = size;
         tools.text_shadow = shadow;
         self.text = Some(PendingText { pos, text, focused: false, editing: Some(index), field: Rect::NOTHING });
@@ -87,51 +77,6 @@ impl Editor {
 
     pub fn is_typing(&self) -> bool {
         self.text.is_some()
-    }
-
-    /// With the Text tool, dragging existing text picks it up to move it.
-    pub(super) fn start_moving_text(&mut self, origin: Option<Pos2>, font: Option<&FontVec>) {
-        let hit = origin.and_then(|p| Some((p, self.doc.text_at(p, font)?)));
-        if let Some((p, index)) = hit {
-            if let Shape::Text { pos, .. } = &self.doc.current().shapes[index] {
-                self.moving = Some(MovingText { index, grab: p - *pos, pos: *pos });
-            }
-        }
-    }
-
-    /// Follows the pointer (in image pixels) while text is being moved.
-    pub(super) fn drag_moving_text(&mut self, pointer: Option<Pos2>) {
-        if let (Some(moving), Some(p)) = (&mut self.moving, pointer) {
-            moving.pos = p - moving.grab;
-        }
-    }
-
-    /// Drops text being moved at its new spot, as one undoable edit.
-    pub(super) fn drop_moving_text(&mut self) {
-        let Some(moving) = self.moving.take() else { return };
-        if let Some(Shape::Text { pos, .. }) = self.doc.current().shapes.get(moving.index) {
-            if *pos != moving.pos {
-                let mut moved = self.doc.current().shapes[moving.index].clone();
-                if let Shape::Text { pos, .. } = &mut moved {
-                    *pos = moving.pos;
-                }
-                self.doc.replace(moving.index, Some(moved));
-            }
-        }
-    }
-
-    /// Draws text being moved where the pointer has it; it's left out of the rendered canvas meanwhile.
-    pub(super) fn paint_moving_text(&self, painter: &egui::Painter, scale: f32, to_screen: impl Fn(Pos2) -> Pos2, matching_font: bool) {
-        let Some(moving) = &self.moving else { return };
-        if let Some(Shape::Text { text, color, size, shadow, .. }) = self.doc.current().shapes.get(moving.index) {
-            let font_id = preview_font(size * scale, matching_font);
-            let at = to_screen(moving.pos);
-            if *shadow {
-                let galley = painter.layout_no_wrap(text.clone(), font_id.clone(), Color32::from_black_alpha(170));
-                painter.galley(at + shadow_offset(*size, scale), galley, Color32::BLACK);
-            }
-            painter.galley(at, painter.layout_no_wrap(text.clone(), font_id, *color), *color);
-        }
     }
 
     /// Shows which text can be clicked to edit it (or, with the Text tool, dragged to move it).
@@ -147,8 +92,7 @@ impl Editor {
         font: Option<&FontVec>,
         to_screen: impl Fn(Pos2) -> Pos2,
     ) {
-        if self.moving.is_some() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        if self.manip.is_some() {
             return;
         }
         let hovered = hover.and_then(|p| self.doc.text_at(p, font)).filter(|&i| Some(i) != self.editing_index());
