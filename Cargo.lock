@@ -1723,6 +1723,7 @@ dependencies = [
  "serde_json",
  "tiny-skia",
  "windows",
+ "windows-core",
  "windows-sys 0.59.0",
 ]
 

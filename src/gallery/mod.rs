@@ -1,6 +1,7 @@
 //! Screenshot library and editor window (`rsnip --gallery [file]`).
 
 mod doc;
+mod dragout;
 mod editor;
 
 use std::collections::{HashMap, HashSet};
@@ -531,11 +532,12 @@ impl App {
 
         let current = self.editor.as_ref().map(|e| e.doc.path.clone());
         let mut clicked = None;
+        let mut dragged = None;
         let mut action: Option<(PathBuf, &str)> = None;
         egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, ROW_HEIGHT, visible.len(), |ui, range| {
             for &i in &visible[range] {
                 let entry = &self.entries[i];
-                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
+                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click_and_drag());
                 let selected = current.as_deref() == Some(entry.path.as_path());
                 let painter = ui.painter();
                 if selected {
@@ -570,6 +572,9 @@ impl App {
                 if response.clicked() {
                     clicked = Some(entry.path.clone());
                 }
+                if response.drag_started() {
+                    dragged = Some(entry.path.clone());
+                }
                 response.context_menu(|ui| {
                     for label in ["Open in default app", "Show in folder", "Pin to screen", "Delete"] {
                         if ui.button(label).clicked() {
@@ -583,6 +588,12 @@ impl App {
 
         if let Some(path) = clicked {
             self.request_open(path);
+        }
+        if let Some(path) = dragged {
+            // Blocks until the drop; Explorer, chat apps and mail clients take it as a file.
+            if let Err(e) = dragout::drag_files(&[path]) {
+                self.set_status(format!("Couldn't drag: {e}"));
+            }
         }
         match action {
             Some((path, "Open in default app")) => open_with_shell(&path),
