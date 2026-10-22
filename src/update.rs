@@ -167,14 +167,31 @@ fn get(url: &str) -> Result<Vec<u8>, String> {
 #[cfg(not(windows))]
 fn get(url: &str) -> Result<Vec<u8>, String> {
     let agent = concat!("RSnip/", env!("CARGO_PKG_VERSION"));
-    let out = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "30", "-A", agent, url])
-        .output()
-        .map_err(|e| format!("Couldn't run curl: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("Couldn't reach GitHub: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    // Some distributions (e.g. Ubuntu) come with wget but not curl.
+    get_with(&[
+        ("curl", &["-fsSL", "--max-time", "30", "-A", agent, url]),
+        ("wget", &["-q", "-O", "-", "--timeout=30", "-U", agent, url]),
+    ])
+}
+
+/// Runs the first of `tools` that's installed, and returns what it printed.
+#[cfg(not(windows))]
+fn get_with(tools: &[(&str, &[&str])]) -> Result<Vec<u8>, String> {
+    for (program, args) in tools {
+        let out = match std::process::Command::new(program).args(*args).output() {
+            Ok(out) => out,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("Couldn't run {program}: {e}")),
+        };
+        if !out.status.success() {
+            let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let detail = if detail.is_empty() { format!("{program} failed ({})", out.status) } else { detail };
+            return Err(format!("Couldn't reach GitHub: {detail}"));
+        }
+        return Ok(out.stdout);
     }
-    Ok(out.stdout)
+    let names: Vec<&str> = tools.iter().map(|(program, _)| *program).collect();
+    Err(format!("Install {} to check for updates", names.join(" or ")))
 }
 
 #[cfg(windows)]
@@ -254,6 +271,15 @@ mod install {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn downloads_with_the_first_tool_installed() {
+        let missing = "rsnip-no-such-tool";
+        assert_eq!(get_with(&[(missing, &[]), ("echo", &["hi"])]).unwrap(), b"hi\n");
+        assert_eq!(get_with(&[(missing, &[]), ("rsnip-nor-this", &[])]).unwrap_err(), format!("Install {missing} or rsnip-nor-this to check for updates"));
+        assert!(get_with(&[("false", &[])]).unwrap_err().starts_with("Couldn't reach GitHub: false failed"));
+    }
 
     #[test]
     fn parses_and_orders_versions() {
