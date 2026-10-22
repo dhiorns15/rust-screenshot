@@ -3,6 +3,7 @@
 //! `rsnip`            runs in the tray and takes over Print Screen (and optionally Win+Shift+S).
 //! `rsnip --region`   starts a region capture (in the running instance if there is one).
 //! `rsnip --full`     captures every monitor.
+//! `rsnip --delay N`  starts a region capture in N seconds.
 //! `rsnip --gallery [file]` opens the screenshot library / editor.
 
 #![windows_subsystem = "windows"]
@@ -46,9 +47,12 @@ pub const WM_APP_SAVED: u32 = WM_APP + 3;
 pub const WM_APP_ALREADY_RUNNING: u32 = WM_APP + 4;
 pub const WM_APP_OVERLAY_KEY: u32 = WM_APP + 5;
 pub const WM_APP_HOTKEY_RECORDED: u32 = WM_APP + 6;
+/// Start a region capture in `wparam` seconds.
+pub const WM_APP_DELAYED: u32 = WM_APP + 7;
 
 const TIMER_REGION: usize = 1;
 const TIMER_FULL: usize = 2;
+const TIMER_COUNTDOWN: usize = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -69,6 +73,8 @@ thread_local! {
     static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
     static CAPTURING: Cell<bool> = const { Cell::new(false) };
     static LAST_SAVED: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    /// Seconds left before a delayed capture.
+    static COUNTDOWN: Cell<u32> = const { Cell::new(0) };
 }
 
 fn main() {
@@ -82,14 +88,15 @@ fn main() {
         "--full" => Some(Mode::Full),
         _ => None,
     });
-    unsafe { run_tray(mode) }
+    let delay = args.iter().position(|a| a == "--delay").and_then(|i| args.get(i + 1)?.parse().ok());
+    unsafe { run_tray(mode, delay) }
 }
 
 fn tip(hotkey: Hotkey) -> String {
     format!("{APP_NAME} — press {} to capture", hotkey.name())
 }
 
-unsafe fn run_tray(mode: Option<Mode>) {
+unsafe fn run_tray(mode: Option<Mode>, delay: Option<u32>) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     let class = wide(MAIN_CLASS);
@@ -98,9 +105,10 @@ unsafe fn run_tray(mode: Option<Mode>) {
     if GetLastError() == ERROR_ALREADY_EXISTS {
         let other = FindWindowW(class.as_ptr(), null());
         if !other.is_null() {
-            match mode {
-                Some(m) => PostMessageW(other, WM_APP_CAPTURE, m as usize, 0),
-                None => PostMessageW(other, WM_APP_ALREADY_RUNNING, 0, 0),
+            match (delay, mode) {
+                (Some(secs), _) => PostMessageW(other, WM_APP_DELAYED, secs as usize, 0),
+                (None, Some(m)) => PostMessageW(other, WM_APP_CAPTURE, m as usize, 0),
+                (None, None) => PostMessageW(other, WM_APP_ALREADY_RUNNING, 0, 0),
             };
         }
         return;
@@ -159,12 +167,13 @@ unsafe fn run_tray(mode: Option<Mode>) {
         notify(hwnd, "Keyboard hook failed", "Print Screen won't be captured; use the tray icon instead.");
     }
 
-    match mode {
-        Some(m) => {
+    match (delay, mode) {
+        (Some(secs), _) => start_countdown(hwnd, secs),
+        (None, Some(m)) => {
             PostMessageW(hwnd, WM_APP_CAPTURE, m as usize, 0);
         }
-        None if settings.open_library_on_launch => open_gallery(None),
-        None => {}
+        (None, None) if settings.open_library_on_launch => open_gallery(None),
+        (None, None) => {}
     }
 
     let mut msg: MSG = zeroed();
@@ -177,6 +186,21 @@ unsafe fn run_tray(mode: Option<Mode>) {
     tray::remove(hwnd);
     DestroyIcon(icon);
     DestroyIcon(icon_large);
+}
+
+/// Starts (or restarts) a delayed region capture. The countdown shows only in the tray tooltip, so
+/// nothing extra pops up on screen to end up in the capture.
+unsafe fn start_countdown(hwnd: HWND, secs: u32) {
+    let secs = secs.clamp(1, 60);
+    COUNTDOWN.set(secs);
+    tray::set_tip(hwnd, &format!("{APP_NAME} — capturing in {secs} s"));
+    SetTimer(hwnd, TIMER_COUNTDOWN, 1000, None);
+}
+
+unsafe fn cancel_countdown(hwnd: HWND) {
+    KillTimer(hwnd, TIMER_COUNTDOWN);
+    COUNTDOWN.set(0);
+    tray::set_tip(hwnd, &tip(SETTINGS.get().hotkey));
 }
 
 unsafe fn notify(hwnd: HWND, title: &str, text: &str) {
@@ -224,6 +248,21 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 }
                 _ => {}
             }
+            0
+        }
+        WM_TIMER if wparam == TIMER_COUNTDOWN => {
+            let left = COUNTDOWN.get().saturating_sub(1);
+            if left == 0 {
+                cancel_countdown(hwnd);
+                capture(hwnd, Mode::Region);
+            } else {
+                COUNTDOWN.set(left);
+                tray::set_tip(hwnd, &format!("{APP_NAME} — capturing in {left} s"));
+            }
+            0
+        }
+        WM_APP_DELAYED => {
+            start_countdown(hwnd, wparam as u32);
             0
         }
         WM_TIMER => {
@@ -275,7 +314,11 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
 unsafe fn on_menu(hwnd: HWND) {
     let s = SETTINGS.get();
     let startup = settings::startup_enabled();
-    match tray::show_menu(hwnd, &s, startup) {
+    match tray::show_menu(hwnd, &s, startup, COUNTDOWN.get()) {
+        cmd if cmd > tray::CMD_DELAY && tray::DELAYS.contains(&(cmd - tray::CMD_DELAY)) => {
+            start_countdown(hwnd, cmd - tray::CMD_DELAY);
+        }
+        tray::CMD_CANCEL_DELAY => cancel_countdown(hwnd),
         // Give the menu time to fade out so it isn't in the capture.
         tray::CMD_REGION => {
             SetTimer(hwnd, TIMER_REGION, 250, None);

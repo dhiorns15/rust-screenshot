@@ -42,6 +42,7 @@ Run `rsnip.exe`. It sits in the notification area.
 | All screens | Press A in the selection overlay, or use *Capture all screens* in the tray menu |
 | Fine-tune | A magnifier next to the cursor shows the pixels under it with their position and colour (M hides it). Arrow keys move the mouse 1 px, Shift+arrows 10 px, including while dragging. C copies the colour under the cursor as #RRGGBB |
 | Cancel | Esc or right-click |
+| Delayed capture | Tray menu → *Delayed capture* → 3, 5 or 10 seconds, to open a menu or tooltip first. The countdown shows in the tray tooltip |
 | Open library | Tray menu → *Open library & editor*, or click the "saved" notification |
 
 Alt+PrtScn and Win+PrtScn are left alone and keep their Windows behaviour.
@@ -101,6 +102,7 @@ Right-click a library thumbnail to open it externally, show it in Explorer, or m
 rsnip                  start the tray app
 rsnip --region         start a region capture (uses the running instance if there is one)
 rsnip --full           capture all monitors
+rsnip --delay N        start a region capture in N seconds
 rsnip --gallery [file] open the library, optionally with a file selected
 ```
 

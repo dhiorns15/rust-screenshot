@@ -30,6 +30,10 @@ pub const CMD_STARTUP: u32 = 9;
 pub const CMD_EXIT: u32 = 10;
 pub const CMD_OPEN_EDITOR: u32 = 11;
 pub const CMD_LIBRARY_ON_LAUNCH: u32 = 12;
+pub const CMD_CANCEL_DELAY: u32 = 13;
+/// `CMD_DELAY + n` starts a capture in `n` seconds.
+pub const CMD_DELAY: u32 = 100;
+pub const DELAYS: [u32; 3] = [3, 5, 10];
 
 unsafe fn base(hwnd: HWND) -> NOTIFYICONDATAW {
     let mut nid: NOTIFYICONDATAW = zeroed();
@@ -73,7 +77,8 @@ pub unsafe fn notify(hwnd: HWND, icon: HICON, title: &str, text: &str) {
 }
 
 /// Shows the context menu at the cursor and returns the chosen command (0 if dismissed).
-pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, startup: bool) -> u32 {
+/// `countdown` is the seconds left on a delayed capture, or 0.
+pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, startup: bool, countdown: u32) -> u32 {
     let menu = CreatePopupMenu();
     let item = |id: u32, text: &str, checked: bool| {
         let text = wide(text);
@@ -86,6 +91,17 @@ pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, startup: bool) -> u32 {
 
     item(CMD_REGION, &format!("Capture region\t{}", settings.hotkey.name()), false);
     item(CMD_FULL, "Capture all screens", false);
+    if countdown > 0 {
+        item(CMD_CANCEL_DELAY, &format!("Cancel delayed capture ({countdown} s)"), false);
+    } else {
+        let delays = CreatePopupMenu();
+        for secs in DELAYS {
+            let text = wide(&format!("In {secs} seconds"));
+            AppendMenuW(delays, MF_STRING, (CMD_DELAY + secs) as usize, text.as_ptr());
+        }
+        let text = wide("Delayed capture");
+        AppendMenuW(menu, MF_POPUP, delays as usize, text.as_ptr());
+    }
     separator();
     item(CMD_GALLERY, "Open library && editor", false);
     item(CMD_OPEN_FOLDER, "Open screenshots folder", false);
