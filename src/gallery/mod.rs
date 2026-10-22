@@ -6,6 +6,7 @@ mod dragout;
 mod library;
 mod platform;
 mod editor;
+mod theme;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -22,6 +23,7 @@ use eframe::egui::{
 use crate::update;
 use doc::{apply_effects, flatten, render, Doc, Effects};
 use editor::{Editor, Tool, ToolState, GROUP_STARTS, PALETTE, TEXT_SIZES, TOOLS};
+use theme::{icon, IconButton};
 
 pub const TITLE: &str = "RSnip Library";
 const THUMB: Vec2 = Vec2::new(200.0, 112.0);
@@ -68,6 +70,26 @@ enum Pending {
     Close,
 }
 
+/// Where the library sits in the window.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dock {
+    Left,
+    /// A filmstrip along the bottom, leaving the editor the full width.
+    Bottom,
+}
+
+impl Dock {
+    const SETTING: &'static str = "LibraryDock";
+
+    fn load() -> Dock {
+        if platform::setting(Dock::SETTING) == Some(1) {
+            Dock::Bottom
+        } else {
+            Dock::Left
+        }
+    }
+}
+
 struct App {
     dir: PathBuf,
     entries: Vec<Entry>,
@@ -95,21 +117,25 @@ struct App {
     selected: HashSet<PathBuf>,
     /// Where Shift+click ranges start.
     anchor: Option<PathBuf>,
+    dock: Dock,
+    /// How wide the toolbar's actions were last frame, to decide whether they fit beside the tools.
+    actions_width: f32,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext, file: Option<PathBuf>) -> App {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        theme::apply(&cc.egui_ctx);
         let font_bytes = doc::load_font_bytes();
+        let mut fonts = egui::FontDefinitions::default();
+        theme::add_icons(&mut fonts);
         if let Some(bytes) = font_bytes.clone() {
-            let mut fonts = egui::FontDefinitions::default();
             fonts.font_data.insert(editor::ANNOTATION_FONT.to_owned(), egui::FontData::from_owned(bytes));
             fonts.families.insert(
                 egui::FontFamily::Name(editor::ANNOTATION_FONT.into()),
                 vec![editor::ANNOTATION_FONT.to_owned()],
             );
-            cc.egui_ctx.set_fonts(fonts);
         }
+        cc.egui_ctx.set_fonts(fonts);
         let (thumb_tx, jobs) = channel::<(PathBuf, SystemTime)>();
         let (results, thumb_rx) = channel();
         let ctx = cc.egui_ctx.clone();
@@ -147,6 +173,8 @@ impl App {
             update_rx: check_for_update(&cc.egui_ctx),
             selected: HashSet::new(),
             anchor: None,
+            dock: Dock::load(),
+            actions_width: 320.0,
         };
         app.rescan();
         doc::prune_layers(&app.dir);
@@ -418,132 +446,202 @@ impl App {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let enabled = self.editor.is_some();
-        ui.spacing_mut().item_spacing.x = 4.0;
-        // Actions on the right; the tools take the rest of the row, wrapping if it's narrow. (The
-        // outer row keeps the right-to-left layout from taking the panel's whole height.)
+        // Tools on the left and actions on the right, or the actions on a row of their own when the
+        // window is too narrow for both. (A row around the right-to-left layout keeps it from
+        // taking the panel's whole height.)
+        let mut fits = true;
         ui.horizontal(|ui| {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                self.actions(ui, enabled);
-                ui.separator();
-                ui.with_layout(Layout::left_to_right(Align::Center).with_main_wrap(true), |ui| self.tool_buttons(ui, enabled));
-            });
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.add_enabled_ui(enabled, |ui| self.tool_buttons(ui));
+            fits = ui.available_width() >= self.actions_width + 12.0;
+            if fits {
+                self.actions_row(ui, enabled);
+            }
         });
-        if enabled {
-            ui.add_space(2.0);
-            ui.horizontal(|ui| self.tool_options(ui));
+        if !fits {
+            ui.horizontal(|ui| self.actions_row(ui, enabled));
         }
     }
 
-    fn tool_buttons(&mut self, ui: &mut egui::Ui, enabled: bool) {
-        for (tool, label, _, help) in TOOLS {
-            if GROUP_STARTS.contains(&tool) {
-                ui.separator();
+    /// The tools as icon buttons, one rounded group per kind of tool.
+    fn tool_buttons(&mut self, ui: &mut egui::Ui) {
+        let mut groups: Vec<Vec<_>> = Vec::new();
+        for entry in TOOLS {
+            if groups.is_empty() || GROUP_STARTS.contains(&entry.0) {
+                groups.push(Vec::new());
             }
-            let selected = self.tools.tool == tool;
-            if ui.add_enabled(enabled, egui::SelectableLabel::new(selected, label)).on_hover_text(help).clicked() {
-                if let Some(editor) = &mut self.editor {
-                    editor.finish_text(&self.tools);
+            groups.last_mut().unwrap().push(entry);
+        }
+        for group in groups {
+            theme::group(ui, |ui| {
+                for (tool, label, _, help) in group {
+                    let button = IconButton::new(theme::tool_icon(tool)).selected(self.tools.tool == tool);
+                    let response = ui.add(button).on_hover_ui(|ui| {
+                        ui.label(RichText::new(label).strong());
+                        ui.label(help);
+                    });
+                    if response.clicked() {
+                        if let Some(editor) = &mut self.editor {
+                            editor.finish_text(&self.tools);
+                        }
+                        self.tools.tool = tool;
+                    }
                 }
-                self.tools.tool = tool;
-            }
+            });
         }
     }
 
-    /// Undo/redo, copy, save and the Export menu, added right to left.
+    /// The actions, right-aligned; remembers how wide they are for the next frame's layout.
+    fn actions_row(&mut self, ui: &mut egui::Ui, enabled: bool) {
+        let width = ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let right = ui.max_rect().right();
+            self.actions(ui, enabled);
+            right - ui.min_rect().left()
+        });
+        self.actions_width = width.inner;
+    }
+
+    /// Undo/redo, Copy, Save and the Export menu, added right to left.
     fn actions(&mut self, ui: &mut egui::Ui, enabled: bool) {
-        ui.add_enabled_ui(enabled, |ui| ui.menu_button("Export ⏷", |ui| self.export_menu(ui)));
-        if ui.add_enabled(enabled && self.dirty(), egui::Button::new("Save")).on_hover_text("Overwrite the screenshot (Ctrl+S)").clicked() {
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.menu_button(format!("{}  Export  {}", icon::EXPORT, icon::CARET_DOWN), |ui| self.export_menu(ui))
+        });
+        let save = theme::primary_button(theme::label(icon::FLOPPY_DISK, "Save"));
+        if ui.add_enabled(enabled && self.dirty(), save).on_hover_text("Overwrite the screenshot (Ctrl+S)").clicked() {
             self.save(false);
         }
-        if ui.add_enabled(enabled, egui::Button::new("Copy")).on_hover_text("Copy to clipboard (Ctrl+C)").clicked() {
+        let copy = egui::Button::new(theme::label(icon::COPY, "Copy"));
+        if ui.add_enabled(enabled, copy).on_hover_text("Copy to clipboard (Ctrl+C)").clicked() {
             self.copy();
         }
-        ui.separator();
+        ui.add_space(6.0);
         let (can_undo, can_redo) = self.editor.as_ref().map_or((false, false), |e| (e.doc.can_undo(), e.doc.can_redo()));
-        if ui.add_enabled(can_redo, egui::Button::new("⟳")).on_hover_text("Redo (Ctrl+Y)").clicked() {
+        if ui.add_enabled(can_redo, IconButton::new(icon::ARROW_CLOCKWISE)).on_hover_text("Redo (Ctrl+Y)").clicked() {
             let editor = self.editor.as_mut().unwrap();
             editor.finish_text(&self.tools);
             editor.doc.redo();
         }
-        if ui.add_enabled(can_undo, egui::Button::new("⟲")).on_hover_text("Undo (Ctrl+Z)").clicked() {
+        if ui.add_enabled(can_undo, IconButton::new(icon::ARROW_COUNTER_CLOCKWISE)).on_hover_text("Undo (Ctrl+Z)").clicked() {
             let editor = self.editor.as_mut().unwrap();
             editor.finish_text(&self.tools);
             editor.doc.undo();
         }
     }
 
-    /// The second toolbar row: only what applies to the current tool or selected annotation, which
-    /// these edit (otherwise they set the tool's defaults), then a hint on how to use it.
+    /// The row under the toolbar: only what applies to the current tool or selected annotation,
+    /// which these edit (otherwise they set the tool's defaults), and a hint on how to use it.
     fn tool_options(&mut self, ui: &mut egui::Ui) {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.spacing_mut().slider_width = 120.0;
-        if self.tools.uses_color() {
-            for color in PALETTE {
-                let (rect, response) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-                let selected = *self.tools.color_mut() == color;
-                ui.painter().rect_filled(rect, 3.0, color);
-                let outline = if selected { Stroke::new(2.0f32, Color32::WHITE) } else { Stroke::new(1.0f32, Color32::from_gray(70)) };
-                ui.painter().rect_stroke(rect.expand(if selected { 2.0 } else { 0.0 }), 4.0, outline);
-                if response.clicked() {
-                    *self.tools.color_mut() = color;
+        ui.horizontal(|ui| {
+            ui.set_min_height(24.0);
+            ui.spacing_mut().slider_width = 120.0;
+            if self.tools.uses_color() {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for color in PALETTE {
+                    let (rect, response) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
+                    let selected = *self.tools.color_mut() == color;
+                    let center = rect.center();
+                    if selected {
+                        ui.painter().circle_stroke(center, 9.5, Stroke::new(2.0f32, Color32::WHITE));
+                    } else if response.hovered() {
+                        ui.painter().circle_stroke(center, 9.5, Stroke::new(1.5f32, theme::MUTED));
+                    }
+                    ui.painter().circle(center, 7.0, color, Stroke::new(1.0f32, Color32::from_black_alpha(90)));
+                    if response.clicked() {
+                        *self.tools.color_mut() = color;
+                    }
+                }
+                ui.add_space(4.0);
+                self.custom_color(ui);
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+            }
+            if self.tools.style_tool() == Tool::Text {
+                ui.label(RichText::new("Size").color(theme::MUTED));
+                ui.add(egui::Slider::new(self.tools.text_size_mut(), TEXT_SIZES).step_by(1.0).fixed_decimals(0))
+                    .on_hover_text("Text size. Or drag the handle on the selected text's corner.");
+                ui.add_space(4.0);
+                ui.checkbox(self.tools.shadow_mut(), "Shadow")
+                    .on_hover_text("Drop shadow behind text, for readability on busy backgrounds");
+            } else if self.tools.uses_width() {
+                ui.label(RichText::new("Size").color(theme::MUTED));
+                ui.add(egui::Slider::new(self.tools.width_mut(), 1.0..=24.0).step_by(1.0).fixed_decimals(0));
+            }
+            let selected = self.tools.selection.is_some();
+            if selected {
+                ui.add_space(4.0);
+                let delete = egui::Button::new(theme::label(icon::TRASH, "Delete"));
+                if ui.add(delete).on_hover_text("Delete the selected annotation (Del)").clicked() {
+                    if let Some(editor) = &mut self.editor {
+                        editor.delete_selected(&mut self.tools);
+                    }
                 }
             }
-            // Set apart: it shows the current colour, which may also be one of the swatches.
-            ui.add_space(6.0);
-            ui.scope(|ui| {
-                ui.spacing_mut().interact_size = Vec2::splat(18.0);
-                egui::color_picker::color_edit_button_srgba(ui, self.tools.color_mut(), egui::color_picker::Alpha::Opaque)
-                    .on_hover_text("Pick any colour");
+            let hint = if selected {
+                "Drag to move it, or drag its handles to resize it. Esc deselects it"
+            } else {
+                TOOLS.iter().find(|t| t.0 == self.tools.tool).map_or("", |t| t.3)
+            };
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add(egui::Label::new(RichText::new(hint).color(theme::MUTED)).truncate());
             });
-            ui.separator();
+        });
+    }
+
+    /// A rainbow ring that opens a full colour picker; it shows the colour when it isn't a swatch.
+    fn custom_color(&mut self, ui: &mut egui::Ui) {
+        let (rect, response) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
+        let center = rect.center();
+        let segments = 24;
+        for k in 0..segments {
+            let angle = |k: usize| k as f32 / segments as f32 * std::f32::consts::TAU;
+            let point = |a: f32| center + Vec2::angled(a) * 7.0;
+            let hue = egui::ecolor::Hsva::new(k as f32 / segments as f32, 0.8, 1.0, 1.0);
+            ui.painter().line_segment([point(angle(k)), point(angle(k + 1))], Stroke::new(3.0f32, Color32::from(hue)));
         }
-        if self.tools.style_tool() == Tool::Text {
-            ui.label("Size");
-            ui.add(egui::Slider::new(self.tools.text_size_mut(), TEXT_SIZES).step_by(1.0).fixed_decimals(0))
-                .on_hover_text("Text size. Or drag the handle on the selected text's corner.");
-            ui.checkbox(self.tools.shadow_mut(), "Shadow")
-                .on_hover_text("Drop shadow behind text, for readability on busy backgrounds");
-            ui.separator();
-        } else if self.tools.uses_width() {
-            ui.label("Size");
-            ui.add(egui::Slider::new(self.tools.width_mut(), 1.0..=24.0).step_by(1.0).fixed_decimals(0));
-            ui.separator();
+        let color = *self.tools.color_mut();
+        if !PALETTE.contains(&color) {
+            ui.painter().circle_filled(center, 4.0, color);
+            ui.painter().circle_stroke(center, 9.5, Stroke::new(2.0f32, Color32::WHITE));
+        } else if response.hovered() {
+            ui.painter().circle_stroke(center, 9.5, Stroke::new(1.5f32, theme::MUTED));
         }
-        let hint = if self.tools.selection.is_some() {
-            if ui.button("Delete").on_hover_text("Delete the selected annotation (Del)").clicked() {
-                if let Some(editor) = &mut self.editor {
-                    editor.delete_selected(&mut self.tools);
-                }
-            }
-            "Drag to move it, or drag its handles to resize it. Esc deselects it"
-        } else {
-            TOOLS.iter().find(|t| t.0 == self.tools.tool).map_or("", |t| t.3)
-        };
-        ui.add(egui::Label::new(RichText::new(hint).weak()).truncate());
+        let popup = ui.make_persistent_id("custom_color");
+        let response = response.on_hover_text("Pick any colour");
+        if response.clicked() {
+            ui.memory_mut(|m| m.toggle_popup(popup));
+        }
+        egui::popup::popup_below_widget(ui, popup, &response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+            egui::color_picker::color_picker_color32(ui, self.tools.color_mut(), egui::color_picker::Alpha::Opaque);
+        });
     }
 
     fn export_menu(&mut self, ui: &mut egui::Ui) {
-        if ui.button("Save copy…").on_hover_text("Save as a new file (Ctrl+Shift+S)").clicked() {
+        ui.set_min_width(200.0);
+        if ui.button(theme::label(icon::FLOPPY_DISK, "Save copy…")).on_hover_text("Save as a new file (Ctrl+Shift+S)").clicked() {
             self.save(true);
             ui.close_menu();
         }
-        if ui.button("Save copy as JPG").clicked() {
+        if ui.button(theme::label(icon::FILE_JPG, "Save copy as JPG")).clicked() {
             self.save_jpg();
             ui.close_menu();
         }
         if platform::EXTRAS {
-            if ui.button("Copy as file").on_hover_text("Paste it into a folder, chat or email as an attachment").clicked() {
+            let as_file = ui.button(theme::label(icon::PAPERCLIP, "Copy as file"));
+            if as_file.on_hover_text("Paste it into a folder, chat or email as an attachment").clicked() {
                 self.copy_as_file();
                 ui.close_menu();
             }
             ui.separator();
             let reading = self.ocr.is_some();
-            let copy_text = ui.add_enabled(!reading, egui::Button::new("Copy text (OCR)"));
+            let copy_text = ui.add_enabled(!reading, egui::Button::new(theme::label(icon::TEXT_AA, "Copy text (OCR)")));
             if copy_text.on_hover_text("Recognise the text in the image and copy it").clicked() {
                 self.copy_text();
                 ui.close_menu();
             }
-            if ui.button("Pin to screen").on_hover_text("Keep the image on top of other windows for reference").clicked() {
+            let pin = ui.button(theme::label(icon::PUSH_PIN, "Pin to screen"));
+            if pin.on_hover_text("Keep the image on top of other windows for reference").clicked() {
                 self.pin();
                 ui.close_menu();
             }
@@ -577,7 +675,7 @@ impl App {
             }
             if let Some((text, at)) = &self.status {
                 if at.elapsed() < Duration::from_secs(4) {
-                    ui.label(RichText::new(text).color(Color32::from_rgb(120, 200, 255)));
+                    ui.label(RichText::new(text).color(theme::ACCENT));
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -588,7 +686,7 @@ impl App {
                     }
                 }
                 let Some(editor) = &mut self.editor else { return };
-                if ui.small_button("100%").clicked() {
+                if ui.small_button("1:1").on_hover_text("Actual size").clicked() {
                     editor.zoom = Some(1.0);
                 }
                 if ui.small_button("Fit").on_hover_text("Ctrl+0").clicked() {
@@ -652,12 +750,33 @@ impl eframe::App for App {
             self.shortcuts(ctx);
         }
 
-        egui::TopBottomPanel::top("toolbar").frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(8.0)).show(ctx, |ui| self.toolbar(ui));
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| self.status_bar(ui));
-        egui::SidePanel::left("library").resizable(true).default_width(240.0).width_range(200.0..=420.0).show(ctx, |ui| {
-            self.library(ui)
-        });
-        egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::from_gray(24))).show(ctx, |ui| {
+        let bar = |fill| egui::Frame::none().fill(fill).inner_margin(egui::Margin::symmetric(10.0, 7.0)).stroke(egui::Stroke::new(1.0f32, theme::BORDER));
+        egui::TopBottomPanel::top("toolbar").frame(bar(theme::PANEL)).show_separator_line(false).show(ctx, |ui| self.toolbar(ui));
+        if self.editor.is_some() {
+            egui::TopBottomPanel::top("options").frame(bar(theme::SUBPANEL)).show_separator_line(false).show(ctx, |ui| self.tool_options(ui));
+        }
+        egui::TopBottomPanel::bottom("status")
+            .frame(egui::Frame::none().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10.0, 4.0)))
+            .show(ctx, |ui| self.status_bar(ui));
+        let library = egui::Frame::none().fill(theme::PANEL).inner_margin(egui::Margin::same(10.0));
+        match self.dock {
+            Dock::Left => {
+                egui::SidePanel::left("library")
+                    .frame(library)
+                    .resizable(true)
+                    .default_width(250.0)
+                    .width_range(200.0..=420.0)
+                    .show(ctx, |ui| self.library(ui));
+            }
+            Dock::Bottom => {
+                egui::TopBottomPanel::bottom("library_strip")
+                    .frame(library)
+                    .resizable(false)
+                    .exact_height(library::STRIP_HEIGHT)
+                    .show(ctx, |ui| self.library(ui));
+            }
+        }
+        egui::CentralPanel::default().frame(egui::Frame::none().fill(theme::CANVAS)).show(ctx, |ui| {
             match &mut self.editor {
                 Some(editor) => editor.ui(ui, &mut self.tools, self.font.as_ref()),
                 None => {

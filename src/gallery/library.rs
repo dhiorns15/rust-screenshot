@@ -5,10 +5,23 @@ use std::time::SystemTime;
 
 use eframe::egui::{self, Align, Align2, Color32, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
-use super::{open_with_shell, platform, App, THUMB};
+use super::theme::{self, icon, IconButton};
+use super::{open_with_shell, platform, App, Dock, THUMB};
 
 const ROW_HEIGHT: f32 = THUMB.y + 40.0;
 const HEADER_HEIGHT: f32 = 30.0;
+/// A filmstrip column: a thumbnail and its name.
+const COLUMN_WIDTH: f32 = THUMB.x + 16.0;
+/// Room above the filmstrip for the date labels.
+const LABEL_HEIGHT: f32 = 20.0;
+/// Space between dates in the filmstrip.
+const GROUP_GAP: f32 = 14.0;
+/// The bottom library panel: header row, date labels, thumbnails, scroll bar and margins.
+pub const STRIP_HEIGHT: f32 = 34.0 + LABEL_HEIGHT + ROW_HEIGHT + 16.0;
+
+fn search_hint() -> String {
+    format!("{}  Search", icon::MAGNIFYING_GLASS)
+}
 
 /// A calendar day in local time.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -91,72 +104,40 @@ enum Action {
 
 impl App {
     pub(super) fn library(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.heading("Library");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("Folder").on_hover_text(self.dir.display().to_string()).clicked() {
-                    open_with_shell(&self.dir);
-                }
-            });
-        });
-        ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Search").desired_width(f32::INFINITY));
-        ui.add_space(4.0);
-
         let filter = self.filter.to_lowercase();
         let visible: Vec<usize> =
             (0..self.entries.len()).filter(|&i| filter.is_empty() || self.entries[i].name.to_lowercase().contains(&filter)).collect();
         // Forget selected files that were deleted or renamed.
         self.selected.retain(|p| self.entries.iter().any(|e| &e.path == p));
-        if self.selected.len() > 1 {
-            self.bulk_bar(ui);
+
+        let bottom = self.dock == Dock::Bottom;
+        if bottom {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Library").strong().size(15.0));
+                ui.add_space(6.0);
+                ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(search_hint()).desired_width(220.0));
+                self.count_or_bulk_bar(ui, visible.len());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| self.library_buttons(ui));
+            });
         } else {
-            ui.label(RichText::new(format!("{} screenshots", visible.len())).small().weak());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Library").strong().size(15.0));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| self.library_buttons(ui));
+            });
+            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(search_hint()).desired_width(f32::INFINITY));
+            ui.horizontal_wrapped(|ui| self.count_or_bulk_bar(ui, visible.len()));
         }
+        ui.add_space(4.0);
         if visible.is_empty() {
-            ui.add_space(20.0);
-            ui.label("No screenshots yet. Press your capture hotkey to take one.");
+            ui.add_space(12.0);
+            let text = if self.entries.is_empty() { "No screenshots yet. Press your capture hotkey to take one." } else { "Nothing matches." };
+            ui.label(RichText::new(text).color(theme::MUTED));
             return;
         }
 
         let today = Day::local(SystemTime::now());
-        let mut rows = Vec::new();
-        let mut last_label = String::new();
-        for &i in &visible {
-            let label = group_label(Day::local(self.entries[i].modified), today);
-            if label != last_label {
-                rows.push(Row::Header(label.clone()));
-                last_label = label;
-            }
-            rows.push(Row::Item(i));
-        }
-        let total: f32 = rows.iter().map(Row::height).sum();
-
-        let mut action = None;
-        egui::ScrollArea::vertical().auto_shrink(false).show_viewport(ui, |ui, viewport| {
-            ui.set_min_height(total);
-            let origin = ui.min_rect().min;
-            let width = ui.available_width();
-            let mut y = 0.0;
-            for row in &rows {
-                let h = row.height();
-                // Only rows in view are drawn.
-                if y + h >= viewport.min.y && y <= viewport.max.y {
-                    let rect = Rect::from_min_size(origin + Vec2::new(0.0, y), Vec2::new(width, h));
-                    match row {
-                        Row::Header(label) => {
-                            let at = rect.left_bottom() + Vec2::new(6.0, -8.0);
-                            ui.painter().text(at, Align2::LEFT_BOTTOM, label, egui::FontId::proportional(13.0), ui.visuals().strong_text_color());
-                        }
-                        Row::Item(i) => {
-                            if let Some(done) = self.item(ui, rect, *i) {
-                                action = Some(done);
-                            }
-                        }
-                    }
-                }
-                y += h;
-            }
-        });
+        let labels: Vec<String> = visible.iter().map(|&i| group_label(Day::local(self.entries[i].modified), today)).collect();
+        let action = if bottom { self.strip(ui, &visible, &labels) } else { self.list(ui, &visible, &labels) };
 
         let order: Vec<PathBuf> = visible.iter().map(|&i| self.entries[i].path.clone()).collect();
         match action {
@@ -183,6 +164,119 @@ impl App {
         }
     }
 
+    /// Where the library goes (left or bottom), and the screenshots folder; added right to left.
+    fn library_buttons(&mut self, ui: &mut egui::Ui) {
+        if ui.add(IconButton::new(icon::FOLDER_OPEN)).on_hover_text(format!("Open the folder\n{}", self.dir.display())).clicked() {
+            open_with_shell(&self.dir);
+        }
+        theme::group(ui, |ui| {
+            for (dock, icon, tip) in [(Dock::Bottom, icon::SQUARE_HALF_BOTTOM, "Library along the bottom"), (Dock::Left, icon::SIDEBAR_SIMPLE, "Library on the left")] {
+                if ui.add(IconButton::new(icon).selected(self.dock == dock)).on_hover_text(tip).clicked() && self.dock != dock {
+                    self.dock = dock;
+                    platform::set_setting(Dock::SETTING, (dock == Dock::Bottom) as u32);
+                }
+            }
+        });
+    }
+
+    fn count_or_bulk_bar(&mut self, ui: &mut egui::Ui, count: usize) {
+        if self.selected.len() > 1 {
+            self.bulk_bar(ui);
+        } else {
+            let noun = if count == 1 { "screenshot" } else { "screenshots" };
+            ui.label(RichText::new(format!("{count} {noun}")).small().color(theme::MUTED));
+        }
+    }
+
+    /// The left-hand list: date headings and one thumbnail per row. Only rows in view are drawn.
+    fn list(&mut self, ui: &mut egui::Ui, visible: &[usize], labels: &[String]) -> Option<Action> {
+        let mut rows = Vec::new();
+        for (n, &i) in visible.iter().enumerate() {
+            if n == 0 || labels[n] != labels[n - 1] {
+                rows.push(Row::Header(labels[n].clone()));
+            }
+            rows.push(Row::Item(i));
+        }
+        let total: f32 = rows.iter().map(Row::height).sum();
+
+        let mut action = None;
+        egui::ScrollArea::vertical().auto_shrink(false).show_viewport(ui, |ui, viewport| {
+            ui.set_min_height(total);
+            let origin = ui.min_rect().min;
+            let width = ui.available_width();
+            let mut y = 0.0;
+            for row in &rows {
+                let h = row.height();
+                if y + h >= viewport.min.y && y <= viewport.max.y {
+                    let rect = Rect::from_min_size(origin + Vec2::new(0.0, y), Vec2::new(width, h));
+                    match row {
+                        Row::Header(label) => {
+                            let at = rect.left_bottom() + Vec2::new(4.0, -8.0);
+                            ui.painter().text(at, Align2::LEFT_BOTTOM, label, egui::FontId::proportional(13.0), theme::MUTED);
+                        }
+                        Row::Item(i) => {
+                            if let Some(done) = self.item(ui, rect, *i) {
+                                action = Some(done);
+                            }
+                        }
+                    }
+                }
+                y += h;
+            }
+        });
+        action
+    }
+
+    /// The bottom filmstrip: thumbnails side by side, with each date's label above its first one
+    /// (kept in view while its screenshots are). Only columns in view are drawn.
+    fn strip(&mut self, ui: &mut egui::Ui, visible: &[usize], labels: &[String]) -> Option<Action> {
+        // Where each column starts, with a gap between dates.
+        let mut xs = Vec::with_capacity(visible.len());
+        let mut x = 0.0;
+        for n in 0..visible.len() {
+            if n > 0 && labels[n] != labels[n - 1] {
+                x += GROUP_GAP;
+            }
+            xs.push(x);
+            x += COLUMN_WIDTH;
+        }
+        let total = x;
+
+        let mut action = None;
+        egui::ScrollArea::horizontal().auto_shrink(false).show_viewport(ui, |ui, viewport| {
+            ui.set_min_size(Vec2::new(total, LABEL_HEIGHT + ROW_HEIGHT));
+            // The mouse wheel scrolls the strip sideways.
+            if ui.rect_contains_pointer(ui.clip_rect()) {
+                let delta = ui.input(|i| i.smooth_scroll_delta);
+                if delta.x == 0.0 && delta.y != 0.0 {
+                    ui.scroll_with_delta(Vec2::new(delta.y, 0.0));
+                }
+            }
+            let origin = ui.min_rect().min;
+            let mut n = 0;
+            while n < visible.len() {
+                // One date's columns: n..end.
+                let end = (n..visible.len()).find(|&m| labels[m] != labels[n]).unwrap_or(visible.len());
+                let (start_x, end_x) = (xs[n], xs[end - 1] + COLUMN_WIDTH);
+                if end_x >= viewport.min.x && start_x <= viewport.max.x {
+                    let label_x = viewport.min.x.clamp(start_x, (end_x - COLUMN_WIDTH).max(start_x));
+                    let at = origin + Vec2::new(label_x + 4.0, LABEL_HEIGHT - 4.0);
+                    ui.painter().text(at, Align2::LEFT_BOTTOM, &labels[n], egui::FontId::proportional(13.0), theme::MUTED);
+                    for m in n..end {
+                        if xs[m] + COLUMN_WIDTH >= viewport.min.x && xs[m] <= viewport.max.x {
+                            let rect = Rect::from_min_size(origin + Vec2::new(xs[m], LABEL_HEIGHT), Vec2::new(COLUMN_WIDTH, ROW_HEIGHT));
+                            if let Some(done) = self.item(ui, rect, visible[m]) {
+                                action = Some(done);
+                            }
+                        }
+                    }
+                }
+                n = end;
+            }
+        });
+        action
+    }
+
     /// One thumbnail row; returns what was done with it.
     fn item(&mut self, ui: &mut egui::Ui, rect: Rect, i: usize) -> Option<Action> {
         let entry = &self.entries[i];
@@ -190,14 +284,15 @@ impl App {
         let selected = self.selected.contains(&entry.path);
         let open = self.editor.as_ref().is_some_and(|e| e.doc.path == entry.path);
         let painter = ui.painter_at(rect);
-        let fill = ui.visuals().selection.bg_fill.gamma_multiply(0.6);
+        let tile = rect.shrink(3.0);
         if selected {
-            painter.rect_filled(rect.shrink(2.0), 6.0, fill);
+            painter.rect_filled(tile, 8.0, theme::ACCENT.gamma_multiply(0.22));
+            painter.rect_stroke(tile, 8.0, Stroke::new(1.5f32, theme::ACCENT));
         } else if response.hovered() {
-            painter.rect_filled(rect.shrink(2.0), 6.0, ui.visuals().widgets.hovered.bg_fill);
+            painter.rect_filled(tile, 8.0, theme::RAISED);
         }
         if open && !selected {
-            painter.rect_stroke(rect.shrink(2.0), 6.0, Stroke::new(1.0f32, fill));
+            painter.rect_stroke(tile, 8.0, Stroke::new(1.0f32, theme::ACCENT.gamma_multiply(0.7)));
         }
 
         let thumb_area = Rect::from_min_size(rect.min + Vec2::new((rect.width() - THUMB.x) / 2.0, 8.0), THUMB);
@@ -208,7 +303,7 @@ impl App {
                 painter.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
             }
             _ => {
-                painter.rect_filled(thumb_area, 4.0, Color32::from_gray(40));
+                painter.rect_filled(thumb_area, 4.0, theme::RAISED);
                 // MP4s have no thumbnail; GIFs show their first frame.
                 let mp4 = entry.video && !entry.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("gif"));
                 if mp4 {

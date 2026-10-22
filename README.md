@@ -109,9 +109,13 @@ Settings are stored in `HKCU\Software\RSnip`.
 
 ### Editor
 
-The toolbar has the tools on the left (selecting; drawing; text and marking up; hiding; cropping) and
-undo/redo, *Copy*, *Save* and the *Export* menu on the right. The row below shows only the options for
-the current tool or selected annotation (colour, size, shadow, delete) and a hint on how to use it.
+The toolbar has the tools as icons on the left, grouped as selecting, drawing, text and marking up,
+hiding, and cropping (hover one for its name, key and how to use it), and undo/redo, *Copy*, *Save* and
+the *Export* menu on the right. The row below shows only the options for the current tool or selected
+annotation (colour, size, shadow, delete) and a hint on how to use it.
+
+The library sits on the left, or along the bottom as a filmstrip so the editor gets the full width:
+switch with the two layout buttons next to *Library*. RSnip remembers the choice.
 
 | Tool | Key | |
 | --- | --- | --- |
