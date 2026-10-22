@@ -1,0 +1,4 @@
+[toolchain]
+# Pinned so CI lints with the same clippy as local builds; bump deliberately.
+channel = "1.97.1"
+components = ["clippy"]
