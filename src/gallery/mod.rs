@@ -73,6 +73,8 @@ struct Entry {
     path: PathBuf,
     name: String,
     modified: SystemTime,
+    /// A screen recording, which opens in the default player rather than the editor.
+    video: bool,
 }
 
 enum Pending {
@@ -160,7 +162,7 @@ impl App {
         match file {
             Some(file) => app.open(&file),
             None => {
-                if let Some(first) = app.entries.first().map(|e| e.path.clone()) {
+                if let Some(first) = app.entries.iter().find(|e| !e.video).map(|e| e.path.clone()) {
                     app.open(&first);
                 }
             }
@@ -175,12 +177,13 @@ impl App {
             .flatten()
             .filter(|e| {
                 let ext = e.path().extension().map(|x| x.to_ascii_lowercase());
-                matches!(ext.as_deref().and_then(|x| x.to_str()), Some("png" | "jpg" | "jpeg"))
+                matches!(ext.as_deref().and_then(|x| x.to_str()), Some("png" | "jpg" | "jpeg" | "gif" | "mp4"))
             })
             .filter_map(|e| {
                 let modified = e.metadata().ok()?.modified().ok()?;
                 let name = e.path().file_stem()?.to_string_lossy().into_owned();
-                Some(Entry { path: e.path(), name, modified })
+                let video = is_video(&e.path());
+                Some(Entry { path: e.path(), name, modified, video })
             })
             .collect();
         entries.sort_by_key(|e| std::cmp::Reverse(e.modified));
@@ -351,8 +354,9 @@ impl App {
 
     fn poll(&mut self, ctx: &egui::Context) {
         while let Ok((path, modified, thumb)) = self.thumb_rx.try_recv() {
-            self.requested.remove(&path);
+            // Files that can't be read stay "requested", so they aren't retried every frame.
             if let Some(thumb) = thumb {
+                self.requested.remove(&path);
                 let tex = ctx.load_texture(path.to_string_lossy(), thumb, TextureOptions::LINEAR);
                 self.thumbs.insert(path, (modified, tex));
             }
@@ -637,6 +641,11 @@ fn save_jpg(img: &image::RgbaImage, path: &Path) -> Result<(), String> {
     let rgb = image::DynamicImage::ImageRgba8(flatten(img)).to_rgb8();
     let file = std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| e.to_string())?);
     image::codecs::jpeg::JpegEncoder::new_with_quality(file, 90).encode_image(&rgb).map_err(|e| e.to_string())
+}
+
+/// Screen recordings; they open in the default player.
+fn is_video(path: &Path) -> bool {
+    matches!(path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(), Some("gif" | "mp4"))
 }
 
 fn open_with_shell(path: &Path) {

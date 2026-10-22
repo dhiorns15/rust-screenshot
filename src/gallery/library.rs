@@ -220,10 +220,20 @@ impl App {
             }
             _ => {
                 painter.rect_filled(thumb_area, 4.0, Color32::from_gray(40));
-                if self.requested.insert(entry.path.clone()) {
+                // MP4s have no thumbnail; GIFs show their first frame.
+                let mp4 = entry.video && !entry.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("gif"));
+                if mp4 {
+                    painter.text(thumb_area.center(), Align2::CENTER_CENTER, "▶", egui::FontId::proportional(36.0), Color32::from_gray(170));
+                } else if self.requested.insert(entry.path.clone()) {
                     let _ = self.thumb_tx.send((entry.path.clone(), entry.modified));
                 }
             }
+        }
+        if entry.video {
+            let ext = entry.path.extension().unwrap_or_default().to_string_lossy().to_uppercase();
+            let badge = Rect::from_min_size(thumb_area.min + Vec2::new(6.0, 6.0), Vec2::new(34.0, 16.0));
+            painter.rect_filled(badge, 3.0, Color32::from_black_alpha(180));
+            painter.text(badge.center(), Align2::CENTER_CENTER, ext, egui::FontId::proportional(10.0), Color32::WHITE);
         }
         painter.text(
             Pos2::new(rect.center().x, thumb_area.max.y + 14.0),
@@ -272,7 +282,11 @@ impl App {
         } else {
             self.selected = [path.clone()].into();
             self.anchor = Some(path.clone());
-            self.request_open(path);
+            if super::is_video(&path) {
+                open_with_shell(&path);
+            } else {
+                self.request_open(path);
+            }
         }
     }
 

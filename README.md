@@ -46,6 +46,7 @@ Run `rsnip.exe`. It sits in the notification area.
 | Cancel | Esc or right-click |
 | Same area again | Tray menu → *Capture last region*, or R in the selection overlay, captures exactly the area you captured last time |
 | Scrolling capture | Tray menu → *Scrolling capture*, then click a window (or drag over the part that scrolls). RSnip scrolls it to the end and stitches one tall image; sticky headers and footers appear once. Esc stops early |
+| Record video | Tray menu → *Record screen area*, pick an area, and it records to MP4 (or GIF, via *Record as GIF instead of MP4*), mouse pointer included. A red frame marks the area and a bar shows the time; click *Stop* or press your capture hotkey to finish. The video is saved to the screenshots folder and copied as a file, ready to paste |
 | Delayed capture | Tray menu → *Delayed capture* → 3, 5 or 10 seconds, to open a menu or tooltip first. The countdown shows in the tray tooltip |
 | Open library | Tray menu → *Open library & editor*, or click the "saved" notification |
 
@@ -100,6 +101,7 @@ a folder, chat or email. Its *Border* and *Drop shadow* options are added to eve
 export (the annotations stay editable without them).
 The library groups screenshots by date (Today, Yesterday, This week, …). Ctrl+click and Shift+click
 select several, to copy them as files, delete them, pin them or drag them out together.
+Recordings appear with an MP4/GIF badge and open in your video player.
 Drag a library thumbnail into Explorer, a chat app or an email to drop the file there.
 Right-click a library thumbnail to open it externally, show it in Explorer, pin it, or move it to the Recycle Bin.
 
@@ -113,6 +115,7 @@ rsnip --delay N        start a region capture in N seconds
 rsnip --text           select an area and copy the text in it
 rsnip --last           capture the same area as last time
 rsnip --scroll         pick a window, scroll it and capture its whole length
+rsnip --record         pick an area and record it (run again to stop)
 rsnip --gallery [file] open the library, optionally with a file selected
 rsnip --pin <file>      pin an image on top of other windows
 ```

@@ -7,12 +7,14 @@
 //! `rsnip --text`     selects a region and copies the text in it.
 //! `rsnip --last`     captures the same area as last time.
 //! `rsnip --scroll`   picks a window, scrolls it and captures the whole length.
+//! `rsnip --record`   picks an area and records it to video; run again (or the hotkey) to stop.
 //! `rsnip --gallery [file]` opens the screenshot library / editor.
 //! `rsnip --pin <file>` shows an image pinned on top of other windows.
 
 #![windows_subsystem = "windows"]
 
 mod capture;
+mod encode;
 mod gallery;
 mod hook;
 mod icon;
@@ -21,6 +23,7 @@ mod ocr;
 mod output;
 mod overlay;
 mod pin;
+mod record;
 mod prompt;
 mod scroll;
 mod settings;
@@ -59,6 +62,10 @@ pub const WM_APP_HOTKEY_RECORDED: u32 = WM_APP + 6;
 pub const WM_APP_DELAYED: u32 = WM_APP + 7;
 /// Text recognition finished; `lparam` is a `Box<Result<String, String>>`.
 pub const WM_APP_OCR: u32 = WM_APP + 8;
+/// The recording's Stop button was clicked.
+pub const WM_APP_STOP_RECORDING: u32 = WM_APP + 9;
+/// A recording finished saving; `lparam` is a `Box<Result<PathBuf, String>>`.
+pub const WM_APP_RECORDED: u32 = WM_APP + 10;
 
 const TIMER_REGION: usize = 1;
 const TIMER_FULL: usize = 2;
@@ -66,6 +73,7 @@ const TIMER_COUNTDOWN: usize = 3;
 const TIMER_TEXT: usize = 4;
 const TIMER_LAST: usize = 5;
 const TIMER_SCROLL: usize = 6;
+const TIMER_RECORD: usize = 7;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -77,6 +85,8 @@ pub enum Mode {
     Last = 3,
     /// Scroll the picked window and stitch it into one tall image.
     Scroll = 4,
+    /// Record the picked area to a video.
+    Record = 5,
 }
 
 impl Mode {
@@ -86,6 +96,7 @@ impl Mode {
             2 => Mode::Text,
             3 => Mode::Last,
             4 => Mode::Scroll,
+            5 => Mode::Record,
             _ => Mode::Region,
         }
     }
@@ -106,6 +117,7 @@ thread_local! {
     static LAST_SAVED: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
     /// Seconds left before a delayed capture.
     static COUNTDOWN: Cell<u32> = const { Cell::new(0) };
+    static RECORDING: RefCell<Option<record::Recording>> = const { RefCell::new(None) };
 }
 
 fn main() {
@@ -121,6 +133,7 @@ fn main() {
         "--text" => Some(Mode::Text),
         "--last" => Some(Mode::Last),
         "--scroll" => Some(Mode::Scroll),
+        "--record" => Some(Mode::Record),
         _ => None,
     });
     let delay = args.iter().position(|a| a == "--delay").and_then(|i| args.get(i + 1)?.parse().ok());
@@ -279,7 +292,10 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 WM_CONTEXTMENU => on_menu(hwnd),
                 tray::NIN_BALLOONUSERCLICK => {
                     let last = LAST_SAVED.with(|l| l.borrow().clone());
-                    open_gallery(last.as_deref());
+                    match last {
+                        Some(video) if is_video(&video) => shell_open(&video),
+                        last => open_gallery(last.as_deref()),
+                    }
                 }
                 _ => {}
             }
@@ -294,6 +310,14 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 COUNTDOWN.set(left);
                 tray::set_tip(hwnd, &format!("{APP_NAME} — capturing in {left} s"));
             }
+            0
+        }
+        WM_APP_STOP_RECORDING => {
+            stop_recording(hwnd);
+            0
+        }
+        WM_APP_RECORDED => {
+            on_recorded(hwnd, *Box::from_raw(lparam as *mut Result<PathBuf, String>));
             0
         }
         WM_APP_OCR => {
@@ -312,6 +336,7 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 TIMER_TEXT => capture(hwnd, Mode::Text),
                 TIMER_LAST => capture(hwnd, Mode::Last),
                 TIMER_SCROLL => capture(hwnd, Mode::Scroll),
+                TIMER_RECORD => capture(hwnd, Mode::Record),
                 _ => {}
             }
             0
@@ -356,7 +381,8 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
 unsafe fn on_menu(hwnd: HWND) {
     let s = SETTINGS.get();
     let startup = settings::startup_enabled();
-    match tray::show_menu(hwnd, &s, startup, COUNTDOWN.get()) {
+    let recording = RECORDING.with(|r| r.borrow().is_some());
+    match tray::show_menu(hwnd, &s, startup, COUNTDOWN.get(), recording) {
         cmd if cmd > tray::CMD_DELAY && tray::DELAYS.contains(&(cmd - tray::CMD_DELAY)) => {
             start_countdown(hwnd, cmd - tray::CMD_DELAY);
         }
@@ -376,6 +402,13 @@ unsafe fn on_menu(hwnd: HWND) {
         }
         tray::CMD_SCROLL => {
             SetTimer(hwnd, TIMER_SCROLL, 250, None);
+        }
+        tray::CMD_RECORD => {
+            SetTimer(hwnd, TIMER_RECORD, 250, None);
+        }
+        tray::CMD_STOP_RECORD => stop_recording(hwnd),
+        tray::CMD_RECORD_GIF => {
+            update_settings(|s| s.record_gif = !s.record_gif);
         }
         tray::CMD_GALLERY => open_gallery(None),
         tray::CMD_OPEN_FOLDER => shell_open(&output::screenshots_dir()),
@@ -412,7 +445,19 @@ unsafe fn on_menu(hwnd: HWND) {
 }
 
 unsafe fn capture(hwnd: HWND, mode: Mode) {
+    // While recording, the capture hotkey (or running `--record` again) stops it.
+    if RECORDING.with(|r| r.borrow().is_some()) {
+        return stop_recording(hwnd);
+    }
     if CAPTURING.replace(true) {
+        return;
+    }
+    if mode == Mode::Record {
+        let area = pick_area();
+        CAPTURING.set(false);
+        if let Some(area) = area {
+            start_recording(hwnd, area);
+        }
         return;
     }
     let image = take(mode);
@@ -426,6 +471,58 @@ unsafe fn capture(hwnd: HWND, mode: Mode) {
         (Some((image, false)), _) => deliver(hwnd, image),
         (None, _) => {}
     }
+}
+
+/// Lets the user pick an area with the overlay, in screen coordinates.
+fn pick_area() -> Option<RECT> {
+    let shot = capture::capture_screen()?;
+    let last = settings::last_region().and_then(|r| shot.to_image_rect(r));
+    let (selection, _) = overlay::select(&shot, capture::window_targets(&shot), last)?;
+    let (overlay::Selection::Area(r) | overlay::Selection::Window { rect: r, .. }) = selection;
+    Some(shot.to_screen_rect(r))
+}
+
+unsafe fn start_recording(hwnd: HWND, area: RECT) {
+    match record::start(hwnd, area, SETTINGS.get().record_gif) {
+        Ok(recording) => {
+            RECORDING.with(|r| *r.borrow_mut() = Some(recording));
+            let hotkey = SETTINGS.get().hotkey.name();
+            tray::set_tip(hwnd, &format!("{APP_NAME} — recording. Press {hotkey} or Stop to finish"));
+        }
+        Err(e) => notify(hwnd, "Couldn't start recording", &e),
+    }
+}
+
+/// Stops recording; the file is finished on a worker thread and reported as `WM_APP_RECORDED`.
+unsafe fn stop_recording(hwnd: HWND) {
+    let Some(recording) = RECORDING.with(|r| r.borrow_mut().take()) else { return };
+    tray::set_tip(hwnd, &tip(SETTINGS.get().hotkey));
+    let finishing = recording.stop();
+    let target = hwnd as isize;
+    std::thread::spawn(move || {
+        let result = finishing.join().unwrap_or_else(|_| Err("The recording stopped unexpectedly".into()));
+        let result = Box::into_raw(Box::new(result));
+        if unsafe { PostMessageW(target as HWND, WM_APP_RECORDED, 0, result as LPARAM) } == 0 {
+            drop(unsafe { Box::from_raw(result) });
+        }
+    });
+}
+
+unsafe fn on_recorded(hwnd: HWND, result: Result<PathBuf, String>) {
+    let path = match result {
+        Ok(path) => path,
+        Err(e) => return notify(hwnd, "Couldn't save the recording", &e),
+    };
+    // Copied as a file, so it pastes straight into a chat or email.
+    let copied = output::copy_files_to_clipboard(hwnd, std::slice::from_ref(&path)).is_ok();
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    LAST_SAVED.with(|l| *l.borrow_mut() = Some(path));
+    let detail = if copied { "copied as a file" } else { "saved" };
+    notify(hwnd, "Recording saved", &format!("{name} — {detail}. Click to play it."));
+}
+
+fn is_video(path: &Path) -> bool {
+    matches!(path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(), Some("mp4" | "gif"))
 }
 
 /// Recognises the text in a capture on a worker thread; the result comes back as `WM_APP_OCR`.

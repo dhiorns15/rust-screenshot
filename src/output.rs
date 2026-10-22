@@ -133,18 +133,23 @@ pub fn screenshots_dir() -> PathBuf {
 }
 
 pub fn next_path() -> Result<PathBuf, String> {
+    new_path("Screenshot", "png")
+}
+
+/// A new, unused "`kind` YYYY-MM-DD HHMMSS.`ext`" path in the screenshots folder.
+pub fn new_path(kind: &str, ext: &str) -> Result<PathBuf, String> {
     let dir = screenshots_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("Can't create {}: {e}", dir.display()))?;
     let mut t = unsafe { std::mem::zeroed() };
     unsafe { GetLocalTime(&mut t) };
     let base = format!(
-        "Screenshot {:04}-{:02}-{:02} {:02}{:02}{:02}",
+        "{kind} {:04}-{:02}-{:02} {:02}{:02}{:02}",
         t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
     );
-    let mut path = dir.join(format!("{base}.png"));
+    let mut path = dir.join(format!("{base}.{ext}"));
     let mut n = 2;
     while path.exists() {
-        path = dir.join(format!("{base} ({n}).png"));
+        path = dir.join(format!("{base} ({n}).{ext}"));
         n += 1;
     }
     Ok(path)

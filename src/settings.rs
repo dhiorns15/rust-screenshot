@@ -20,6 +20,7 @@ pub struct Settings {
     pub win_shift_s: bool,
     pub open_editor: bool,
     pub open_library_on_launch: bool,
+    pub record_gif: bool,
 }
 
 impl Default for Settings {
@@ -31,6 +32,7 @@ impl Default for Settings {
             win_shift_s: true,
             open_editor: false,
             open_library_on_launch: false,
+            record_gif: false,
         }
     }
 }
@@ -47,6 +49,7 @@ impl Settings {
             win_shift_s: flag("WinShiftS", d.win_shift_s),
             open_editor: flag("OpenEditor", d.open_editor),
             open_library_on_launch: flag("OpenLibraryOnLaunch", d.open_library_on_launch),
+            record_gif: flag("RecordGif", d.record_gif),
         }
     }
 
@@ -57,6 +60,7 @@ impl Settings {
         write_dword("WinShiftS", self.win_shift_s as u32);
         write_dword("OpenEditor", self.open_editor as u32);
         write_dword("OpenLibraryOnLaunch", self.open_library_on_launch as u32);
+        write_dword("RecordGif", self.record_gif as u32);
     }
 }
 

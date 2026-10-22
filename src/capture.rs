@@ -92,6 +92,15 @@ pub fn capture_screen() -> Option<Screenshot> {
 
 /// Captures part of the screen, given in virtual-screen coordinates.
 pub fn capture_rect(r: RECT) -> Option<Image> {
+    grab(r, false)
+}
+
+/// Like `capture_rect`, with the mouse pointer drawn in (for recordings).
+pub fn capture_rect_with_cursor(r: RECT) -> Option<Image> {
+    grab(r, true)
+}
+
+fn grab(r: RECT, cursor: bool) -> Option<Image> {
     let (x, y, w, h) = (r.left, r.top, r.right - r.left, r.bottom - r.top);
     if w <= 0 || h <= 0 {
         return None;
@@ -104,6 +113,9 @@ pub fn capture_rect(r: RECT) -> Option<Image> {
         if !bitmap.is_null() {
             let old = SelectObject(mem, bitmap);
             if BitBlt(mem, 0, 0, w, h, screen, x, y, SRCCOPY | CAPTUREBLT) != 0 {
+                if cursor {
+                    draw_cursor(mem, x, y);
+                }
                 GdiFlush();
                 let mut data = std::slice::from_raw_parts(bits, (w * h * 4) as usize).to_vec();
                 for px in data.chunks_exact_mut(4) {
@@ -117,6 +129,26 @@ pub fn capture_rect(r: RECT) -> Option<Image> {
         DeleteDC(mem);
         ReleaseDC(null_mut(), screen);
         image
+    }
+}
+
+/// Draws the current mouse pointer into `dc`, whose top-left is at screen (`x`, `y`).
+unsafe fn draw_cursor(dc: HDC, x: i32, y: i32) {
+    let mut ci: CURSORINFO = zeroed();
+    ci.cbSize = size_of::<CURSORINFO>() as u32;
+    if GetCursorInfo(&mut ci) == 0 || ci.flags & CURSOR_SHOWING == 0 {
+        return;
+    }
+    let mut info: ICONINFO = zeroed();
+    if GetIconInfo(ci.hCursor, &mut info) == 0 {
+        return;
+    }
+    let (px, py) = (ci.ptScreenPos.x - x - info.xHotspot as i32, ci.ptScreenPos.y - y - info.yHotspot as i32);
+    DrawIconEx(dc, px, py, ci.hCursor, 0, 0, 0, null_mut(), DI_NORMAL);
+    for bitmap in [info.hbmMask, info.hbmColor] {
+        if !bitmap.is_null() {
+            DeleteObject(bitmap);
+        }
     }
 }
 

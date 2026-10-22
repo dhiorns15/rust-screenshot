@@ -34,6 +34,9 @@ pub const CMD_CANCEL_DELAY: u32 = 13;
 pub const CMD_TEXT: u32 = 14;
 pub const CMD_LAST: u32 = 15;
 pub const CMD_SCROLL: u32 = 16;
+pub const CMD_RECORD: u32 = 17;
+pub const CMD_STOP_RECORD: u32 = 18;
+pub const CMD_RECORD_GIF: u32 = 19;
 /// `CMD_DELAY + n` starts a capture in `n` seconds.
 pub const CMD_DELAY: u32 = 100;
 pub const DELAYS: [u32; 3] = [3, 5, 10];
@@ -81,7 +84,7 @@ pub unsafe fn notify(hwnd: HWND, icon: HICON, title: &str, text: &str) {
 
 /// Shows the context menu at the cursor and returns the chosen command (0 if dismissed).
 /// `countdown` is the seconds left on a delayed capture, or 0.
-pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, startup: bool, countdown: u32) -> u32 {
+pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, startup: bool, countdown: u32, recording: bool) -> u32 {
     let menu = CreatePopupMenu();
     let item = |id: u32, text: &str, checked: bool| {
         let text = wide(text);
@@ -96,6 +99,11 @@ pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, startup: bool, countdow
     item(CMD_FULL, "Capture all screens", false);
     item(CMD_LAST, "Capture last region", false);
     item(CMD_SCROLL, "Scrolling capture", false);
+    if recording {
+        item(CMD_STOP_RECORD, "Stop recording", false);
+    } else {
+        item(CMD_RECORD, "Record screen area", false);
+    }
     item(CMD_TEXT, "Capture text (OCR)", false);
     if countdown > 0 {
         item(CMD_CANCEL_DELAY, &format!("Cancel delayed capture ({countdown} s)"), false);
@@ -116,6 +124,7 @@ pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, startup: bool, countdow
     item(CMD_WIN_SHIFT_S, "Also take over Win+Shift+S", settings.win_shift_s);
     item(CMD_OPEN_EDITOR, "Open editor after capture", settings.open_editor);
     item(CMD_SAVE, "Save screenshots to folder", settings.save_to_folder);
+    item(CMD_RECORD_GIF, "Record as GIF instead of MP4", settings.record_gif);
     item(CMD_NOTIFY, "Show notifications", settings.notify);
     item(CMD_STARTUP, "Start with Windows", startup);
     item(CMD_LIBRARY_ON_LAUNCH, "Open library on launch", settings.open_library_on_launch);
