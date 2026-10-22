@@ -76,8 +76,8 @@ Run `rsnip.exe`. It sits in the notification area.
 | Select | Drag a rectangle, or click to capture the highlighted window. If other windows overlap it, it is brought to the front and captured cleanly |
 | One screen | Press Enter or F in the selection overlay to capture the monitor under the mouse |
 | All screens | Press A in the selection overlay, or use *Capture all screens* in the tray menu |
-| Copy text (OCR) | Tray menu → *Capture text (OCR)*: select an area and its text is copied to the clipboard. In the editor, *Copy text* reads the whole image. Uses the OCR built into Windows |
-| Pin to screen | Press P in the selection overlay to pin the highlighted area, or use *Pin* in the editor or a thumbnail's right-click menu. The pin floats above other windows: drag to move, mouse wheel to fade, Ctrl+wheel to zoom, right-click to copy or save, double-click or Esc to close |
+| Copy text (OCR) | Tray menu → *Capture text (OCR)*: select an area and its text is copied to the clipboard. In the editor, *Export → Copy text (OCR)* reads the whole image. Uses the OCR built into Windows |
+| Pin to screen | Press P in the selection overlay to pin the highlighted area, or use *Export → Pin to screen* in the editor or a thumbnail's right-click menu. The pin floats above other windows: drag to move, mouse wheel to fade, Ctrl+wheel to zoom, right-click to copy or save, double-click or Esc to close |
 | Fine-tune | A magnifier next to the cursor shows the pixels under it with their position and colour (M hides it). Arrow keys move the mouse 1 px, Shift+arrows 10 px, including while dragging. C copies the colour under the cursor as #RRGGBB |
 | Cancel | Esc or right-click |
 | Same area again | Tray menu → *Capture last region*, or R in the selection overlay, captures exactly the area you captured last time |
@@ -109,6 +109,10 @@ Settings are stored in `HKCU\Software\RSnip`.
 
 ### Editor
 
+The toolbar has the tools on the left (selecting; drawing; text and marking up; hiding; cropping) and
+undo/redo, *Copy*, *Save* and the *Export* menu on the right. The row below shows only the options for
+the current tool or selected annotation (colour, size, shadow, delete) and a hint on how to use it.
+
 | Tool | Key | |
 | --- | --- | --- |
 | Select | V | click an annotation to select it; drag to move it, drag its handles to resize it (arrows: drag either end) |
@@ -116,18 +120,18 @@ Settings are stored in `HKCU\Software\RSnip`.
 | Line | L | drag; hold Shift to snap to 45° |
 | Box | B | drag |
 | Ellipse | E | drag |
-| Highlight | H | drag; multiply-blended like a real highlighter |
-| Blur | U | drag; strong enough to make text unreadable |
-| Pixelate | X | drag; mosaic over sensitive content |
-| Redact | R | drag; a solid box (black by default) that hides content for certain |
-| Spotlight | S | drag; dims everything outside the area |
 | Pen | P | freehand |
 | Text | T | click, type, Enter. *Shadow* (on by default) adds a soft drop shadow for readability. Click existing text (or double-click it with any shape tool) to select and edit it; drag text to move it. While selected, resize it with the Size slider or the corner handle, and move it with the grip on its top-left corner. Clear it to delete |
 | Step | N | click to drop 1, 2, 3… markers |
+| Highlight | H | drag; multiply-blended like a real highlighter |
+| Spotlight | S | drag; dims everything outside the area |
+| Blur | U | drag; strong enough to make text unreadable |
+| Pixelate | X | drag; mosaic over sensitive content |
+| Redact | R | drag; a solid box (black by default) that hides content for certain |
 | Crop | C | drag to select an area, adjust it by dragging its edges, corners or middle, then click *Crop* (or press Enter, or double-click inside it). *Cancel* or Esc discards it. Undoable |
 
 Whatever you just drew stays selected (except pen strokes), so you can adjust it straight away; the
-Select tool picks any annotation. While something is selected, the toolbar's colours, *Size* and
+Select tool picks any annotation. While something is selected, the options row's colours, *Size* and
 *Shadow* change it, Delete removes it, arrow keys nudge it (Shift: 10 px) and Esc deselects it.
 Each move, resize or restyle is one undo step.
 
@@ -138,9 +142,10 @@ deleted outside RSnip is cleaned up automatically.
 
 Ctrl+Z / Ctrl+Y undo/redo, Ctrl+C copies the edited image, Ctrl+S overwrites the file,
 Ctrl+Shift+S saves a copy, Ctrl+scroll zooms, Ctrl+0 fits to the window.
-The *Export* menu saves a JPG copy, or copies the image *as a file* so it pastes as an attachment into
-a folder, chat or email. Its *Border* and *Drop shadow* options are added to every copy, save and
-export (the annotations stay editable without them).
+The *Export* menu saves a copy (PNG or JPG), copies the image *as a file* so it pastes as an
+attachment into a folder, chat or email, copies the text in it (OCR), or pins it to the screen. Its
+*Border* and *Drop shadow* options are added to every copy, save and export (the annotations stay
+editable without them).
 The library groups screenshots by date (Today, Yesterday, This week, …). Ctrl+click and Shift+click
 select several, to copy them as files, delete them, pin them or drag them out together.
 Recordings appear with an MP4/GIF badge and open in your video player.

@@ -21,7 +21,7 @@ use eframe::egui::{
 
 use crate::update;
 use doc::{apply_effects, flatten, render, Doc, Effects};
-use editor::{Editor, Tool, ToolState, PALETTE, TEXT_SIZES, TOOLS};
+use editor::{Editor, Tool, ToolState, GROUP_STARTS, PALETTE, TEXT_SIZES, TOOLS};
 
 pub const TITLE: &str = "RSnip Library";
 const THUMB: Vec2 = Vec2::new(200.0, 112.0);
@@ -417,93 +417,136 @@ impl App {
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let enabled = self.editor.is_some();
-            for (tool, label, _, help) in TOOLS {
-                let selected = self.tools.tool == tool;
-                if ui.add_enabled(enabled, egui::SelectableLabel::new(selected, label)).on_hover_text(help).clicked() {
-                    if let Some(editor) = &mut self.editor {
-                        editor.finish_text(&self.tools);
-                    }
-                    self.tools.tool = tool;
-                }
-            }
-            ui.separator();
-
-            ui.add_enabled_ui(enabled && self.tools.uses_color(), |ui| {
-                for color in PALETTE {
-                    let (rect, response) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-                    let selected = *self.tools.color_mut() == color;
-                    ui.painter().rect_filled(rect, 3.0, color);
-                    let outline = if selected { Stroke::new(2.0f32, Color32::WHITE) } else { Stroke::new(1.0f32, Color32::from_gray(70)) };
-                    ui.painter().rect_stroke(rect.expand(if selected { 2.0 } else { 0.0 }), 4.0, outline);
-                    if response.clicked() {
-                        *self.tools.color_mut() = color;
-                    }
-                }
-                egui::color_picker::color_edit_button_srgba(ui, self.tools.color_mut(), egui::color_picker::Alpha::Opaque);
+        let enabled = self.editor.is_some();
+        ui.spacing_mut().item_spacing.x = 4.0;
+        // Actions on the right; the tools take the rest of the row, wrapping if it's narrow. (The
+        // outer row keeps the right-to-left layout from taking the panel's whole height.)
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                self.actions(ui, enabled);
+                ui.separator();
+                ui.with_layout(Layout::left_to_right(Align::Center).with_main_wrap(true), |ui| self.tool_buttons(ui, enabled));
             });
-            // These edit the selected annotation when there is one, otherwise the tool's defaults.
-            if self.tools.style_tool() == Tool::Text {
-                ui.add_enabled(enabled, egui::Slider::new(self.tools.text_size_mut(), TEXT_SIZES).step_by(1.0).text("Size"))
-                    .on_hover_text("Text size. Or drag the handle on the selected text's corner.");
-                ui.add_enabled(enabled, egui::Checkbox::new(self.tools.shadow_mut(), "Shadow"))
-                    .on_hover_text("Drop shadow behind text, for readability on busy backgrounds");
-            } else {
-                let size_applies = self.tools.uses_width();
-                ui.add_enabled(enabled && size_applies, egui::Slider::new(self.tools.width_mut(), 1.0..=24.0).step_by(1.0).text("Size"));
+        });
+        if enabled {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| self.tool_options(ui));
+        }
+    }
+
+    fn tool_buttons(&mut self, ui: &mut egui::Ui, enabled: bool) {
+        for (tool, label, _, help) in TOOLS {
+            if GROUP_STARTS.contains(&tool) {
+                ui.separator();
             }
-            if self.tools.selection.is_some() && ui.button("Delete").on_hover_text("Delete the selected annotation (Del)").clicked() {
+            let selected = self.tools.tool == tool;
+            if ui.add_enabled(enabled, egui::SelectableLabel::new(selected, label)).on_hover_text(help).clicked() {
+                if let Some(editor) = &mut self.editor {
+                    editor.finish_text(&self.tools);
+                }
+                self.tools.tool = tool;
+            }
+        }
+    }
+
+    /// Undo/redo, copy, save and the Export menu, added right to left.
+    fn actions(&mut self, ui: &mut egui::Ui, enabled: bool) {
+        ui.add_enabled_ui(enabled, |ui| ui.menu_button("Export ⏷", |ui| self.export_menu(ui)));
+        if ui.add_enabled(enabled && self.dirty(), egui::Button::new("Save")).on_hover_text("Overwrite the screenshot (Ctrl+S)").clicked() {
+            self.save(false);
+        }
+        if ui.add_enabled(enabled, egui::Button::new("Copy")).on_hover_text("Copy to clipboard (Ctrl+C)").clicked() {
+            self.copy();
+        }
+        ui.separator();
+        let (can_undo, can_redo) = self.editor.as_ref().map_or((false, false), |e| (e.doc.can_undo(), e.doc.can_redo()));
+        if ui.add_enabled(can_redo, egui::Button::new("⟳")).on_hover_text("Redo (Ctrl+Y)").clicked() {
+            let editor = self.editor.as_mut().unwrap();
+            editor.finish_text(&self.tools);
+            editor.doc.redo();
+        }
+        if ui.add_enabled(can_undo, egui::Button::new("⟲")).on_hover_text("Undo (Ctrl+Z)").clicked() {
+            let editor = self.editor.as_mut().unwrap();
+            editor.finish_text(&self.tools);
+            editor.doc.undo();
+        }
+    }
+
+    /// The second toolbar row: only what applies to the current tool or selected annotation, which
+    /// these edit (otherwise they set the tool's defaults), then a hint on how to use it.
+    fn tool_options(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().slider_width = 120.0;
+        if self.tools.uses_color() {
+            for color in PALETTE {
+                let (rect, response) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
+                let selected = *self.tools.color_mut() == color;
+                ui.painter().rect_filled(rect, 3.0, color);
+                let outline = if selected { Stroke::new(2.0f32, Color32::WHITE) } else { Stroke::new(1.0f32, Color32::from_gray(70)) };
+                ui.painter().rect_stroke(rect.expand(if selected { 2.0 } else { 0.0 }), 4.0, outline);
+                if response.clicked() {
+                    *self.tools.color_mut() = color;
+                }
+            }
+            // Set apart: it shows the current colour, which may also be one of the swatches.
+            ui.add_space(6.0);
+            ui.scope(|ui| {
+                ui.spacing_mut().interact_size = Vec2::splat(18.0);
+                egui::color_picker::color_edit_button_srgba(ui, self.tools.color_mut(), egui::color_picker::Alpha::Opaque)
+                    .on_hover_text("Pick any colour");
+            });
+            ui.separator();
+        }
+        if self.tools.style_tool() == Tool::Text {
+            ui.label("Size");
+            ui.add(egui::Slider::new(self.tools.text_size_mut(), TEXT_SIZES).step_by(1.0).fixed_decimals(0))
+                .on_hover_text("Text size. Or drag the handle on the selected text's corner.");
+            ui.checkbox(self.tools.shadow_mut(), "Shadow")
+                .on_hover_text("Drop shadow behind text, for readability on busy backgrounds");
+            ui.separator();
+        } else if self.tools.uses_width() {
+            ui.label("Size");
+            ui.add(egui::Slider::new(self.tools.width_mut(), 1.0..=24.0).step_by(1.0).fixed_decimals(0));
+            ui.separator();
+        }
+        let hint = if self.tools.selection.is_some() {
+            if ui.button("Delete").on_hover_text("Delete the selected annotation (Del)").clicked() {
                 if let Some(editor) = &mut self.editor {
                     editor.delete_selected(&mut self.tools);
                 }
             }
-            ui.separator();
-
-            let (can_undo, can_redo) = self.editor.as_ref().map_or((false, false), |e| (e.doc.can_undo(), e.doc.can_redo()));
-            if ui.add_enabled(can_undo, egui::Button::new("Undo")).on_hover_text("Ctrl+Z").clicked() {
-                let editor = self.editor.as_mut().unwrap();
-                editor.finish_text(&self.tools);
-                editor.doc.undo();
-            }
-            if ui.add_enabled(can_redo, egui::Button::new("Redo")).on_hover_text("Ctrl+Y").clicked() {
-                let editor = self.editor.as_mut().unwrap();
-                editor.finish_text(&self.tools);
-                editor.doc.redo();
-            }
-            ui.separator();
-            if ui.add_enabled(enabled, egui::Button::new("Copy")).on_hover_text("Copy to clipboard (Ctrl+C)").clicked() {
-                self.copy();
-            }
-            if platform::EXTRAS {
-                if ui.add_enabled(enabled, egui::Button::new("Pin")).on_hover_text("Keep the image on top of other windows for reference").clicked() {
-                    self.pin();
-                }
-                let reading = self.ocr.is_some();
-                if ui.add_enabled(enabled && !reading, egui::Button::new("Copy text")).on_hover_text("Recognise the text in the image and copy it (OCR)").clicked() {
-                    self.copy_text();
-                }
-            }
-            let dirty = self.dirty();
-            if ui.add_enabled(enabled && dirty, egui::Button::new("Save")).on_hover_text("Overwrite the screenshot (Ctrl+S)").clicked() {
-                self.save(false);
-            }
-            if ui.add_enabled(enabled, egui::Button::new("Save copy")).on_hover_text("Save as a new file (Ctrl+Shift+S)").clicked() {
-                self.save(true);
-            }
-            ui.add_enabled_ui(enabled, |ui| ui.menu_button("Export ▾", |ui| self.export_menu(ui)));
-        });
+            "Drag to move it, or drag its handles to resize it. Esc deselects it"
+        } else {
+            TOOLS.iter().find(|t| t.0 == self.tools.tool).map_or("", |t| t.3)
+        };
+        ui.add(egui::Label::new(RichText::new(hint).weak()).truncate());
     }
 
     fn export_menu(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Save copy…").on_hover_text("Save as a new file (Ctrl+Shift+S)").clicked() {
+            self.save(true);
+            ui.close_menu();
+        }
         if ui.button("Save copy as JPG").clicked() {
             self.save_jpg();
             ui.close_menu();
         }
-        if platform::EXTRAS && ui.button("Copy as file").on_hover_text("Paste it into a folder, chat or email as an attachment").clicked() {
-            self.copy_as_file();
-            ui.close_menu();
+        if platform::EXTRAS {
+            if ui.button("Copy as file").on_hover_text("Paste it into a folder, chat or email as an attachment").clicked() {
+                self.copy_as_file();
+                ui.close_menu();
+            }
+            ui.separator();
+            let reading = self.ocr.is_some();
+            let copy_text = ui.add_enabled(!reading, egui::Button::new("Copy text (OCR)"));
+            if copy_text.on_hover_text("Recognise the text in the image and copy it").clicked() {
+                self.copy_text();
+                ui.close_menu();
+            }
+            if ui.button("Pin to screen").on_hover_text("Keep the image on top of other windows for reference").clicked() {
+                self.pin();
+                ui.close_menu();
+            }
         }
         ui.separator();
         ui.label(RichText::new("Added to copies, saves and exports").small().weak());

@@ -22,22 +22,26 @@ pub enum Tool {
     Crop,
 }
 
+/// The toolbar's tools, in order: (tool, label, shortcut key, tooltip).
 pub const TOOLS: [(Tool, &str, Key, &str); 14] = [
     (Tool::Select, "Select", Key::V, "Click an annotation to select it, then move, resize, restyle or delete it (V)"),
     (Tool::Arrow, "Arrow", Key::A, "Drag to draw an arrow; hold Shift to snap to 45° (A)"),
     (Tool::Line, "Line", Key::L, "Drag to draw a line; hold Shift to snap to 45° (L)"),
     (Tool::Box, "Box", Key::B, "Drag to draw a box (B)"),
     (Tool::Ellipse, "Ellipse", Key::E, "Drag to draw an ellipse (E)"),
-    (Tool::Highlight, "Highlight", Key::H, "Drag to highlight an area (H)"),
-    (Tool::Blur, "Blur", Key::U, "Drag to blur sensitive content (U)"),
-    (Tool::Pixelate, "Pixelate", Key::X, "Drag to pixelate sensitive content (X)"),
-    (Tool::Redact, "Redact", Key::R, "Drag to cover content with a solid box (R)"),
-    (Tool::Spotlight, "Spotlight", Key::S, "Drag to dim everything outside an area (S)"),
     (Tool::Pen, "Pen", Key::P, "Draw freehand (P)"),
     (Tool::Text, "Text", Key::T, "Click to type text (T)"),
     (Tool::Step, "Step", Key::N, "Click to add numbered steps 1, 2, 3… (N)"),
+    (Tool::Highlight, "Highlight", Key::H, "Drag to highlight an area (H)"),
+    (Tool::Spotlight, "Spotlight", Key::S, "Drag to dim everything outside an area (S)"),
+    (Tool::Blur, "Blur", Key::U, "Drag to blur sensitive content (U)"),
+    (Tool::Pixelate, "Pixelate", Key::X, "Drag to pixelate sensitive content (X)"),
+    (Tool::Redact, "Redact", Key::R, "Drag to cover content with a solid box (R)"),
     (Tool::Crop, "Crop", Key::C, "Drag to select an area to crop, then confirm (C)"),
 ];
+
+/// The first tool of each toolbar group after the first (drawing, marking up, hiding, cropping).
+pub const GROUP_STARTS: [Tool; 4] = [Tool::Arrow, Tool::Text, Tool::Blur, Tool::Crop];
 
 /// egui font family holding the renderer's font, so the text preview matches the saved result.
 pub const ANNOTATION_FONT: &str = "annotation";
