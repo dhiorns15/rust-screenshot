@@ -63,7 +63,8 @@ library opens; set `"CheckUpdates": 0` in the settings file to turn that off).
 
 To publish a release, bump `version` in `Cargo.toml`, commit, then `git tag vX.Y.Z && git push --tags`.
 The release workflow runs the tests and attaches the Windows installer, exe and zip, and a Linux
-build, to a new GitHub Release.
+build, to a new GitHub Release. It then installs the previous release on a fresh machine and checks
+that `rsnip --update` updates it to the new one.
 
 ## Usage
 

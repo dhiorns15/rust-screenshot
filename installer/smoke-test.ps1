@@ -13,7 +13,10 @@ $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 
 function Install([string[]]$Extra = @()) {
     $flags = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dir`"", '/TASKS=startup') + $Extra
-    $p = Start-Process $setup -ArgumentList $flags -Wait -PassThru
+    # Wait for setup alone: -Wait would also wait for the RSnip it restarts.
+    $p = Start-Process $setup -ArgumentList $flags -PassThru
+    $null = $p.Handle # keeps the exit code readable
+    $p.WaitForExit()
     if ($p.ExitCode) { throw "Setup exited with code $($p.ExitCode)" }
 }
 

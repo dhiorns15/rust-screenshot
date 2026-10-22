@@ -44,3 +44,14 @@ jobs:
         run: |
           tar -czf "rsnip-$GITHUB_REF_NAME-linux-x64.tar.gz" -C target/release rsnip -C "$GITHUB_WORKSPACE" README.md LICENSE
           gh release upload "$GITHUB_REF_NAME" "rsnip-$GITHUB_REF_NAME-linux-x64.tar.gz"
+
+  # Updates the previous release to this one with `rsnip --update`, as users' copies will.
+  update:
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: installer/update-test.ps1
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
