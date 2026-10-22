@@ -12,6 +12,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The release notes list every commit since the previous tag.
+          fetch-depth: 0
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
@@ -24,11 +27,14 @@ jobs:
           "ZIP=$zip" >> $env:GITHUB_ENV
       - run: installer/build.ps1
         shell: pwsh
+      - name: Release notes
+        shell: bash
+        run: bash ci/release-notes.sh "$GITHUB_REF_NAME" > notes.md && cat notes.md
       - name: Publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME (Get-ChildItem target/installer/*-setup.exe).FullName target/release/rsnip.exe $env:ZIP --title "RSnip $env:GITHUB_REF_NAME" --generate-notes
+        run: gh release create $env:GITHUB_REF_NAME (Get-ChildItem target/installer/*-setup.exe).FullName target/release/rsnip.exe $env:ZIP --title "RSnip $env:GITHUB_REF_NAME" --notes-file notes.md
 
   linux:
     needs: release

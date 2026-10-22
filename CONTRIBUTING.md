@@ -104,7 +104,9 @@ To use the running app from a tool or an AI agent, build with `--features inspec
 ## Releases
 
 Maintainers release by bumping `version` in `Cargo.toml` and pushing a `vX.Y.Z` tag; the release
-workflow builds, tests and publishes everything.
+workflow builds, tests and publishes everything. Its notes list every commit since the previous
+release, one line each with a link (`ci/release-notes.sh`), so write commit subjects that make sense
+to users reading them there.
 
 ## License
 
