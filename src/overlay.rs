@@ -24,11 +24,12 @@ const PILL: COLORREF = 0x00202020;
 const WHITE: COLORREF = 0x00FFFFFF;
 const BLACK: COLORREF = 0x00000000;
 const HINT: &str = "Drag to select an area   ·   Click a window   ·   Enter: this screen   ·   A: all screens   ·   Esc: cancel\n\
-                    Arrows: nudge 1 px (Shift: 10)   ·   M: magnifier   ·   C: copy colour";
+                    Arrows: nudge 1 px (Shift: 10)   ·   M: magnifier   ·   C: copy colour   ·   P: pin the highlighted area on screen";
 const VK_A: u16 = b'A' as u16;
 const VK_C: u16 = b'C' as u16;
 const VK_F: u16 = b'F' as u16;
 const VK_M: u16 = b'M' as u16;
+const VK_P: u16 = b'P' as u16;
 /// Source pixels across the magnifier (odd, so one sits in the middle).
 const MAG_SPAN: i32 = 15;
 
@@ -82,6 +83,8 @@ struct State {
     magnifier: bool,
     /// Replaces the magnifier's coordinates after C copies a colour, until the mouse moves.
     note: Option<String>,
+    /// The selection is to be pinned on screen rather than saved (P).
+    pin: bool,
     done: bool,
     result: Option<Selection>,
 }
@@ -110,8 +113,9 @@ fn dim(pixels: &[u8]) -> Vec<u8> {
     pixels.iter().map(|&c| ((c as u32 * 115) >> 8) as u8).collect()
 }
 
-/// Lets the user pick a region of `shot`. Returns it in image coordinates, or `None` if cancelled.
-pub fn select(shot: &Screenshot, targets: Vec<Target>) -> Option<Selection> {
+/// Lets the user pick a region of `shot`. Returns it in image coordinates and whether to pin it,
+/// or `None` if cancelled.
+pub fn select(shot: &Screenshot, targets: Vec<Target>) -> Option<(Selection, bool)> {
     unsafe {
         let (w, h) = (shot.image.width, shot.image.height);
         let screen = GetDC(null_mut());
@@ -170,6 +174,7 @@ pub fn select(shot: &Screenshot, targets: Vec<Target>) -> Option<Selection> {
             origin: POINT { x: shot.x, y: shot.y },
             magnifier: true,
             note: None,
+            pin: false,
             done: false,
             result: None,
         });
@@ -232,7 +237,7 @@ pub fn select(shot: &Screenshot, targets: Vec<Target>) -> Option<Selection> {
         OVERLAY_HWND.store(0, Relaxed);
         ShowWindow(hwnd, SW_HIDE);
         DestroyWindow(hwnd);
-        let result = (*ptr).result.take();
+        let result = (*ptr).result.take().map(|s| (s, (*ptr).pin));
         drop(Box::from_raw(ptr));
         DeleteObject(font);
         result
@@ -428,6 +433,13 @@ impl State {
                 let mut p: POINT = zeroed();
                 GetCursorPos(&mut p);
                 SetCursorPos(p.x + dx, p.y + dy);
+            }
+            VK_P => {
+                let selected = self.selection();
+                if selected.is_some() {
+                    self.pin = true;
+                    self.finish(selected);
+                }
             }
             VK_M => {
                 self.magnifier = !self.magnifier;

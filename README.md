@@ -41,6 +41,7 @@ Run `rsnip.exe`. It sits in the notification area.
 | One screen | Press Enter or F in the selection overlay to capture the monitor under the mouse |
 | All screens | Press A in the selection overlay, or use *Capture all screens* in the tray menu |
 | Copy text (OCR) | Tray menu → *Capture text (OCR)*: select an area and its text is copied to the clipboard. In the editor, *Copy text* reads the whole image. Uses the OCR built into Windows |
+| Pin to screen | Press P in the selection overlay to pin the highlighted area, or use *Pin* in the editor or a thumbnail's right-click menu. The pin floats above other windows: drag to move, mouse wheel to fade, Ctrl+wheel to zoom, right-click to copy or save, double-click or Esc to close |
 | Fine-tune | A magnifier next to the cursor shows the pixels under it with their position and colour (M hides it). Arrow keys move the mouse 1 px, Shift+arrows 10 px, including while dragging. C copies the colour under the cursor as #RRGGBB |
 | Cancel | Esc or right-click |
 | Delayed capture | Tray menu → *Delayed capture* → 3, 5 or 10 seconds, to open a menu or tooltip first. The countdown shows in the tray tooltip |
@@ -106,6 +107,7 @@ rsnip --full           capture all monitors
 rsnip --delay N        start a region capture in N seconds
 rsnip --text           select an area and copy the text in it
 rsnip --gallery [file] open the library, optionally with a file selected
+rsnip --pin <file>      pin an image on top of other windows
 ```
 
 ## Troubleshooting

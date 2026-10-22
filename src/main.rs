@@ -6,6 +6,7 @@
 //! `rsnip --delay N`  starts a region capture in N seconds.
 //! `rsnip --text`     selects a region and copies the text in it.
 //! `rsnip --gallery [file]` opens the screenshot library / editor.
+//! `rsnip --pin <file>` shows an image pinned on top of other windows.
 
 #![windows_subsystem = "windows"]
 
@@ -17,6 +18,7 @@ mod icon_art;
 mod ocr;
 mod output;
 mod overlay;
+mod pin;
 mod prompt;
 mod settings;
 mod tray;
@@ -96,9 +98,10 @@ thread_local! {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("--gallery") {
-        gallery::run(args.get(1).map(PathBuf::from));
-        return;
+    match args.first().map(String::as_str) {
+        Some("--gallery") => return gallery::run(args.get(1).map(PathBuf::from)),
+        Some("--pin") => return args.get(1).map_or((), |file| pin::run(PathBuf::from(file))),
+        _ => {}
     }
     let mode = args.iter().find_map(|a| match a.as_str() {
         "--region" | "--capture" => Some(Mode::Region),
@@ -393,8 +396,12 @@ unsafe fn capture(hwnd: HWND, mode: Mode) {
     let image = take(mode);
     CAPTURING.set(false);
     match (image, mode) {
-        (Some(image), Mode::Text) => read_text(hwnd, image),
-        (Some(image), _) => deliver(hwnd, image),
+        (Some((image, true)), _) => {
+            // Saving a big capture takes a moment; keep the hook's thread responsive.
+            std::thread::spawn(move || pin::pin_image(&image));
+        }
+        (Some((image, false)), Mode::Text) => read_text(hwnd, image),
+        (Some((image, false)), _) => deliver(hwnd, image),
         (None, _) => {}
     }
 }
@@ -425,21 +432,22 @@ unsafe fn on_text(hwnd: HWND, result: Result<String, String>) {
     notify(hwnd, &title, &first);
 }
 
-fn take(mode: Mode) -> Option<Image> {
+/// The captured image, and whether the user asked to pin it (P in the overlay).
+fn take(mode: Mode) -> Option<(Image, bool)> {
     let shot = capture::capture_screen()?;
     match mode {
-        Mode::Full => Some(shot.image),
+        Mode::Full => Some((shot.image, false)),
         Mode::Region | Mode::Text => {
             let targets = capture::window_targets(&shot);
-            match overlay::select(&shot, targets)? {
-                overlay::Selection::Area(r) | overlay::Selection::Window { rect: r, occluded: false, .. } => {
-                    Some(shot.image.crop(r))
-                }
+            let (selection, pin) = overlay::select(&shot, targets)?;
+            let image = match selection {
+                overlay::Selection::Area(r) | overlay::Selection::Window { rect: r, occluded: false, .. } => shot.image.crop(r),
                 // Something was on top of the window: raise it and capture it again cleanly.
                 overlay::Selection::Window { hwnd, rect, occluded: true } => {
-                    capture::capture_window_in_front(hwnd).or_else(|| Some(shot.image.crop(rect)))
+                    capture::capture_window_in_front(hwnd).unwrap_or_else(|| shot.image.crop(rect))
                 }
-            }
+            };
+            Some((image, pin))
         }
     }
 }

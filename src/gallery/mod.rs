@@ -300,6 +300,13 @@ impl App {
         }
     }
 
+    fn pin(&mut self) {
+        let Some(img) = self.rendered() else { return };
+        if let Err(e) = crate::pin::pin_image(&to_bgra(&img)) {
+            self.set_status(format!("Couldn't pin: {e}"));
+        }
+    }
+
     /// Starts reading the text in the edited image; `poll` copies it when done.
     fn copy_text(&mut self) {
         let Some(img) = self.rendered() else { return };
@@ -455,6 +462,9 @@ impl App {
             if ui.add_enabled(enabled, egui::Button::new("Copy")).on_hover_text("Copy to clipboard (Ctrl+C)").clicked() {
                 self.copy();
             }
+            if ui.add_enabled(enabled, egui::Button::new("Pin")).on_hover_text("Keep the image on top of other windows for reference").clicked() {
+                self.pin();
+            }
             let reading = self.ocr.is_some();
             if ui.add_enabled(enabled && !reading, egui::Button::new("Copy text")).on_hover_text("Recognise the text in the image and copy it (OCR)").clicked() {
                 self.copy_text();
@@ -561,7 +571,7 @@ impl App {
                     clicked = Some(entry.path.clone());
                 }
                 response.context_menu(|ui| {
-                    for label in ["Open in default app", "Show in folder", "Delete"] {
+                    for label in ["Open in default app", "Show in folder", "Pin to screen", "Delete"] {
                         if ui.button(label).clicked() {
                             action = Some((entry.path.clone(), label));
                             ui.close_menu();
@@ -577,6 +587,7 @@ impl App {
         match action {
             Some((path, "Open in default app")) => open_with_shell(&path),
             Some((path, "Show in folder")) => show_in_folder(&path),
+            Some((path, "Pin to screen")) => crate::pin::spawn(&path),
             Some((path, "Delete")) => self.delete(&path),
             _ => {}
         }
