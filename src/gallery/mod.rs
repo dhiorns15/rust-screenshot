@@ -97,6 +97,8 @@ struct App {
     status: Option<(String, Instant)>,
     /// Border/shadow added to everything the editor outputs.
     effects: Effects,
+    /// Text recognition running for "Copy text".
+    ocr: Option<Receiver<Result<String, String>>>,
 }
 
 impl App {
@@ -144,6 +146,7 @@ impl App {
             allow_close: false,
             status: None,
             effects: load_effects(),
+            ocr: None,
         };
         app.rescan();
         doc::prune_layers(&app.dir);
@@ -291,14 +294,22 @@ impl App {
 
     fn copy(&mut self) {
         let Some(img) = self.rendered() else { return };
-        // The clipboard's DIB has no transparency.
-        let img = flatten(&img);
-        let (width, height) = (img.width() as i32, img.height() as i32);
-        let data = img.into_raw().chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255]).collect();
-        match crate::output::copy_to_clipboard(null_mut(), &Image { width, height, data }) {
+        match crate::output::copy_to_clipboard(null_mut(), &to_bgra(&img)) {
             Ok(()) => self.set_status("Copied to clipboard"),
             Err(e) => self.set_status(e),
         }
+    }
+
+    /// Starts reading the text in the edited image; `poll` copies it when done.
+    fn copy_text(&mut self) {
+        let Some(img) = self.rendered() else { return };
+        let img = to_bgra(&img);
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::ocr::recognize(&img));
+        });
+        self.ocr = Some(rx);
+        self.set_status("Reading text…");
     }
 
     fn delete(&mut self, path: &Path) {
@@ -321,6 +332,22 @@ impl App {
             if let Some(thumb) = thumb {
                 let tex = ctx.load_texture(path.to_string_lossy(), thumb, TextureOptions::LINEAR);
                 self.thumbs.insert(path, (modified, tex));
+            }
+        }
+        if let Some(rx) = &self.ocr {
+            if let Ok(result) = rx.try_recv() {
+                self.ocr = None;
+                let copied = result.and_then(|text| {
+                    if text.trim().is_empty() {
+                        return Err("No text found in this image".into());
+                    }
+                    crate::output::copy_text_to_clipboard(null_mut(), &text).map(|()| text.lines().count())
+                });
+                match copied {
+                    Ok(1) => self.set_status("Copied 1 line of text"),
+                    Ok(n) => self.set_status(format!("Copied {n} lines of text")),
+                    Err(e) => self.set_status(e),
+                }
             }
         }
         if self.last_scan.elapsed() >= RESCAN_EVERY {
@@ -427,6 +454,10 @@ impl App {
             ui.separator();
             if ui.add_enabled(enabled, egui::Button::new("Copy")).on_hover_text("Copy to clipboard (Ctrl+C)").clicked() {
                 self.copy();
+            }
+            let reading = self.ocr.is_some();
+            if ui.add_enabled(enabled && !reading, egui::Button::new("Copy text")).on_hover_text("Recognise the text in the image and copy it (OCR)").clicked() {
+                self.copy_text();
             }
             let dirty = self.dirty();
             if ui.add_enabled(enabled && dirty, egui::Button::new("Save")).on_hover_text("Overwrite the screenshot (Ctrl+S)").clicked() {
@@ -701,6 +732,14 @@ fn load_effects() -> Effects {
     }
 }
 
+/// BGRA pixels for the Windows APIs, composited over white since they ignore transparency.
+fn to_bgra(img: &image::RgbaImage) -> Image {
+    let img = flatten(img);
+    let (width, height) = (img.width() as i32, img.height() as i32);
+    let data = img.into_raw().chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255]).collect();
+    Image { width, height, data }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -716,5 +755,25 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(back.dimensions(), (30, 20));
         assert!(back.get_pixel(15, 10).0.iter().all(|&c| c > 245), "transparency flattens to white");
+    }
+
+    #[test]
+    fn reads_rendered_text_back() {
+        use super::doc::{load_font, render, Shape, Snapshot};
+        let base = image::RgbaImage::from_pixel(420, 80, image::Rgba([255, 255, 255, 255]));
+        let text = Shape::Text {
+            pos: egui::Pos2::new(12.0, 14.0),
+            text: "Hello RSnip 123".into(),
+            color: egui::Color32::BLACK,
+            size: 40.0,
+            shadow: false,
+        };
+        let img = render(&Snapshot { base: std::sync::Arc::new(base), shapes: vec![text] }, load_font().as_ref());
+        match crate::ocr::recognize(&super::to_bgra(&img)) {
+            Ok(read) => assert!(read.to_lowercase().contains("hello rsnip 123"), "read {read:?}"),
+            // Server images (like CI's) may not have an OCR language installed.
+            Err(e) if e.starts_with("No text-recognition language") => eprintln!("skipped: {e}"),
+            Err(e) => panic!("{e}"),
+        }
     }
 }

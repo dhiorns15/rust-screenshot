@@ -4,6 +4,7 @@
 //! `rsnip --region`   starts a region capture (in the running instance if there is one).
 //! `rsnip --full`     captures every monitor.
 //! `rsnip --delay N`  starts a region capture in N seconds.
+//! `rsnip --text`     selects a region and copies the text in it.
 //! `rsnip --gallery [file]` opens the screenshot library / editor.
 
 #![windows_subsystem = "windows"]
@@ -13,6 +14,7 @@ mod gallery;
 mod hook;
 mod icon;
 mod icon_art;
+mod ocr;
 mod output;
 mod overlay;
 mod prompt;
@@ -49,15 +51,30 @@ pub const WM_APP_OVERLAY_KEY: u32 = WM_APP + 5;
 pub const WM_APP_HOTKEY_RECORDED: u32 = WM_APP + 6;
 /// Start a region capture in `wparam` seconds.
 pub const WM_APP_DELAYED: u32 = WM_APP + 7;
+/// Text recognition finished; `lparam` is a `Box<Result<String, String>>`.
+pub const WM_APP_OCR: u32 = WM_APP + 8;
 
 const TIMER_REGION: usize = 1;
 const TIMER_FULL: usize = 2;
 const TIMER_COUNTDOWN: usize = 3;
+const TIMER_TEXT: usize = 4;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Region = 0,
     Full = 1,
+    /// Select a region and copy the text in it.
+    Text = 2,
+}
+
+impl Mode {
+    fn from_wparam(w: usize) -> Mode {
+        match w {
+            1 => Mode::Full,
+            2 => Mode::Text,
+            _ => Mode::Region,
+        }
+    }
 }
 
 struct SaveResult {
@@ -86,6 +103,7 @@ fn main() {
     let mode = args.iter().find_map(|a| match a.as_str() {
         "--region" | "--capture" => Some(Mode::Region),
         "--full" => Some(Mode::Full),
+        "--text" => Some(Mode::Text),
         _ => None,
     });
     let delay = args.iter().position(|a| a == "--delay").and_then(|i| args.get(i + 1)?.parse().ok());
@@ -261,6 +279,10 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             }
             0
         }
+        WM_APP_OCR => {
+            on_text(hwnd, *Box::from_raw(lparam as *mut Result<String, String>));
+            0
+        }
         WM_APP_DELAYED => {
             start_countdown(hwnd, wparam as u32);
             0
@@ -270,12 +292,13 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             match wparam {
                 TIMER_REGION => capture(hwnd, Mode::Region),
                 TIMER_FULL => capture(hwnd, Mode::Full),
+                TIMER_TEXT => capture(hwnd, Mode::Text),
                 _ => {}
             }
             0
         }
         WM_APP_CAPTURE => {
-            capture(hwnd, if wparam == Mode::Full as usize { Mode::Full } else { Mode::Region });
+            capture(hwnd, Mode::from_wparam(wparam));
             0
         }
         WM_APP_SAVED => {
@@ -326,6 +349,9 @@ unsafe fn on_menu(hwnd: HWND) {
         tray::CMD_FULL => {
             SetTimer(hwnd, TIMER_FULL, 250, None);
         }
+        tray::CMD_TEXT => {
+            SetTimer(hwnd, TIMER_TEXT, 250, None);
+        }
         tray::CMD_GALLERY => open_gallery(None),
         tray::CMD_OPEN_FOLDER => shell_open(&output::screenshots_dir()),
         tray::CMD_HOTKEY => {
@@ -366,16 +392,44 @@ unsafe fn capture(hwnd: HWND, mode: Mode) {
     }
     let image = take(mode);
     CAPTURING.set(false);
-    if let Some(image) = image {
-        deliver(hwnd, image);
+    match (image, mode) {
+        (Some(image), Mode::Text) => read_text(hwnd, image),
+        (Some(image), _) => deliver(hwnd, image),
+        (None, _) => {}
     }
+}
+
+/// Recognises the text in a capture on a worker thread; the result comes back as `WM_APP_OCR`.
+fn read_text(hwnd: HWND, img: Image) {
+    let target = hwnd as isize;
+    std::thread::spawn(move || {
+        let result = Box::into_raw(Box::new(ocr::recognize(&img)));
+        if unsafe { PostMessageW(target as HWND, WM_APP_OCR, 0, result as LPARAM) } == 0 {
+            drop(unsafe { Box::from_raw(result) });
+        }
+    });
+}
+
+unsafe fn on_text(hwnd: HWND, result: Result<String, String>) {
+    let text = match result {
+        Ok(text) if text.trim().is_empty() => return notify(hwnd, "No text found", "Try selecting the text more closely."),
+        Ok(text) => text,
+        Err(e) => return notify(hwnd, "Couldn't read the text", &e),
+    };
+    if let Err(e) = output::copy_text_to_clipboard(hwnd, &text) {
+        return notify(hwnd, "Couldn't copy the text", &e);
+    }
+    let lines = text.lines().count();
+    let first: String = text.lines().next().unwrap_or_default().chars().take(60).collect();
+    let title = if lines == 1 { "Copied 1 line of text".to_string() } else { format!("Copied {lines} lines of text") };
+    notify(hwnd, &title, &first);
 }
 
 fn take(mode: Mode) -> Option<Image> {
     let shot = capture::capture_screen()?;
     match mode {
         Mode::Full => Some(shot.image),
-        Mode::Region => {
+        Mode::Region | Mode::Text => {
             let targets = capture::window_targets(&shot);
             match overlay::select(&shot, targets)? {
                 overlay::Selection::Area(r) | overlay::Selection::Window { rect: r, occluded: false, .. } => {

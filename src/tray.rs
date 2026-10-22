@@ -31,6 +31,7 @@ pub const CMD_EXIT: u32 = 10;
 pub const CMD_OPEN_EDITOR: u32 = 11;
 pub const CMD_LIBRARY_ON_LAUNCH: u32 = 12;
 pub const CMD_CANCEL_DELAY: u32 = 13;
+pub const CMD_TEXT: u32 = 14;
 /// `CMD_DELAY + n` starts a capture in `n` seconds.
 pub const CMD_DELAY: u32 = 100;
 pub const DELAYS: [u32; 3] = [3, 5, 10];
@@ -91,6 +92,7 @@ pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, startup: bool, countdow
 
     item(CMD_REGION, &format!("Capture region\t{}", settings.hotkey.name()), false);
     item(CMD_FULL, "Capture all screens", false);
+    item(CMD_TEXT, "Capture text (OCR)", false);
     if countdown > 0 {
         item(CMD_CANCEL_DELAY, &format!("Cancel delayed capture ({countdown} s)"), false);
     } else {
