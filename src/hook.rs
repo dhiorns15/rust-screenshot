@@ -17,9 +17,23 @@ pub const MOD_SHIFT: u32 = 2;
 pub const MOD_ALT: u32 = 4;
 pub const MOD_WIN: u32 = 8;
 
-const VK_A: u32 = 0x41;
-const VK_F: u32 = 0x46;
 const VK_S: u32 = 0x53;
+/// Keys the capture overlay handles (see `overlay::State::on_key`). They are forwarded to it from
+/// the hook so they work even if the overlay didn't get keyboard focus.
+const OVERLAY_KEYS: [u32; 12] = [
+    VK_ESCAPE as u32,
+    VK_RETURN as u32,
+    VK_LEFT as u32,
+    VK_RIGHT as u32,
+    VK_UP as u32,
+    VK_DOWN as u32,
+    b'A' as u32,
+    b'C' as u32,
+    b'F' as u32,
+    b'M' as u32,
+    b'P' as u32,
+    b'R' as u32,
+];
 /// Unassigned virtual key, sent to stop a lone Win/Alt release from opening Start or a menu bar.
 const VK_MASK: u16 = 0xE8;
 
@@ -205,7 +219,7 @@ unsafe fn handle(vk: u32, down: bool) -> bool {
 
     let overlay = OVERLAY_HWND.load(Relaxed);
     if overlay != 0 {
-        if vk == VK_ESCAPE as u32 || vk == VK_RETURN as u32 || vk == VK_F || vk == VK_A {
+        if OVERLAY_KEYS.contains(&vk) {
             if down {
                 post(overlay, WM_APP_OVERLAY_KEY, vk as usize);
             }

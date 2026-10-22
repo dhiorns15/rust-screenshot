@@ -52,6 +52,12 @@ pub fn copy_to_clipboard(owner: HWND, img: &Image) -> Result<(), String> {
     set_clipboard(owner, CF_DIB, &data)
 }
 
+pub fn copy_text_to_clipboard(owner: HWND, text: &str) -> Result<(), String> {
+    const CF_UNICODETEXT: u32 = 13;
+    let bytes: Vec<u8> = text.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+    set_clipboard(owner, CF_UNICODETEXT, &bytes)
+}
+
 /// Puts files on the clipboard the way Explorer's Copy does, so pasting attaches or copies them.
 pub fn copy_files_to_clipboard(owner: HWND, paths: &[PathBuf]) -> Result<(), String> {
     set_clipboard(owner, CF_HDROP, &drop_files(paths))

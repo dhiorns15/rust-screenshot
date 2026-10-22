@@ -22,10 +22,15 @@ const CLASS: &str = "RSnip.Overlay";
 const ACCENT: COLORREF = 0x00FF9E3B; // RGB(59, 158, 255)
 const PILL: COLORREF = 0x00202020;
 const WHITE: COLORREF = 0x00FFFFFF;
-const HINT: &str =
-    "Drag to select an area   ·   Click a window   ·   Enter: this screen   ·   A: all screens   ·   Esc: cancel";
-const VK_A: u16 = 0x41;
-const VK_F: u16 = 0x46;
+const BLACK: COLORREF = 0x00000000;
+const HINT: &str = "Drag to select an area   ·   Click a window   ·   Enter: this screen   ·   A: all screens   ·   Esc: cancel\n\
+                    Arrows: nudge 1 px (Shift: 10)   ·   M: magnifier   ·   C: copy colour";
+const VK_A: u16 = b'A' as u16;
+const VK_C: u16 = b'C' as u16;
+const VK_F: u16 = b'F' as u16;
+const VK_M: u16 = b'M' as u16;
+/// Source pixels across the magnifier (odd, so one sits in the middle).
+const MAG_SPAN: i32 = 15;
 
 /// A memory DC with a bitmap selected into it.
 struct Surface {
@@ -72,6 +77,11 @@ struct State {
     dragging: bool,
     /// The highlighted rectangle: the drag selection, or the window under the cursor.
     current: Option<RECT>,
+    /// Virtual-screen position of the image's top-left, for showing coordinates.
+    origin: POINT,
+    magnifier: bool,
+    /// Replaces the magnifier's coordinates after C copies a colour, until the mouse moves.
+    note: Option<String>,
     done: bool,
     result: Option<Selection>,
 }
@@ -157,6 +167,9 @@ pub fn select(shot: &Screenshot, targets: Vec<Target>) -> Option<Selection> {
             anchor: None,
             dragging: false,
             current: None,
+            origin: POINT { x: shot.x, y: shot.y },
+            magnifier: true,
+            note: None,
             done: false,
             result: None,
         });
@@ -267,10 +280,55 @@ impl State {
         format!("{} × {}", r.right - r.left, r.bottom - r.top).encode_utf16().collect()
     }
 
+    /// Size of `text` in the overlay font, which may span several lines.
     unsafe fn text_size(&self, text: &[u16]) -> SIZE {
-        let mut size: SIZE = zeroed();
-        GetTextExtentPoint32W(self.back.dc, text.as_ptr(), text.len() as i32, &mut size);
-        size
+        let mut r = rect(0, 0, 0, 0);
+        DrawTextW(self.back.dc, text.as_ptr(), text.len() as i32, &mut r, DT_CALCRECT | DT_NOPREFIX);
+        SIZE { cx: r.right - r.left, cy: r.bottom - r.top }
+    }
+
+    fn zoom(&self) -> i32 {
+        self.px(8.0)
+    }
+
+    /// The magnifier box and its label for the cursor at `p`.
+    unsafe fn magnifier_rects(&self, p: POINT) -> (RECT, RECT) {
+        let label_height = self.text_size(&wide_text("0")).cy + 2 * self.px(4.0);
+        magnifier_layout(p, MAG_SPAN * self.zoom(), label_height, self.px(20.0), self.width, self.height)
+    }
+
+    /// Everything the magnifier draws for the cursor at `p`.
+    unsafe fn magnifier_area(&self, p: POINT) -> RECT {
+        let (zoomed, label) = self.magnifier_rects(p);
+        inflate(&union(&zoomed, &label), 2)
+    }
+
+    unsafe fn invalidate_magnifier(&self, hwnd: HWND, p: POINT) {
+        InvalidateRect(hwnd, &self.magnifier_area(p), 0);
+    }
+
+    /// The captured colour at `p` as `#RRGGBB`.
+    unsafe fn hex_at(&self, p: POINT) -> String {
+        let c = GetPixel(self.bright.dc, p.x, p.y);
+        format!("#{:02X}{:02X}{:02X}", c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF)
+    }
+
+    /// A zoomed view of the pixels around the cursor, for placing selection edges exactly.
+    unsafe fn draw_magnifier(&self) {
+        let (p, dc, z) = (self.cursor, self.back.dc, self.zoom());
+        let (zoomed, label) = self.magnifier_rects(p);
+        let half = MAG_SPAN / 2;
+        SetStretchBltMode(dc, COLORONCOLOR);
+        StretchBlt(dc, zoomed.left, zoomed.top, MAG_SPAN * z, MAG_SPAN * z, self.bright.dc, p.x - half, p.y - half, MAG_SPAN, MAG_SPAN, SRCCOPY);
+        let centre = rect(zoomed.left + half * z, zoomed.top + half * z, zoomed.left + (half + 1) * z, zoomed.top + (half + 1) * z);
+        frame(dc, &inflate(&centre, 1), BLACK);
+        frame(dc, &centre, WHITE);
+        frame(dc, &inflate(&zoomed, 1), ACCENT);
+        let text = match &self.note {
+            Some(note) => note.clone(),
+            None => format!("{}, {}   {}", p.x + self.origin.x, p.y + self.origin.y, self.hex_at(p)),
+        };
+        self.draw_pill(&label, &wide_text(&text), self.px(4.0));
     }
 
     unsafe fn hint_rect(&self, monitor: &RECT) -> RECT {
@@ -319,6 +377,11 @@ impl State {
     }
 
     unsafe fn on_mouse_move(&mut self, hwnd: HWND, p: POINT) {
+        if self.magnifier {
+            self.invalidate_magnifier(hwnd, self.cursor);
+            self.invalidate_magnifier(hwnd, p);
+        }
+        self.note = None;
         self.cursor = p;
         let new = match self.anchor {
             Some(a) => {
@@ -351,8 +414,33 @@ impl State {
         self.done = true;
     }
 
-    fn on_key(&mut self, vk: u16) {
+    unsafe fn on_key(&mut self, hwnd: HWND, vk: u16) {
         match vk {
+            // Moving the mouse nudges whatever follows it: the hover point or the edge being dragged.
+            VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN => {
+                let step = if GetKeyState(VK_SHIFT as i32) < 0 { 10 } else { 1 };
+                let (dx, dy) = match vk {
+                    VK_LEFT => (-step, 0),
+                    VK_RIGHT => (step, 0),
+                    VK_UP => (0, -step),
+                    _ => (0, step),
+                };
+                let mut p: POINT = zeroed();
+                GetCursorPos(&mut p);
+                SetCursorPos(p.x + dx, p.y + dy);
+            }
+            VK_M => {
+                self.magnifier = !self.magnifier;
+                self.invalidate_magnifier(hwnd, self.cursor);
+            }
+            VK_C => {
+                let hex = self.hex_at(self.cursor);
+                self.note = Some(match crate::output::copy_text_to_clipboard(hwnd, &hex) {
+                    Ok(()) => format!("Copied {hex}"),
+                    Err(e) => e,
+                });
+                self.invalidate_magnifier(hwnd, self.cursor);
+            }
             VK_ESCAPE => self.finish(None),
             VK_RETURN | VK_F => {
                 let all = rect(0, 0, self.width, self.height);
@@ -379,8 +467,10 @@ impl State {
             self.draw_pill(&self.label_rect(&r), &Self::label_text(&r), self.px(4.0));
         }
         if let Some(h) = self.hint {
-            let text: Vec<u16> = HINT.encode_utf16().collect();
-            self.draw_pill(&h, &text, self.px(8.0));
+            self.draw_pill(&h, &wide_text(HINT), self.px(8.0));
+        }
+        if self.magnifier {
+            self.draw_magnifier();
         }
         blit(hdc, &area, self.back.dc);
         EndPaint(hwnd, &ps);
@@ -411,9 +501,34 @@ impl State {
         SelectObject(dc, old_pen);
         SelectObject(dc, old_brush);
         DeleteObject(brush);
-        let mut tr = *r;
-        DrawTextW(dc, text.as_ptr(), text.len() as i32, &mut tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        // DT_VCENTER only works for single lines, so centre by hand.
+        let height = self.text_size(text).cy;
+        let top = r.top + (r.bottom - r.top - height) / 2;
+        let mut tr = rect(r.left, top, r.right, top + height);
+        DrawTextW(dc, text.as_ptr(), text.len() as i32, &mut tr, DT_CENTER | DT_NOPREFIX);
     }
+}
+
+/// UTF-16 without a terminator, for the GDI text calls that take a length.
+fn wide_text(s: &str) -> Vec<u16> {
+    s.encode_utf16().collect()
+}
+
+unsafe fn frame(dc: HDC, r: &RECT, color: COLORREF) {
+    let brush = CreateSolidBrush(color);
+    FrameRect(dc, r, brush);
+    DeleteObject(brush);
+}
+
+/// Places a `size`-pixel magnifier and its label `gap` pixels below-right of `p`, flipping to the
+/// other side of the cursor where it would leave the `width` × `height` image.
+fn magnifier_layout(p: POINT, size: i32, label_height: i32, gap: i32, width: i32, height: i32) -> (RECT, RECT) {
+    let total = size + gap / 4 + label_height;
+    let x = if p.x + gap + size <= width { p.x + gap } else { p.x - gap - size };
+    let y = if p.y + gap + total <= height { p.y + gap } else { p.y - gap - total };
+    let (x, y) = (x.max(0), y.max(0));
+    let label_top = y + size + gap / 4;
+    (rect(x, y, x + size, y + size), rect(x, label_top, x + size, label_top + label_height))
 }
 
 unsafe fn blit(dst: HDC, r: &RECT, src: HDC) {
@@ -465,7 +580,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             0
         }
         WM_KEYDOWN | WM_APP_OVERLAY_KEY => {
-            st.on_key(wparam as u16);
+            st.on_key(hwnd, wparam as u16);
             0
         }
         WM_CLOSE => {
@@ -475,5 +590,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // The overlay spans monitors; never let Windows rescale it.
         WM_DPICHANGED => 0,
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn magnifier_flips_away_from_edges() {
+        let (zoomed, label) = magnifier_layout(POINT { x: 100, y: 100 }, 120, 24, 20, 1920, 1080);
+        assert_eq!((zoomed.left, zoomed.top), (120, 120));
+        assert!(label.top > zoomed.bottom);
+        let (zoomed, label) = magnifier_layout(POINT { x: 1900, y: 1070 }, 120, 24, 20, 1920, 1080);
+        assert_eq!(zoomed.right, 1880, "left of the cursor");
+        assert_eq!(label.bottom, 1050, "label ends above the cursor");
     }
 }

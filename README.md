@@ -40,6 +40,7 @@ Run `rsnip.exe`. It sits in the notification area.
 | Select | Drag a rectangle, or click to capture the highlighted window. If other windows overlap it, it is brought to the front and captured cleanly |
 | One screen | Press Enter or F in the selection overlay to capture the monitor under the mouse |
 | All screens | Press A in the selection overlay, or use *Capture all screens* in the tray menu |
+| Fine-tune | A magnifier next to the cursor shows the pixels under it with their position and colour (M hides it). Arrow keys move the mouse 1 px, Shift+arrows 10 px, including while dragging. C copies the colour under the cursor as #RRGGBB |
 | Cancel | Esc or right-click |
 | Open library | Tray menu → *Open library & editor*, or click the "saved" notification |
 
