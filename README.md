@@ -2,7 +2,9 @@
 
 [![CI](https://github.com/dhiorns15/rust-screenshot/actions/workflows/ci.yml/badge.svg)](https://github.com/dhiorns15/rust-screenshot/actions/workflows/ci.yml)
 
-A small, open-source, Snagit-style screenshot tool for Windows, written in Rust.
+A small, open-source, Snagit-style screenshot tool for Windows and Linux, written in Rust. On
+Windows it does everything below; on Linux it is the library and editor for screenshots taken with
+your desktop's own tool (see [Linux](#linux)).
 
 - **Takes over Print Screen** (and optionally **Win+Shift+S**) from the built-in Snipping Tool.
 - **Freezes the screen** and lets you drag a region, or click a window/monitor to grab it.
@@ -14,7 +16,7 @@ A small, open-source, Snagit-style screenshot tool for Windows, written in Rust.
 
 ## Download
 
-From the [Releases page](https://github.com/dhiorns15/rust-screenshot/releases), get either:
+From the [Releases page](https://github.com/dhiorns15/rust-screenshot/releases), on Windows get either:
 
 - **The installer**, `rsnip-vX.Y.Z-windows-x64-setup.exe` (Windows 10 or later, 64-bit). It installs
   for your user only (no admin prompt) into `%LOCALAPPDATA%\Programs\RSnip`, adds *RSnip* and
@@ -23,9 +25,11 @@ From the [Releases page](https://github.com/dhiorns15/rust-screenshot/releases),
   settings are kept.
 - **`rsnip.exe`** on its own: a single self-contained exe; put it anywhere and run it.
 
+On Linux (x86-64), get `rsnip-vX.Y.Z-linux-x64.tar.gz`, extract it and run `./rsnip`.
+
 ## Build
 
-Requires the Rust MSVC toolchain.
+On Windows this needs the Rust MSVC toolchain.
 
 ```
 cargo build --release
