@@ -247,6 +247,15 @@ unsafe fn handle(vk: u32, down: bool) -> bool {
 mod tests {
     use super::*;
 
+    proptest::proptest! {
+        #[test]
+        fn any_stored_hotkey_is_usable(v in proptest::prelude::any::<u32>()) {
+            let hotkey = Hotkey::unpack(v);
+            proptest::prop_assert!(!hotkey.name().is_empty());
+            proptest::prop_assert_eq!(Hotkey::unpack(hotkey.pack()).pack(), hotkey.pack());
+        }
+    }
+
     #[test]
     fn hotkey_round_trips() {
         let hk = Hotkey { vk: 0x58, mods: MOD_CTRL | MOD_SHIFT };

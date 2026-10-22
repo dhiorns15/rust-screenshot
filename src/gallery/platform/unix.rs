@@ -51,7 +51,25 @@ fn settings_path() -> PathBuf {
 }
 
 fn settings() -> BTreeMap<String, u32> {
-    std::fs::read(settings_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    std::fs::read(settings_path()).map(|b| parse_settings(&b)).unwrap_or_default()
+}
+
+/// The settings in a `settings.json`; anything unreadable means defaults.
+fn parse_settings(bytes: &[u8]) -> BTreeMap<String, u32> {
+    serde_json::from_slice(bytes).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn damaged_settings_mean_defaults() {
+        assert_eq!(parse_settings(br#"{"LibraryDock": 1, "CheckUpdates": 0}"#).get("LibraryDock"), Some(&1));
+        for junk in [&b""[..], b"{", b"null", b"[1,2]", br#"{"LibraryDock": -1}"#, br#"{"LibraryDock": "bottom"}"#, b"\xff\xfe"] {
+            assert!(parse_settings(junk).is_empty(), "{junk:?}");
+        }
+    }
 }
 
 pub fn setting(name: &str) -> Option<u32> {

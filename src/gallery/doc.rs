@@ -834,6 +834,11 @@ fn box_blur(px: &mut [u8], len: usize, lines: usize, step: usize, line_step: usi
 }
 
 #[cfg(test)]
+mod properties;
+#[cfg(test)]
+mod reference;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

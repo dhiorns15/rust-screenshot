@@ -394,3 +394,92 @@ fn shift_snaps_lines_and_endpoints_drag() {
         _ => panic!("not a line"),
     }
 }
+
+/// Random input for the panic hunt: xorshift, so a seed replays the same run.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+
+    /// Somewhere on screen, mostly on the image.
+    fn point(&mut self, h: &Harness) -> Pos2 {
+        if self.below(5) == 0 {
+            Pos2::new(self.below(1000) as f32, self.below(600) as f32)
+        } else {
+            let c = h.editor.canvas;
+            Pos2::new(c.min.x + self.below(c.width().max(1.0) as usize) as f32, c.min.y + self.below(c.height().max(1.0) as usize) as f32)
+        }
+    }
+}
+
+/// Throws `steps` random clicks, drags, keys, typing, tool switches and undo/redo at the editor,
+/// checking it never panics and the document stays consistent (photocraft's "panic hunt").
+fn panic_hunt(seed: u64, steps: usize) {
+    let mut h = Harness::new();
+    let mut rng = Rng(seed | 1);
+    let keys = [Key::Delete, Key::Backspace, Key::Escape, Key::Enter, Key::ArrowLeft, Key::ArrowRight, Key::ArrowUp, Key::ArrowDown, Key::A];
+    for step in 0..steps {
+        match rng.below(10) {
+            0 => h.tools.tool = crate::gallery::editor::TOOLS[rng.below(crate::gallery::editor::TOOLS.len())].0,
+            1 | 2 => {
+                let p = rng.point(&h);
+                h.click_screen(p);
+            }
+            3..=5 => {
+                let (a, b) = (rng.point(&h), rng.point(&h));
+                h.drag_screen(a, b);
+            }
+            6 => {
+                h.modifiers = if rng.below(3) == 0 { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+                let k = keys[rng.below(keys.len())];
+                key(&mut h, k);
+                h.modifiers = egui::Modifiers::NONE;
+            }
+            7 => h.type_text(["a", "Hi ", "123", " "][rng.below(4)]),
+            _ => {
+                // What the toolbar's Undo and Redo do.
+                h.editor.finish_text(&h.tools);
+                if rng.below(2) == 0 {
+                    h.editor.doc.undo();
+                } else {
+                    h.editor.doc.redo();
+                }
+                h.frame(vec![]);
+            }
+        }
+        let doc = &h.editor.doc;
+        let size = doc.size();
+        assert!(size.x >= 1.0 && size.y >= 1.0, "step {step}: image is {size:?}");
+        if step % 50 == 0 {
+            let img = crate::gallery::doc::render(doc.current(), h.font.as_ref());
+            assert_eq!((img.width() as f32, img.height() as f32), (size.x, size.y), "step {step}: render size");
+        }
+    }
+}
+
+#[test]
+fn panic_hunt_short() {
+    panic_hunt(0x5eed, 60);
+}
+
+/// A long hunt, run on request (CI runs it on Linux):
+/// `RSNIP_HUNT_STEPS=20000 RSNIP_HUNT_SEED=42 cargo test panic_hunt_long -- --ignored`.
+/// Without a seed it picks one and prints it, so a failure can be replayed.
+#[test]
+#[ignore]
+fn panic_hunt_long() {
+    let env = |name| std::env::var(name).ok().and_then(|v| v.parse().ok());
+    let seed = env("RSNIP_HUNT_SEED").unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64);
+    let steps = env("RSNIP_HUNT_STEPS").unwrap_or(400) as usize;
+    println!("panic hunt: seed {seed}, {steps} steps");
+    panic_hunt(seed, steps);
+}

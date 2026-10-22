@@ -307,6 +307,25 @@ mod tests {
         assert_eq!(install::sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 
+    proptest::proptest! {
+        #[test]
+        fn versions_order_like_their_numbers(a in proptest::prelude::any::<(u32, u32, u32)>(), b in proptest::prelude::any::<(u32, u32, u32)>()) {
+            let (va, vb) = (Version(a.0, a.1, a.2), Version(b.0, b.1, b.2));
+            proptest::prop_assert_eq!(va.cmp(&vb), a.cmp(&b));
+            proptest::prop_assert_eq!(Version::parse(&format!("v{va}")), Some(va));
+        }
+
+        #[test]
+        fn parsing_never_panics(s in ".{0,20}") {
+            let _ = Version::parse(&s);
+        }
+
+        #[test]
+        fn release_parsing_never_panics(json in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..200)) {
+            let _ = parse(&json);
+        }
+    }
+
     /// Talks to GitHub, so it only runs on request: `cargo test -- --ignored latest_release`.
     #[test]
     #[ignore]

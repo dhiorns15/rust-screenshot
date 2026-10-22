@@ -164,4 +164,38 @@ mod tests {
         let mut s = Stitcher::new(&frame(&page, w, 0, view, 0, 0));
         assert!(matches!(s.push(&frame(&page, w, 1500, view, 0, 0)), Step::Lost));
     }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(48))]
+
+        /// Any scroll steps that leave some overlap, with any sticky header and footer, give back
+        /// the page with the header and footer once.
+        #[test]
+        fn random_scrolling_rebuilds_the_page(
+            header in 0usize..40,
+            footer in 0usize..30,
+            view in 150usize..300,
+            steps in proptest::collection::vec(1usize..1000, 1..8),
+        ) {
+            let (w, h) = (48, 1200);
+            let page = page(w, h);
+            let visible = view - header - footer;
+            let mut offset = 0;
+            let mut s = Stitcher::new(&frame(&page, w, 0, view, header, footer));
+            for step in steps {
+                // Keep enough rows overlapping to line frames up, and stay on the page.
+                let step = 1 + step % (visible - 10);
+                if offset + step + view > h {
+                    break;
+                }
+                offset += step;
+                let added = matches!(s.push(&frame(&page, w, offset, view, header, footer)), Step::Added(d) if d == step);
+                proptest::prop_assert!(added, "scrolled {step} at {offset}");
+            }
+            let out = s.finish();
+            let expected = frame(&page, w, 0, view + offset, header, footer);
+            proptest::prop_assert_eq!((out.width, out.height), (expected.width, expected.height));
+            proptest::prop_assert!(out.data == expected.data);
+        }
+    }
 }
