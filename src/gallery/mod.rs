@@ -1,5 +1,7 @@
 //! Screenshot library and editor window (`rsnip --gallery [file]`).
 
+#[cfg(test)]
+mod app_tests;
 mod doc;
 #[cfg(windows)]
 mod dragout;
@@ -23,7 +25,7 @@ use eframe::egui::{
 
 use crate::update;
 use doc::{apply_effects, flatten, render, Doc, Effects};
-use editor::{Editor, Tool, ToolState, GROUP_STARTS, PALETTE, TEXT_SIZES, TOOLS};
+use editor::{Editor, Tool, ToolState, GROUP_STARTS, PALETTE, PALETTE_NAMES, TEXT_SIZES, TOOLS};
 use env::Env;
 use theme::{icon, IconButton};
 
@@ -472,7 +474,7 @@ impl App {
         for group in tool_groups() {
             theme::group(ui, |ui| {
                 for (tool, label, _, help) in group {
-                    let button = IconButton::new(theme::tool_icon(tool)).selected(self.tools.tool == tool);
+                    let button = IconButton::new(theme::tool_icon(tool), label).selected(self.tools.tool == tool);
                     let response = ui.add(button).on_hover_ui(|ui| {
                         ui.label(RichText::new(label).strong());
                         ui.label(help);
@@ -513,12 +515,12 @@ impl App {
         }
         ui.add_space(6.0);
         let (can_undo, can_redo) = self.editor.as_ref().map_or((false, false), |e| (e.doc.can_undo(), e.doc.can_redo()));
-        if ui.add_enabled(can_redo, IconButton::new(icon::ARROW_CLOCKWISE)).on_hover_text("Redo (Ctrl+Y)").clicked() {
+        if ui.add_enabled(can_redo, IconButton::new(icon::ARROW_CLOCKWISE, "Redo")).on_hover_text("Redo (Ctrl+Y)").clicked() {
             let editor = self.editor.as_mut().unwrap();
             editor.finish_text(&self.tools);
             editor.doc.redo();
         }
-        if ui.add_enabled(can_undo, IconButton::new(icon::ARROW_COUNTER_CLOCKWISE)).on_hover_text("Undo (Ctrl+Z)").clicked() {
+        if ui.add_enabled(can_undo, IconButton::new(icon::ARROW_COUNTER_CLOCKWISE, "Undo")).on_hover_text("Undo (Ctrl+Z)").clicked() {
             let editor = self.editor.as_mut().unwrap();
             editor.finish_text(&self.tools);
             editor.doc.undo();
@@ -533,9 +535,10 @@ impl App {
             ui.spacing_mut().slider_width = 120.0;
             if self.tools.uses_color() {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                for color in PALETTE {
+                for (color, name) in PALETTE.into_iter().zip(PALETTE_NAMES) {
                     let (rect, response) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
                     let selected = *self.tools.color_mut() == color;
+                    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, name));
                     let center = rect.center();
                     if selected {
                         ui.painter().circle_stroke(center, 9.5, Stroke::new(2.0f32, Color32::WHITE));
@@ -589,6 +592,7 @@ impl App {
     /// A rainbow ring that opens a full colour picker; it shows the colour when it isn't a swatch.
     fn custom_color(&mut self, ui: &mut egui::Ui) {
         let (rect, response) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Pick any colour"));
         let center = rect.center();
         let segments = 24;
         for k in 0..segments {

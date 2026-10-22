@@ -187,12 +187,12 @@ impl App {
 
     /// Where the library goes (left or bottom), and the screenshots folder; added right to left.
     fn library_buttons(&mut self, ui: &mut egui::Ui) {
-        if ui.add(IconButton::new(icon::FOLDER_OPEN)).on_hover_text(format!("Open the folder\n{}", self.env.dir.display())).clicked() {
+        if ui.add(IconButton::new(icon::FOLDER_OPEN, "Open the folder")).on_hover_text(format!("Open the folder\n{}", self.env.dir.display())).clicked() {
             open_with_shell(&self.env.dir);
         }
         theme::group(ui, |ui| {
-            for (dock, icon, tip) in [(Dock::Bottom, icon::SQUARE_HALF_BOTTOM, "Library along the bottom"), (Dock::Left, icon::SIDEBAR_SIMPLE, "Library on the left")] {
-                if ui.add(IconButton::new(icon).selected(self.dock == dock)).on_hover_text(tip).clicked() && self.dock != dock {
+            for (dock, icon, label) in [(Dock::Bottom, icon::SQUARE_HALF_BOTTOM, "Library along the bottom"), (Dock::Left, icon::SIDEBAR_SIMPLE, "Library on the left")] {
+                if ui.add(IconButton::new(icon, label).selected(self.dock == dock)).on_hover_text(label).clicked() && self.dock != dock {
                     self.dock = dock;
                     self.env.set_setting(Dock::SETTING, dock.to_setting());
                 }
@@ -293,6 +293,7 @@ impl App {
         let entry = &self.entries[i];
         let response = ui.interact(rect, ui.id().with(("entry", &entry.path)), Sense::click_and_drag());
         let selected = self.selected.contains(&entry.path);
+        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, &entry.name));
         let open = self.editor.as_ref().is_some_and(|e| e.doc.path == entry.path);
         let painter = ui.painter_at(rect);
         let tile = rect.shrink(3.0);

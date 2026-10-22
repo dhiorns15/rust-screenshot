@@ -84,16 +84,18 @@ pub fn tool_icon(tool: Tool) -> &'static str {
     }
 }
 
-/// A square icon button; `selected` fills it with the accent colour.
+/// A square icon button; `selected` fills it with the accent colour. `label` names it for screen
+/// readers and tests.
 pub struct IconButton {
     icon: &'static str,
+    label: &'static str,
     selected: bool,
     size: Vec2,
 }
 
 impl IconButton {
-    pub fn new(icon: &'static str) -> Self {
-        IconButton { icon, selected: false, size: Vec2::new(30.0, 28.0) }
+    pub fn new(icon: &'static str, label: &'static str) -> Self {
+        IconButton { icon, label, selected: false, size: Vec2::new(30.0, 28.0) }
     }
 
     pub fn selected(mut self, selected: bool) -> Self {
@@ -105,6 +107,7 @@ impl IconButton {
 impl Widget for IconButton {
     fn ui(self, ui: &mut Ui) -> Response {
         let (rect, response) = ui.allocate_exact_size(self.size, Sense::click());
+        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), self.selected, self.label));
         if ui.is_rect_visible(rect) {
             let enabled = ui.is_enabled();
             let fill = if self.selected {

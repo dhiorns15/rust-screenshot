@@ -57,6 +57,9 @@ eframe = { version = "0.36", default-features = false, features = ["x11", "wayla
 libc = "0.2"
 trash = "5"
 
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["eframe"] }
+
 [profile.release]
 lto = true
 codegen-units = 1

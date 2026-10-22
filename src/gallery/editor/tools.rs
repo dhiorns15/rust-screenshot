@@ -57,6 +57,9 @@ pub const PALETTE: [Color32; 8] = [
     Color32::WHITE,
 ];
 
+/// The swatches' names, for screen readers and tests.
+pub const PALETTE_NAMES: [&str; 8] = ["Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Black", "White"];
+
 pub const TEXT_SIZES: std::ops::RangeInclusive<f32> = 8.0..=300.0;
 
 /// The toolbar-editable properties of a selected annotation. Fields its kind doesn't have are unused.

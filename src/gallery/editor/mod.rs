@@ -17,7 +17,7 @@ use crop::{crop_grab, CropDrag, CropSelection};
 use preview::{preview, shape_from_drag, snap_45};
 use select::{Grab, Manip, Selection, PICK_SLACK};
 use text::PendingText;
-pub use tools::{Style, Tool, ToolState, ANNOTATION_FONT, GROUP_STARTS, PALETTE, TEXT_SIZES, TOOLS};
+pub use tools::{Style, Tool, ToolState, ANNOTATION_FONT, GROUP_STARTS, PALETTE, PALETTE_NAMES, TEXT_SIZES, TOOLS};
 
 struct Drag {
     start: Pos2,
@@ -36,7 +36,7 @@ pub struct Editor {
     drag: Option<Drag>,
     text: Option<PendingText>,
     /// Where the image was drawn last frame, in screen points.
-    canvas: Rect,
+    pub(in crate::gallery) canvas: Rect,
     manip: Option<Manip>,
     selection: Option<Selection>,
     /// The tool active last frame; switching tools drops the selection.
