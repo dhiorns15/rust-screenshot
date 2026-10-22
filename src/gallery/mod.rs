@@ -23,7 +23,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, SetForegroundWind
 
 use crate::capture::Image;
 use crate::util::{wide, wide_os};
-use doc::{render, Doc};
+use doc::{apply_effects, flatten, render, Doc, Effects};
 use editor::{Editor, Tool, ToolState, PALETTE, TEXT_SIZES, TOOLS};
 
 const TITLE: &str = "RSnip Library";
@@ -95,6 +95,8 @@ struct App {
     pending: Option<Pending>,
     allow_close: bool,
     status: Option<(String, Instant)>,
+    /// Border/shadow added to everything the editor outputs.
+    effects: Effects,
 }
 
 impl App {
@@ -141,6 +143,7 @@ impl App {
             pending: None,
             allow_close: false,
             status: None,
+            effects: load_effects(),
         };
         app.rescan();
         doc::prune_layers(&app.dir);
@@ -210,25 +213,38 @@ impl App {
         }
     }
 
+    /// The edited image as it's exported: annotations flattened, plus any border/shadow.
     fn rendered(&mut self) -> Option<image::RgbaImage> {
         let editor = self.editor.as_mut()?;
         editor.finish_text(&self.tools);
-        Some(render(editor.doc.current(), self.font.as_ref()))
+        Some(apply_effects(render(editor.doc.current(), self.font.as_ref()), self.effects))
+    }
+
+    fn set_effects(&mut self, effects: Effects) {
+        self.effects = effects;
+        crate::settings::set("ExportBorder", effects.border.is_some() as u32);
+        if let Some(c) = effects.border {
+            crate::settings::set("ExportBorderColor", u32::from_be_bytes([0, c.r(), c.g(), c.b()]));
+        }
+        crate::settings::set("ExportShadow", effects.shadow as u32);
     }
 
     fn save(&mut self, as_copy: bool) -> bool {
         let Some(img) = self.rendered() else { return false };
+        let framed = self.effects.any();
         let editor = self.editor.as_mut().unwrap();
-        let path = if as_copy { copy_path(&editor.doc.path) } else { editor.doc.path.clone() };
-        let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
-        let result = match path.extension().and_then(|e| e.to_str()) {
-            Some(e) if e.eq_ignore_ascii_case("png") => rgb.save(&path),
-            _ => rgb.save_with_format(&path, image::ImageFormat::Png),
+        let path = if as_copy { copy_path(&editor.doc.path, "png") } else { editor.doc.path.clone() };
+        // Only a drop shadow needs transparency; plain screenshots stay smaller as RGB.
+        let img = if img.pixels().any(|p| p[3] < 255) {
+            image::DynamicImage::ImageRgba8(img)
+        } else {
+            image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(img).to_rgb8())
         };
+        let result = img.save_with_format(&path, image::ImageFormat::Png);
         match result {
             Ok(()) => {
                 editor.doc.mark_saved(path.clone());
-                let layers = editor.doc.save_layers();
+                let layers = editor.doc.save_layers(framed);
                 let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
                 match layers {
                     Ok(()) => self.set_status(format!("Saved {name}")),
@@ -244,8 +260,39 @@ impl App {
         }
     }
 
+    /// Saves a JPG copy next to the screenshot; the editor keeps working on the original.
+    fn save_jpg(&mut self) {
+        let Some(img) = self.rendered() else { return };
+        let path = copy_path(&self.editor.as_ref().unwrap().doc.path, "jpg");
+        match save_jpg(&img, &path) {
+            Ok(()) => {
+                self.set_status(format!("Saved {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                self.rescan();
+            }
+            Err(e) => self.set_status(format!("Couldn't save: {e}")),
+        }
+    }
+
+    /// Puts the edited image on the clipboard as a file, so it pastes as an attachment.
+    fn copy_as_file(&mut self) {
+        let Some(img) = self.rendered() else { return };
+        let name = self.editor.as_ref().unwrap().doc.path.file_name().unwrap_or_default().to_owned();
+        let dir = std::env::temp_dir().join("RSnip");
+        let path = dir.join(name).with_extension("png");
+        let result = std::fs::create_dir_all(&dir)
+            .map_err(|e| e.to_string())
+            .and_then(|()| img.save_with_format(&path, image::ImageFormat::Png).map_err(|e| e.to_string()))
+            .and_then(|()| crate::output::copy_files_to_clipboard(null_mut(), &[path]));
+        match result {
+            Ok(()) => self.set_status("Copied as a file — paste it into a folder, chat or email"),
+            Err(e) => self.set_status(format!("Couldn't copy: {e}")),
+        }
+    }
+
     fn copy(&mut self) {
         let Some(img) = self.rendered() else { return };
+        // The clipboard's DIB has no transparency.
+        let img = flatten(&img);
         let (width, height) = (img.width() as i32, img.height() as i32);
         let data = img.into_raw().chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255]).collect();
         match crate::output::copy_to_clipboard(null_mut(), &Image { width, height, data }) {
@@ -388,7 +435,35 @@ impl App {
             if ui.add_enabled(enabled, egui::Button::new("Save copy")).on_hover_text("Save as a new file (Ctrl+Shift+S)").clicked() {
                 self.save(true);
             }
+            ui.add_enabled_ui(enabled, |ui| ui.menu_button("Export ▾", |ui| self.export_menu(ui)));
         });
+    }
+
+    fn export_menu(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Save copy as JPG").clicked() {
+            self.save_jpg();
+            ui.close_menu();
+        }
+        if ui.button("Copy as file").on_hover_text("Paste it into a folder, chat or email as an attachment").clicked() {
+            self.copy_as_file();
+            ui.close_menu();
+        }
+        ui.separator();
+        ui.label(RichText::new("Added to copies, saves and exports").small().weak());
+        let mut fx = self.effects;
+        let mut border = fx.border.is_some();
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut border, "Border");
+            let mut color = fx.border.unwrap_or(Color32::from_gray(32));
+            if border && egui::color_picker::color_edit_button_srgba(ui, &mut color, egui::color_picker::Alpha::Opaque).changed() {
+                fx.border = Some(color);
+            }
+            fx.border = border.then_some(fx.border.unwrap_or(color));
+        });
+        ui.checkbox(&mut fx.shadow, "Drop shadow");
+        if fx != self.effects {
+            self.set_effects(fx);
+        }
     }
 
     fn library(&mut self, ui: &mut egui::Ui) {
@@ -574,16 +649,22 @@ impl eframe::App for App {
 }
 
 /// "name (edited).png", "name (edited 2).png", ...
-fn copy_path(path: &Path) -> PathBuf {
+fn copy_path(path: &Path, ext: &str) -> PathBuf {
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
     let dir = path.parent().unwrap_or(Path::new("."));
-    let mut candidate = dir.join(format!("{stem} (edited).png"));
+    let mut candidate = dir.join(format!("{stem} (edited).{ext}"));
     let mut n = 2;
     while candidate.exists() {
-        candidate = dir.join(format!("{stem} (edited {n}).png"));
+        candidate = dir.join(format!("{stem} (edited {n}).{ext}"));
         n += 1;
     }
     candidate
+}
+
+fn save_jpg(img: &image::RgbaImage, path: &Path) -> Result<(), String> {
+    let rgb = image::DynamicImage::ImageRgba8(flatten(img)).to_rgb8();
+    let file = std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| e.to_string())?);
+    image::codecs::jpeg::JpegEncoder::new_with_quality(file, 90).encode_image(&rgb).map_err(|e| e.to_string())
 }
 
 fn open_with_shell(path: &Path) {
@@ -609,4 +690,31 @@ fn recycle(path: &Path) -> bool {
         lpszProgressTitle: null(),
     };
     unsafe { SHFileOperationW(&mut op) == 0 && op.fAnyOperationsAborted == 0 }
+}
+
+fn load_effects() -> Effects {
+    let get = crate::settings::get;
+    let [_, r, g, b] = get("ExportBorderColor").unwrap_or(0x202020).to_be_bytes();
+    Effects {
+        border: (get("ExportBorder") == Some(1)).then_some(Color32::from_rgb(r, g, b)),
+        shadow: get("ExportShadow") == Some(1),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn saves_jpg_copies_beside_the_original() {
+        let dir = std::env::temp_dir().join(format!("rsnip-jpg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("shot.png");
+        let path = super::copy_path(&original, "jpg");
+        assert_eq!(path.file_name().unwrap(), "shot (edited).jpg");
+        let img = image::RgbaImage::from_pixel(30, 20, image::Rgba([0, 0, 0, 0]));
+        super::save_jpg(&img, &path).unwrap();
+        let back = image::open(&path).unwrap().to_rgb8();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(back.dimensions(), (30, 20));
+        assert!(back.get_pixel(15, 10).0.iter().all(|&c| c > 245), "transparency flattens to white");
+    }
 }

@@ -60,6 +60,16 @@ impl Settings {
     }
 }
 
+/// Reads one RSnip value. For settings owned by the library window, which mustn't go through
+/// `Settings` (the tray's copy would overwrite them on its next `store`).
+pub fn get(name: &str) -> Option<u32> {
+    read_dword(KEY, name)
+}
+
+pub fn set(name: &str, value: u32) {
+    write_dword(name, value);
+}
+
 fn read_dword(subkey: &str, name: &str) -> Option<u32> {
     let (subkey, name) = (wide(subkey), wide(name));
     let mut value = 0u32;

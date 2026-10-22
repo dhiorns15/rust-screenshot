@@ -191,10 +191,11 @@ impl Doc {
     }
 
     /// Records the un-annotated image and the annotations next to the just-saved PNG at
-    /// `self.path`, so reopening it keeps everything editable.
-    pub fn save_layers(&self) -> Result<(), String> {
+    /// `self.path`, so reopening it keeps everything editable. `framed` means the PNG has export
+    /// effects baked in, so the original must be kept even without annotations.
+    pub fn save_layers(&self, framed: bool) -> Result<(), String> {
         let snapshot = self.current();
-        if snapshot.shapes.is_empty() {
+        if snapshot.shapes.is_empty() && !framed {
             // The PNG alone is the whole picture.
             remove_layers(&self.path);
             return Ok(());
@@ -691,6 +692,64 @@ fn draw_text_shadow(pixmap: &mut Pixmap, font: &FontVec, pos: Pos2, text: &str, 
     }
 }
 
+/// Framing added to exported images; never part of the editable document.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub struct Effects {
+    pub border: Option<Color32>,
+    pub shadow: bool,
+}
+
+impl Effects {
+    pub fn any(&self) -> bool {
+        self.border.is_some() || self.shadow
+    }
+}
+
+pub const BORDER_WIDTH: u32 = 2;
+pub const SHADOW_PAD: u32 = 16;
+
+/// `img` with a border and/or a soft drop shadow on transparent padding.
+pub fn apply_effects(mut img: RgbaImage, fx: Effects) -> RgbaImage {
+    if let Some(c) = fx.border {
+        let b = BORDER_WIDTH;
+        let mut out = RgbaImage::from_pixel(img.width() + 2 * b, img.height() + 2 * b, image::Rgba(c.to_array()));
+        image::imageops::replace(&mut out, &img, b as i64, b as i64);
+        img = out;
+    }
+    if fx.shadow {
+        let (w, h, pad) = (img.width() as usize, img.height() as usize, SHADOW_PAD as usize);
+        let (ow, oh) = (w + 2 * pad, h + 2 * pad);
+        // The image's footprint, nudged down and right, blurred into a soft shadow.
+        let (dx, dy) = (3, 5);
+        let mut mask = vec![0u8; ow * oh * 4];
+        for y in pad + dy..(pad + dy + h).min(oh) {
+            for x in pad + dx..(pad + dx + w).min(ow) {
+                mask[(y * ow + x) * 4 + 3] = 255;
+            }
+        }
+        for _ in 0..3 {
+            box_blur(&mut mask, ow, oh, 4, ow * 4, 4);
+            box_blur(&mut mask, oh, ow, ow * 4, 4, 4);
+        }
+        let mut out = RgbaImage::from_fn(ow as u32, oh as u32, |x, y| {
+            let a = mask[(y as usize * ow + x as usize) * 4 + 3] as f32 * 0.45;
+            image::Rgba([0, 0, 0, a as u8])
+        });
+        image::imageops::replace(&mut out, &img, pad as i64, pad as i64);
+        img = out;
+    }
+    img
+}
+
+/// Composites `img` over white, for formats without transparency (JPG, the clipboard's DIB).
+pub fn flatten(img: &RgbaImage) -> RgbaImage {
+    RgbaImage::from_fn(img.width(), img.height(), |x, y| {
+        let [r, g, b, a] = img.get_pixel(x, y).0;
+        let over = |c: u8| ((c as u32 * a as u32 + 255 * (255 - a as u32)) / 255) as u8;
+        image::Rgba([over(r), over(g), over(b), 255])
+    })
+}
+
 /// How dark Spotlight makes everything outside it.
 pub const SPOTLIGHT_DIM: u8 = 140;
 
@@ -832,7 +891,7 @@ mod tests {
         doc.add(Shape::Text { pos: Pos2::new(5.0, 5.0), text: "keep me".into(), color: Color32::RED, size: 16.0, shadow: true });
         render(doc.current(), None).save(&path).unwrap();
         doc.mark_saved(path.clone());
-        doc.save_layers().unwrap();
+        doc.save_layers(false).unwrap();
 
         let reopened = Doc::open(&path).unwrap();
         assert!(matches!(&reopened.current().shapes[..], [Shape::Text { text, .. }] if text == "keep me"));
@@ -950,5 +1009,23 @@ mod tests {
         let spot = Shape::Spotlight { rect: r(10.0, 10.0, 40.0, 40.0) };
         assert!(spot.hit(Pos2::new(10.0, 25.0), 3.0, None), "picked by its border");
         assert!(!spot.hit(Pos2::new(25.0, 25.0), 3.0, None), "not by the bright area inside");
+    }
+
+    #[test]
+    fn export_effects_frame_the_image() {
+        let img = RgbaImage::from_pixel(40, 20, image::Rgba([10, 200, 10, 255]));
+        let bordered = apply_effects(img.clone(), Effects { border: Some(Color32::RED), shadow: false });
+        assert_eq!(bordered.dimensions(), (44, 24));
+        assert_eq!(bordered.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(bordered.get_pixel(2, 2).0, [10, 200, 10, 255]);
+
+        let shadowed = apply_effects(img, Effects { border: None, shadow: true });
+        let pad = SHADOW_PAD;
+        assert_eq!(shadowed.dimensions(), (40 + 2 * pad, 20 + 2 * pad));
+        assert_eq!(shadowed.get_pixel(0, 0).0[3], 0, "far corner is transparent");
+        let below = shadowed.get_pixel(pad + 20, pad + 20 + 2).0;
+        assert!(below[3] > 40 && below[..3] == [0, 0, 0], "shadow under the image: {below:?}");
+        assert_eq!(shadowed.get_pixel(pad + 5, pad + 5).0, [10, 200, 10, 255]);
+        assert_eq!(flatten(&shadowed).get_pixel(0, 0).0, [255, 255, 255, 255]);
     }
 }

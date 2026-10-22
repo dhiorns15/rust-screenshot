@@ -89,6 +89,9 @@ deleted outside RSnip is cleaned up automatically.
 
 Ctrl+Z / Ctrl+Y undo/redo, Ctrl+C copies the edited image, Ctrl+S overwrites the file,
 Ctrl+Shift+S saves a copy, Ctrl+scroll zooms, Ctrl+0 fits to the window.
+The *Export* menu saves a JPG copy, or copies the image *as a file* so it pastes as an attachment into
+a folder, chat or email. Its *Border* and *Drop shadow* options are added to every copy, save and
+export (the annotations stay editable without them).
 Right-click a library thumbnail to open it externally, show it in Explorer, or move it to the Recycle Bin.
 
 ### Command line

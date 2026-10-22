@@ -20,39 +20,67 @@ use crate::capture::Image;
 use crate::util::from_wide_ptr;
 
 const CF_DIB: u32 = 8;
+const CF_HDROP: u32 = 15;
 
 /// Puts the image on the clipboard as a 24-bit DIB, which every app that accepts images understands.
 pub fn copy_to_clipboard(owner: HWND, img: &Image) -> Result<(), String> {
     let (w, h) = (img.width as usize, img.height as usize);
     let stride = (w * 3 + 3) & !3;
     let header = size_of::<BITMAPINFOHEADER>();
+    let mut data = vec![0u8; header + stride * h];
+    let info = BITMAPINFOHEADER {
+        biSize: header as u32,
+        biWidth: img.width,
+        biHeight: img.height, // bottom-up
+        biPlanes: 1,
+        biBitCount: 24,
+        biCompression: BI_RGB,
+        biSizeImage: (stride * h) as u32,
+        biXPelsPerMeter: 0,
+        biYPelsPerMeter: 0,
+        biClrUsed: 0,
+        biClrImportant: 0,
+    };
+    unsafe { std::ptr::write_unaligned(data.as_mut_ptr() as *mut BITMAPINFOHEADER, info) };
+    let pixels = &mut data[header..];
+    for (y, src) in img.data.chunks_exact(w * 4).enumerate() {
+        let row = &mut pixels[(h - 1 - y) * stride..][..stride];
+        for (dst, px) in row.chunks_exact_mut(3).zip(src.chunks_exact(4)) {
+            dst.copy_from_slice(&px[..3]);
+        }
+    }
+    set_clipboard(owner, CF_DIB, &data)
+}
+
+/// Puts files on the clipboard the way Explorer's Copy does, so pasting attaches or copies them.
+pub fn copy_files_to_clipboard(owner: HWND, paths: &[PathBuf]) -> Result<(), String> {
+    set_clipboard(owner, CF_HDROP, &drop_files(paths))
+}
+
+/// A `DROPFILES` header followed by the double-null-terminated list of UTF-16 paths.
+fn drop_files(paths: &[PathBuf]) -> Vec<u8> {
+    const HEADER: u32 = 20; // pFiles, pt.x, pt.y, fNC, fWide
+    let mut out = Vec::new();
+    for field in [HEADER, 0, 0, 0, 1] {
+        out.extend_from_slice(&field.to_le_bytes());
+    }
+    for path in paths {
+        for unit in crate::util::wide_os(path.as_os_str()) {
+            out.extend_from_slice(&unit.to_le_bytes());
+        }
+    }
+    out.extend_from_slice(&[0, 0]);
+    out
+}
+
+/// Replaces the clipboard contents with `data` in `format`.
+fn set_clipboard(owner: HWND, format: u32, data: &[u8]) -> Result<(), String> {
     unsafe {
-        let mem = GlobalAlloc(GMEM_MOVEABLE, header + stride * h);
+        let mem = GlobalAlloc(GMEM_MOVEABLE, data.len());
         if mem.is_null() {
             return Err("Out of memory".into());
         }
-        let p = GlobalLock(mem) as *mut u8;
-        let info = BITMAPINFOHEADER {
-            biSize: header as u32,
-            biWidth: img.width,
-            biHeight: img.height, // bottom-up
-            biPlanes: 1,
-            biBitCount: 24,
-            biCompression: BI_RGB,
-            biSizeImage: (stride * h) as u32,
-            biXPelsPerMeter: 0,
-            biYPelsPerMeter: 0,
-            biClrUsed: 0,
-            biClrImportant: 0,
-        };
-        std::ptr::write_unaligned(p as *mut BITMAPINFOHEADER, info);
-        let pixels = std::slice::from_raw_parts_mut(p.add(header), stride * h);
-        for (y, src) in img.data.chunks_exact(w * 4).enumerate() {
-            let row = &mut pixels[(h - 1 - y) * stride..][..stride];
-            for (dst, px) in row.chunks_exact_mut(3).zip(src.chunks_exact(4)) {
-                dst.copy_from_slice(&px[..3]);
-            }
-        }
+        std::ptr::copy_nonoverlapping(data.as_ptr(), GlobalLock(mem) as *mut u8, data.len());
         GlobalUnlock(mem);
 
         // Another app may briefly hold the clipboard open.
@@ -69,11 +97,11 @@ pub fn copy_to_clipboard(owner: HWND, img: &Image) -> Result<(), String> {
             return Err("The clipboard is in use by another app".into());
         }
         EmptyClipboard();
-        let ok = !SetClipboardData(CF_DIB, mem).is_null();
+        let ok = !SetClipboardData(format, mem).is_null();
         CloseClipboard();
         if !ok {
             GlobalFree(mem);
-            return Err("Couldn't place the image on the clipboard".into());
+            return Err("Couldn't write to the clipboard".into());
         }
     }
     Ok(())
@@ -132,6 +160,16 @@ pub fn save_png(img: &Image, path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drop_files_lists_wide_paths() {
+        let data = drop_files(&[PathBuf::from(r"C:\a.png"), PathBuf::from("b")]);
+        assert_eq!(&data[..4], &20u32.to_le_bytes(), "paths start after the header");
+        assert_eq!(&data[16..20], &1u32.to_le_bytes(), "wide strings");
+        let units: Vec<u16> = data[20..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let expected: Vec<u16> = "C:\\a.png\0b\0\0".encode_utf16().collect();
+        assert_eq!(units, expected);
+    }
 
     #[test]
     fn writes_png() {
