@@ -34,7 +34,7 @@ Where things are:
 | `src/shortcuts.rs`, `options.rs` | the capture shortcuts and on/off options both the tray app and Settings use |
 | `src/capture.rs`, `overlay.rs`, `scroll.rs`, `stitch.rs`, `record.rs`, `encode.rs`, `ocr.rs`, `pin.rs` | capturing, scrolling capture, recording, OCR, pins |
 | `src/update.rs` | update checks and installing updates |
-| `src/gallery/` | the library window: `mod.rs` (window, toolbar), `library.rs`, `theme.rs`, `color.rs`, `env.rs`; the Settings window: `settings_window.rs` |
+| `src/gallery/` | the library window: `mod.rs` (window, toolbar), `library.rs`, `theme.rs`, `color.rs`, `env.rs`, `search.rs` (search by text, app and window); the Settings window: `settings_window.rs` |
 | `src/gallery/doc.rs` | a screenshot's annotations, undo history and rendering |
 | `src/gallery/editor/` | the annotation canvas and tools |
 | `src/gallery/platform/` | what differs between Windows and Linux |
@@ -54,7 +54,7 @@ runs both on Windows and Linux and must pass. The suite has several layers:
   stays as it is.
 - **Editor harness** (`src/gallery/editor/tests.rs`): drives the editor with real mouse and keyboard
   events.
-- **Window tests** (`src/gallery/app_tests.rs`, `egui_kittest`): drive the whole library window
+- **Window tests** (`src/gallery/app_tests.rs` and `settings_tests.rs`, `egui_kittest`): drive the whole library window
   through its accessibility tree, in a sandbox folder with in-memory settings, so they never touch
   your screenshots or settings. Find controls by their accessible name; give new custom widgets one
   (`WidgetInfo`), which also helps screen readers.
@@ -87,8 +87,9 @@ docker run --rm -v "$PWD:/work" -w /work -e CARGO_TARGET_DIR=/work/target/linux 
   rsnip-test cargo test render_window -- --ignored
 ```
 
-`RSNIP_UI` takes `size=WxH`, `dock=left|bottom`, `empty`, and `click=<accessible name>` steps (use
-`_` for spaces).
+`RSNIP_UI` takes `size=WxH`, `dock=left|bottom`, `theme=light|dark`, `empty`, and `click=<accessible
+name>` steps (use `_` for spaces). `render_settings` does the same for the Settings window (`theme=`,
+`click=`).
 
 To use the running app from a tool or an AI agent, build with `--features inspect` and run it with
 `EGUI_INSPECTION=1`: it then serves its UI tree on `localhost:5719` for clients such as
