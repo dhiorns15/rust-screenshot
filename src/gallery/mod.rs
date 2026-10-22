@@ -2,6 +2,7 @@
 
 mod doc;
 mod dragout;
+mod library;
 mod editor;
 
 use std::collections::{HashMap, HashSet};
@@ -29,7 +30,6 @@ use editor::{Editor, Tool, ToolState, PALETTE, TEXT_SIZES, TOOLS};
 
 const TITLE: &str = "RSnip Library";
 const THUMB: Vec2 = Vec2::new(200.0, 112.0);
-const ROW_HEIGHT: f32 = 112.0 + 40.0;
 const RESCAN_EVERY: Duration = Duration::from_secs(2);
 
 /// Another `--gallery` launch drops the file it wants opened here.
@@ -100,6 +100,10 @@ struct App {
     effects: Effects,
     /// Text recognition running for "Copy text".
     ocr: Option<Receiver<Result<String, String>>>,
+    /// Library items selected for bulk actions.
+    selected: HashSet<PathBuf>,
+    /// Where Shift+click ranges start.
+    anchor: Option<PathBuf>,
 }
 
 impl App {
@@ -148,6 +152,8 @@ impl App {
             status: None,
             effects: load_effects(),
             ocr: None,
+            selected: HashSet::new(),
+            anchor: None,
         };
         app.rescan();
         doc::prune_layers(&app.dir);
@@ -320,17 +326,26 @@ impl App {
         self.set_status("Reading text…");
     }
 
-    fn delete(&mut self, path: &Path) {
-        if recycle(path) {
+    /// Moves screenshots to the Recycle Bin, with their editing data.
+    fn delete(&mut self, paths: &[PathBuf]) {
+        let mut failed = 0;
+        for path in paths {
+            if !recycle(path) {
+                failed += 1;
+                continue;
+            }
             doc::remove_layers(path);
-            if self.editor.as_ref().is_some_and(|e| e.doc.path == path) {
+            if self.editor.as_ref().is_some_and(|e| &e.doc.path == path) {
                 self.editor = None;
             }
             self.thumbs.remove(path);
-            self.rescan();
-            self.set_status("Moved to Recycle Bin");
-        } else {
-            self.set_status("Couldn't delete the file");
+            self.selected.remove(path);
+        }
+        self.rescan();
+        match (failed, paths.len()) {
+            (0, 1) => self.set_status("Moved to Recycle Bin"),
+            (0, n) => self.set_status(format!("Moved {n} screenshots to Recycle Bin")),
+            (f, _) => self.set_status(format!("Couldn't delete {f} of them")),
         }
     }
 
@@ -505,102 +520,6 @@ impl App {
         ui.checkbox(&mut fx.shadow, "Drop shadow");
         if fx != self.effects {
             self.set_effects(fx);
-        }
-    }
-
-    fn library(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.heading("Library");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("Folder").on_hover_text(self.dir.display().to_string()).clicked() {
-                    open_with_shell(&self.dir);
-                }
-            });
-        });
-        ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Search").desired_width(f32::INFINITY));
-        ui.add_space(4.0);
-
-        let filter = self.filter.to_lowercase();
-        let visible: Vec<usize> =
-            (0..self.entries.len()).filter(|&i| filter.is_empty() || self.entries[i].name.to_lowercase().contains(&filter)).collect();
-        ui.label(RichText::new(format!("{} screenshots", visible.len())).small().weak());
-        if visible.is_empty() {
-            ui.add_space(20.0);
-            ui.label("No screenshots yet. Press your capture hotkey to take one.");
-            return;
-        }
-
-        let current = self.editor.as_ref().map(|e| e.doc.path.clone());
-        let mut clicked = None;
-        let mut dragged = None;
-        let mut action: Option<(PathBuf, &str)> = None;
-        egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, ROW_HEIGHT, visible.len(), |ui, range| {
-            for &i in &visible[range] {
-                let entry = &self.entries[i];
-                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click_and_drag());
-                let selected = current.as_deref() == Some(entry.path.as_path());
-                let painter = ui.painter();
-                if selected {
-                    painter.rect_filled(rect.shrink(2.0), 6.0, ui.visuals().selection.bg_fill.gamma_multiply(0.6));
-                } else if response.hovered() {
-                    painter.rect_filled(rect.shrink(2.0), 6.0, ui.visuals().widgets.hovered.bg_fill);
-                }
-
-                let thumb_area = egui::Rect::from_min_size(rect.min + Vec2::new((rect.width() - THUMB.x) / 2.0, 8.0), THUMB);
-                match self.thumbs.get(&entry.path) {
-                    Some((modified, tex)) if *modified == entry.modified => {
-                        let fit = (THUMB.x / tex.size_vec2().x).min(THUMB.y / tex.size_vec2().y);
-                        let r = egui::Rect::from_center_size(thumb_area.center(), tex.size_vec2() * fit);
-                        let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
-                        painter.image(tex.id(), r, uv, Color32::WHITE);
-                    }
-                    _ => {
-                        painter.rect_filled(thumb_area, 4.0, Color32::from_gray(40));
-                        if self.requested.insert(entry.path.clone()) {
-                            let _ = self.thumb_tx.send((entry.path.clone(), entry.modified));
-                        }
-                    }
-                }
-                painter.text(
-                    egui::Pos2::new(rect.center().x, thumb_area.max.y + 14.0),
-                    Align2::CENTER_CENTER,
-                    &entry.name,
-                    egui::FontId::proportional(12.0),
-                    ui.visuals().text_color(),
-                );
-
-                if response.clicked() {
-                    clicked = Some(entry.path.clone());
-                }
-                if response.drag_started() {
-                    dragged = Some(entry.path.clone());
-                }
-                response.context_menu(|ui| {
-                    for label in ["Open in default app", "Show in folder", "Pin to screen", "Delete"] {
-                        if ui.button(label).clicked() {
-                            action = Some((entry.path.clone(), label));
-                            ui.close_menu();
-                        }
-                    }
-                });
-            }
-        });
-
-        if let Some(path) = clicked {
-            self.request_open(path);
-        }
-        if let Some(path) = dragged {
-            // Blocks until the drop; Explorer, chat apps and mail clients take it as a file.
-            if let Err(e) = dragout::drag_files(&[path]) {
-                self.set_status(format!("Couldn't drag: {e}"));
-            }
-        }
-        match action {
-            Some((path, "Open in default app")) => open_with_shell(&path),
-            Some((path, "Show in folder")) => show_in_folder(&path),
-            Some((path, "Pin to screen")) => crate::pin::spawn(&path),
-            Some((path, "Delete")) => self.delete(&path),
-            _ => {}
         }
     }
 

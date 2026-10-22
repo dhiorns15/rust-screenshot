@@ -97,6 +97,8 @@ Ctrl+Shift+S saves a copy, Ctrl+scroll zooms, Ctrl+0 fits to the window.
 The *Export* menu saves a JPG copy, or copies the image *as a file* so it pastes as an attachment into
 a folder, chat or email. Its *Border* and *Drop shadow* options are added to every copy, save and
 export (the annotations stay editable without them).
+The library groups screenshots by date (Today, Yesterday, This week, …). Ctrl+click and Shift+click
+select several, to copy them as files, delete them, pin them or drag them out together.
 Drag a library thumbnail into Explorer, a chat app or an email to drop the file there.
 Right-click a library thumbnail to open it externally, show it in Explorer, pin it, or move it to the Recycle Bin.
 
