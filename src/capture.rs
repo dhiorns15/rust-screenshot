@@ -37,6 +37,19 @@ pub struct Screenshot {
     pub image: Image,
 }
 
+impl Screenshot {
+    /// The part of `r` (virtual-screen coordinates) that's on screen, in image coordinates.
+    pub fn to_image_rect(&self, r: RECT) -> Option<RECT> {
+        let bounds = rect(0, 0, self.image.width, self.image.height);
+        let r = intersect(&offset(&r, -self.x, -self.y), &bounds);
+        (!is_empty(&r)).then_some(r)
+    }
+
+    pub fn to_screen_rect(&self, r: RECT) -> RECT {
+        offset(&r, self.x, self.y)
+    }
+}
+
 fn bitmap_info(width: i32, height: i32) -> BITMAPINFO {
     let mut bmi: BITMAPINFO = unsafe { zeroed() };
     bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
@@ -240,6 +253,18 @@ mod tests {
         let c = img.crop(rect(2, 1, 10, 10));
         assert_eq!((c.width, c.height), (2, 2));
         assert_eq!(&c.data[..4], &img.data[(4 + 2) * 4..(4 + 2) * 4 + 4]);
+    }
+
+    #[test]
+    fn maps_regions_between_screen_and_image() {
+        // A desktop whose left monitor starts at x = -1920.
+        let shot = Screenshot { x: -1920, y: 0, image: Image { width: 3840, height: 1080, data: Vec::new() } };
+        let r = shot.to_image_rect(rect(-100, 10, 100, 60)).unwrap();
+        assert!(same(&r, &rect(1820, 10, 2020, 60)));
+        assert!(same(&shot.to_screen_rect(r), &rect(-100, 10, 100, 60)));
+        let clipped = shot.to_image_rect(rect(1900, 1000, 2100, 1200)).unwrap();
+        assert!(same(&clipped, &rect(3820, 1000, 3840, 1080)), "clipped to the screen");
+        assert!(shot.to_image_rect(rect(5000, 0, 5100, 50)).is_none(), "entirely off screen");
     }
 
     #[test]

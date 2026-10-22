@@ -24,12 +24,13 @@ const PILL: COLORREF = 0x00202020;
 const WHITE: COLORREF = 0x00FFFFFF;
 const BLACK: COLORREF = 0x00000000;
 const HINT: &str = "Drag to select an area   ·   Click a window   ·   Enter: this screen   ·   A: all screens   ·   Esc: cancel\n\
-                    Arrows: nudge 1 px (Shift: 10)   ·   M: magnifier   ·   C: copy colour   ·   P: pin the highlighted area on screen";
+                    Arrows: nudge 1 px (Shift: 10)   ·   M: magnifier   ·   C: copy colour   ·   P: pin on screen   ·   R: last area";
 const VK_A: u16 = b'A' as u16;
 const VK_C: u16 = b'C' as u16;
 const VK_F: u16 = b'F' as u16;
 const VK_M: u16 = b'M' as u16;
 const VK_P: u16 = b'P' as u16;
+const VK_R: u16 = b'R' as u16;
 /// Source pixels across the magnifier (odd, so one sits in the middle).
 const MAG_SPAN: i32 = 15;
 
@@ -85,6 +86,8 @@ struct State {
     note: Option<String>,
     /// The selection is to be pinned on screen rather than saved (P).
     pin: bool,
+    /// The previous capture's area, offered by R.
+    last: Option<RECT>,
     done: bool,
     result: Option<Selection>,
 }
@@ -115,7 +118,7 @@ fn dim(pixels: &[u8]) -> Vec<u8> {
 
 /// Lets the user pick a region of `shot`. Returns it in image coordinates and whether to pin it,
 /// or `None` if cancelled.
-pub fn select(shot: &Screenshot, targets: Vec<Target>) -> Option<(Selection, bool)> {
+pub fn select(shot: &Screenshot, targets: Vec<Target>, last: Option<RECT>) -> Option<(Selection, bool)> {
     unsafe {
         let (w, h) = (shot.image.width, shot.image.height);
         let screen = GetDC(null_mut());
@@ -175,6 +178,7 @@ pub fn select(shot: &Screenshot, targets: Vec<Target>) -> Option<(Selection, boo
             magnifier: true,
             note: None,
             pin: false,
+            last,
             done: false,
             result: None,
         });
@@ -433,6 +437,11 @@ impl State {
                 let mut p: POINT = zeroed();
                 GetCursorPos(&mut p);
                 SetCursorPos(p.x + dx, p.y + dy);
+            }
+            VK_R => {
+                if let Some(r) = self.last {
+                    self.finish(Some(Selection::Area(r)));
+                }
             }
             VK_P => {
                 let selected = self.selection();

@@ -5,6 +5,7 @@
 //! `rsnip --full`     captures every monitor.
 //! `rsnip --delay N`  starts a region capture in N seconds.
 //! `rsnip --text`     selects a region and copies the text in it.
+//! `rsnip --last`     captures the same area as last time.
 //! `rsnip --gallery [file]` opens the screenshot library / editor.
 //! `rsnip --pin <file>` shows an image pinned on top of other windows.
 
@@ -60,6 +61,7 @@ const TIMER_REGION: usize = 1;
 const TIMER_FULL: usize = 2;
 const TIMER_COUNTDOWN: usize = 3;
 const TIMER_TEXT: usize = 4;
+const TIMER_LAST: usize = 5;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -67,6 +69,8 @@ pub enum Mode {
     Full = 1,
     /// Select a region and copy the text in it.
     Text = 2,
+    /// The same area as the last capture.
+    Last = 3,
 }
 
 impl Mode {
@@ -74,6 +78,7 @@ impl Mode {
         match w {
             1 => Mode::Full,
             2 => Mode::Text,
+            3 => Mode::Last,
             _ => Mode::Region,
         }
     }
@@ -107,6 +112,7 @@ fn main() {
         "--region" | "--capture" => Some(Mode::Region),
         "--full" => Some(Mode::Full),
         "--text" => Some(Mode::Text),
+        "--last" => Some(Mode::Last),
         _ => None,
     });
     let delay = args.iter().position(|a| a == "--delay").and_then(|i| args.get(i + 1)?.parse().ok());
@@ -296,6 +302,7 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 TIMER_REGION => capture(hwnd, Mode::Region),
                 TIMER_FULL => capture(hwnd, Mode::Full),
                 TIMER_TEXT => capture(hwnd, Mode::Text),
+                TIMER_LAST => capture(hwnd, Mode::Last),
                 _ => {}
             }
             0
@@ -354,6 +361,9 @@ unsafe fn on_menu(hwnd: HWND) {
         }
         tray::CMD_TEXT => {
             SetTimer(hwnd, TIMER_TEXT, 250, None);
+        }
+        tray::CMD_LAST => {
+            SetTimer(hwnd, TIMER_LAST, 250, None);
         }
         tray::CMD_GALLERY => open_gallery(None),
         tray::CMD_OPEN_FOLDER => shell_open(&output::screenshots_dir()),
@@ -435,21 +445,24 @@ unsafe fn on_text(hwnd: HWND, result: Result<String, String>) {
 /// The captured image, and whether the user asked to pin it (P in the overlay).
 fn take(mode: Mode) -> Option<(Image, bool)> {
     let shot = capture::capture_screen()?;
-    match mode {
-        Mode::Full => Some((shot.image, false)),
-        Mode::Region | Mode::Text => {
-            let targets = capture::window_targets(&shot);
-            let (selection, pin) = overlay::select(&shot, targets)?;
-            let image = match selection {
-                overlay::Selection::Area(r) | overlay::Selection::Window { rect: r, occluded: false, .. } => shot.image.crop(r),
-                // Something was on top of the window: raise it and capture it again cleanly.
-                overlay::Selection::Window { hwnd, rect, occluded: true } => {
-                    capture::capture_window_in_front(hwnd).unwrap_or_else(|| shot.image.crop(rect))
-                }
-            };
-            Some((image, pin))
-        }
+    let last = settings::last_region().and_then(|r| shot.to_image_rect(r));
+    match (mode, last) {
+        (Mode::Full, _) => return Some((shot.image, false)),
+        (Mode::Last, Some(r)) => return Some((shot.image.crop(r), false)),
+        // No last region (or it's off screen now): pick one as usual.
+        _ => {}
     }
+    let targets = capture::window_targets(&shot);
+    let (selection, pin) = overlay::select(&shot, targets, last)?;
+    let (image, area) = match selection {
+        overlay::Selection::Area(r) | overlay::Selection::Window { rect: r, occluded: false, .. } => (shot.image.crop(r), r),
+        // Something was on top of the window: raise it and capture it again cleanly.
+        overlay::Selection::Window { hwnd, rect, occluded: true } => {
+            (capture::capture_window_in_front(hwnd).unwrap_or_else(|| shot.image.crop(rect)), rect)
+        }
+    };
+    settings::set_last_region(shot.to_screen_rect(area));
+    Some((image, pin))
 }
 
 unsafe fn deliver(hwnd: HWND, img: Image) {

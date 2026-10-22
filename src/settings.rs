@@ -2,7 +2,7 @@
 
 use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+use windows_sys::Win32::Foundation::{ERROR_SUCCESS, RECT};
 use windows_sys::Win32::System::Registry::*;
 
 use crate::hook::Hotkey;
@@ -68,6 +68,21 @@ pub fn get(name: &str) -> Option<u32> {
 
 pub fn set(name: &str, value: u32) {
     write_dword(name, value);
+}
+
+const LAST_REGION: [&str; 4] = ["LastRegionLeft", "LastRegionTop", "LastRegionRight", "LastRegionBottom"];
+
+/// The last captured area, in virtual-screen coordinates (which can be negative).
+pub fn last_region() -> Option<RECT> {
+    let [left, top, right, bottom] = LAST_REGION.map(|name| get(name).map(|v| v as i32));
+    let r = RECT { left: left?, top: top?, right: right?, bottom: bottom? };
+    (r.right > r.left && r.bottom > r.top).then_some(r)
+}
+
+pub fn set_last_region(r: RECT) {
+    for (name, v) in LAST_REGION.iter().zip([r.left, r.top, r.right, r.bottom]) {
+        set(name, v as u32);
+    }
 }
 
 fn read_dword(subkey: &str, name: &str) -> Option<u32> {
