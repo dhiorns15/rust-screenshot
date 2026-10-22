@@ -11,6 +11,7 @@ mod capture;
 mod gallery;
 mod hook;
 mod icon;
+mod icon_art;
 mod output;
 mod overlay;
 mod prompt;
