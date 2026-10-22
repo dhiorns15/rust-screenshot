@@ -317,7 +317,7 @@ mod snapshots {
     /// RSNIP_UI="size=1280x820 dock=bottom click=Text" RSNIP_UI_OUT=ui.png cargo test render_window -- --ignored
     /// ```
     ///
-    /// `RSNIP_UI` is space-separated: `size=WxH`, `dock=left|bottom`, `empty` (no screenshots), and
+    /// `RSNIP_UI` is space-separated: `size=WxH`, `dock=left|bottom`, `theme=light|dark`, `empty` (no screenshots), and
     /// any number of `click=<label>` (a button's accessible name, e.g. a tool, `Undo`, `Export`, a
     /// colour; use `_` for spaces), applied in order.
     #[test]
@@ -327,6 +327,7 @@ mod snapshots {
         let out = std::env::var("RSNIP_UI_OUT").unwrap_or_else(|_| "target/ui.png".into());
         let mut size = SIZE;
         let mut dock = Dock::Left;
+        let mut appearance = super::super::theme::Appearance::Dark;
         let mut empty = false;
         let mut clicks = Vec::new();
         for item in spec.split_whitespace() {
@@ -337,13 +338,18 @@ mod snapshots {
                 }
                 Some(("dock", "bottom")) => dock = Dock::Bottom,
                 Some(("dock", _)) => dock = Dock::Left,
+                Some(("theme", "light")) => appearance = super::super::theme::Appearance::Light,
+                Some(("theme", _)) => appearance = super::super::theme::Appearance::Dark,
                 Some(("click", label)) => clicks.push(label.replace('_', " ")),
                 None if item == "empty" => empty = true,
                 _ => panic!("unknown RSNIP_UI item {item}"),
             }
         }
         let dir = if empty { tests::sandbox_dir("render-empty") } else { fixtures("render") };
-        let mut h = window(dir, size, |env| env.set_setting(Dock::SETTING, dock.to_setting()));
+        let mut h = window(dir, size, |env| {
+            env.set_setting(Dock::SETTING, dock.to_setting());
+            env.set_setting(super::super::theme::Appearance::SETTING, appearance.to_setting());
+        });
         for label in &clicks {
             h.get_by_label_contains(label).click();
             settle(&mut h);

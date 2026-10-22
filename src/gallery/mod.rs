@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 mod app_tests;
+#[cfg(test)]
+mod settings_tests;
 mod color;
 mod doc;
 #[cfg(windows)]
@@ -10,7 +12,10 @@ mod library;
 mod platform;
 mod editor;
 mod env;
+mod settings_window;
 mod theme;
+
+pub use settings_window::run as run_settings;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -28,14 +33,14 @@ use crate::update;
 use doc::{apply_effects, flatten, render, Doc, Effects};
 use editor::{Editor, Tool, ToolState, GROUP_STARTS, PALETTE, PALETTE_NAMES, TEXT_SIZES, TOOLS};
 use env::Env;
-use theme::{icon, IconButton};
+use theme::{icon, Appearance, IconButton};
 
 pub const TITLE: &str = "RSnip Library";
 const THUMB: Vec2 = Vec2::new(200.0, 112.0);
 const RESCAN_EVERY: Duration = Duration::from_secs(2);
 
 pub fn run(file: Option<PathBuf>) {
-    if !platform::claim_single_instance(TITLE) {
+    if !platform::claim_single_instance("Gallery", TITLE) {
         // The running library picks this up and opens the file.
         let request = file.map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
         let _ = std::fs::write(env::request_file(), request);
@@ -43,15 +48,12 @@ pub fn run(file: Option<PathBuf>) {
     }
     let _ = std::fs::remove_file(env::request_file());
 
-    let size = 64;
-    let bgra = crate::icon_art::render(size);
-    let rgba = bgra.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(TITLE)
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([760.0, 480.0])
-            .with_icon(Arc::new(egui::IconData { rgba, width: size as u32, height: size as u32 })),
+            .with_icon(window_icon()),
         ..Default::default()
     };
     let _ = eframe::run_native(TITLE, options, Box::new(move |cc| Ok(Box::new(App::new(&cc.egui_ctx, Env::real(), file)))));
@@ -131,7 +133,7 @@ struct App {
 
 impl App {
     fn new(ctx: &egui::Context, env: Env, file: Option<PathBuf>) -> App {
-        theme::apply(ctx);
+        theme::apply(ctx, Appearance::from_setting(env.setting(Appearance::SETTING)));
         let font_bytes = doc::load_font_bytes();
         let mut fonts = egui::FontDefinitions::default();
         theme::add_icons(&mut fonts);
@@ -407,6 +409,9 @@ impl App {
             self.update_rx = None;
         }
         if self.last_scan.elapsed() >= RESCAN_EVERY {
+            // Settings may have changed in the Settings window.
+            self.dock = Dock::from_setting(self.env.setting(Dock::SETTING));
+            self.effects = load_effects(&self.env);
             self.rescan();
         }
         if let Ok(request) = std::fs::read_to_string(&self.env.request_file) {
@@ -544,7 +549,7 @@ impl App {
                     if selected {
                         ui.painter().circle_stroke(center, 9.5, Stroke::new(2.0f32, Color32::WHITE));
                     } else if response.hovered() {
-                        ui.painter().circle_stroke(center, 9.5, Stroke::new(1.5f32, theme::MUTED));
+                        ui.painter().circle_stroke(center, 9.5, Stroke::new(1.5f32, theme::palette(ui).muted));
                     }
                     ui.painter().circle(center, 7.0, color, Stroke::new(1.0f32, Color32::from_black_alpha(90)));
                     if response.clicked() {
@@ -559,14 +564,14 @@ impl App {
                 ui.add_space(4.0);
             }
             if self.tools.style_tool() == Tool::Text {
-                ui.label(RichText::new("Size").color(theme::MUTED));
+                ui.label(RichText::new("Size").color(theme::palette(ui).muted));
                 ui.add(egui::Slider::new(self.tools.text_size_mut(), TEXT_SIZES).step_by(1.0).fixed_decimals(0))
                     .on_hover_text("Text size. Or drag the handle on the selected text's corner.");
                 ui.add_space(4.0);
                 ui.checkbox(self.tools.shadow_mut(), "Shadow")
                     .on_hover_text("Drop shadow behind text, for readability on busy backgrounds");
             } else if self.tools.uses_width() {
-                ui.label(RichText::new("Size").color(theme::MUTED));
+                ui.label(RichText::new("Size").color(theme::palette(ui).muted));
                 ui.add(egui::Slider::new(self.tools.width_mut(), 1.0..=24.0).step_by(1.0).fixed_decimals(0));
             }
             let selected = self.tools.selection.is_some();
@@ -585,7 +590,7 @@ impl App {
                 TOOLS.iter().find(|t| t.0 == self.tools.tool).map_or("", |t| t.3)
             };
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add(egui::Label::new(RichText::new(hint).color(theme::MUTED)).truncate());
+                ui.add(egui::Label::new(RichText::new(hint).color(theme::palette(ui).muted)).truncate());
             });
         });
     }
@@ -607,7 +612,7 @@ impl App {
             ui.painter().circle_filled(center, 4.0, color);
             ui.painter().circle_stroke(center, 9.5, Stroke::new(2.0f32, Color32::WHITE));
         } else if response.hovered() {
-            ui.painter().circle_stroke(center, 9.5, Stroke::new(1.5f32, theme::MUTED));
+            ui.painter().circle_stroke(center, 9.5, Stroke::new(1.5f32, theme::palette(ui).muted));
         }
         let response = response.on_hover_text("Pick any colour");
         egui::Popup::from_toggle_button_response(&response)
@@ -734,6 +739,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
+        theme::set_appearance(ctx, Appearance::from_setting(self.env.setting(Appearance::SETTING)));
         self.poll(ctx);
         let closing = ctx.input(|i| i.viewport().close_requested());
         if closing {
@@ -749,15 +755,16 @@ impl eframe::App for App {
             self.shortcuts(ctx);
         }
 
-        let bar = |fill| egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(10, 7)).stroke(egui::Stroke::new(1.0f32, theme::BORDER));
-        egui::Panel::top("toolbar").frame(bar(theme::PANEL)).show_separator_line(false).show(ui, |ui| self.toolbar(ui));
+        let p = theme::palette(ctx);
+        let bar = |fill| egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(10, 7)).stroke(egui::Stroke::new(1.0f32, p.border));
+        egui::Panel::top("toolbar").frame(bar(p.panel)).show_separator_line(false).show(ui, |ui| self.toolbar(ui));
         if self.editor.is_some() {
-            egui::Panel::top("options").frame(bar(theme::SUBPANEL)).show_separator_line(false).show(ui, |ui| self.tool_options(ui));
+            egui::Panel::top("options").frame(bar(p.subpanel)).show_separator_line(false).show(ui, |ui| self.tool_options(ui));
         }
         egui::Panel::bottom("status")
-            .frame(egui::Frame::NONE.fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 4)))
+            .frame(egui::Frame::NONE.fill(p.panel).inner_margin(egui::Margin::symmetric(10, 4)))
             .show(ui, |ui| self.status_bar(ui));
-        let library = egui::Frame::NONE.fill(theme::PANEL).inner_margin(egui::Margin::same(10));
+        let library = egui::Frame::NONE.fill(p.panel).inner_margin(egui::Margin::same(10));
         match self.dock {
             Dock::Left => {
                 egui::Panel::left("library")
@@ -775,7 +782,7 @@ impl eframe::App for App {
                     .show(ui, |ui| self.library(ui));
             }
         }
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(theme::CANVAS)).show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(p.canvas)).show(ui, |ui| {
             match &mut self.editor {
                 Some(editor) => editor.ui(ui, &mut self.tools, self.font.as_ref()),
                 None => {
@@ -785,6 +792,14 @@ impl eframe::App for App {
         });
         self.unsaved_dialog(ctx);
     }
+}
+
+/// RSnip's icon for a window's title bar and taskbar button.
+fn window_icon() -> Arc<egui::IconData> {
+    let size = 64;
+    let bgra = crate::icon_art::render(size);
+    let rgba = bgra.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+    Arc::new(egui::IconData { rgba, width: size as u32, height: size as u32 })
 }
 
 /// The toolbar's tools split into its groups, in order.

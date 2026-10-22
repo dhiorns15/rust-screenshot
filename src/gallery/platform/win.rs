@@ -11,8 +11,9 @@ use windows_sys::Win32::Storage::FileSystem::{GetFileAttributesW, SetFileAttribu
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
 use windows_sys::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW};
-use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE};
+use windows_sys::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, FindWindowW, PostMessageW, SetForegroundWindow, ShowWindow, ASFW_ANY, SW_RESTORE};
 
+use super::super::env::TrayRequest;
 use crate::capture::Image;
 use crate::gallery::doc::flatten;
 use crate::util::{wide, wide_os};
@@ -21,8 +22,10 @@ use crate::util::{wide, wide_os};
 pub const EXTRAS: bool = true;
 
 /// True if this is the only library window; otherwise brings the existing one to the front.
-pub fn claim_single_instance(title: &str) -> bool {
-    let name = wide("Local\\RSnip.Gallery");
+/// True if this is the only window of its kind (`name`, e.g. "Gallery"); otherwise brings the
+/// existing one (found by `title`) to the front.
+pub fn claim_single_instance(name: &str, title: &str) -> bool {
+    let name = wide(&format!("Local\\RSnip.{name}"));
     // Held (never closed) for the life of the process.
     let _mutex = unsafe { CreateMutexW(null(), 0, name.as_ptr()) };
     if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
@@ -37,6 +40,65 @@ pub fn claim_single_instance(title: &str) -> bool {
         }
     }
     false
+}
+
+pub fn start_with_windows() -> bool {
+    crate::settings::startup_enabled()
+}
+
+pub fn set_start_with_windows(on: bool) -> bool {
+    crate::settings::set_startup(on)
+}
+
+fn tray_window() -> windows_sys::Win32::Foundation::HWND {
+    let class = wide(crate::MAIN_CLASS);
+    unsafe { FindWindowW(class.as_ptr(), null()) }
+}
+
+pub fn tray_running() -> bool {
+    !tray_window().is_null()
+}
+
+pub fn tell_tray(request: TrayRequest) {
+    let (msg, wparam) = match request {
+        TrayRequest::SettingsChanged => (crate::WM_APP_SETTINGS_CHANGED, 0),
+        TrayRequest::RecordShortcut(action) => (crate::WM_APP_RECORD_SHORTCUT, action.index()),
+        TrayRequest::InstallUpdate => (crate::WM_APP_UPDATE_NOW, 0),
+    };
+    let tray = tray_window();
+    if !tray.is_null() {
+        unsafe { PostMessageW(tray, msg, wparam, 0) };
+    }
+}
+
+fn spawn_self(args: &[&str]) {
+    if let Ok(exe) = std::env::current_exe() {
+        // Let the new window come to the front.
+        unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+        let _ = std::process::Command::new(exe).args(args).spawn();
+    }
+}
+
+pub fn start_tray() {
+    spawn_self(&[]);
+}
+
+pub fn open_settings() {
+    spawn_self(&["--settings"]);
+}
+
+/// Windows' own "Use the Print screen key to open screen capture" (Settings → Accessibility →
+/// Keyboard).
+pub fn snipping_key() -> bool {
+    crate::settings::read_dword("Control Panel\\Keyboard", "PrintScreenKeyForSnippingEnabled") == Some(1)
+}
+
+pub fn installed() -> bool {
+    crate::update::installed()
+}
+
+pub fn shortcut_name(key: u32) -> String {
+    crate::hook::Hotkey::unpack(key).name()
 }
 
 pub fn screenshots_dir() -> PathBuf {

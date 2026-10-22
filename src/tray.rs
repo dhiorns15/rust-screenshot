@@ -44,6 +44,7 @@ pub const CMD_UPDATE: u32 = 20;
 pub const CMD_CHECK_UPDATES: u32 = 21;
 pub const CMD_AUTO_CHECK: u32 = 22;
 pub const CMD_AUTO_UPDATE: u32 = 23;
+pub const CMD_SETTINGS: u32 = 24;
 /// `CMD_DELAY + n` starts a capture in `n` seconds.
 pub const CMD_DELAY: u32 = 100;
 pub const DELAYS: [u32; 3] = [3, 5, 10];
@@ -143,6 +144,7 @@ pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, state: &MenuState) -> u
     separator();
     item(CMD_GALLERY, "Open library && editor", false);
     item(CMD_OPEN_FOLDER, "Open screenshots folder", false);
+    item(CMD_SETTINGS, "Settings…", false);
     separator();
     let region = shortcuts::get(&settings.shortcuts, Action::Region);
     let region = if region == 0 { "none".into() } else { Hotkey::unpack(region).name() };

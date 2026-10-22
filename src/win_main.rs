@@ -11,6 +11,7 @@
 // `rsnip --gallery [file]` opens the screenshot library / editor.
 // `rsnip --pin <file>` shows an image pinned on top of other windows.
 // `rsnip --update`   checks for a newer version and installs it.
+// `rsnip --settings` opens the Settings window.
 
 mod capture;
 mod encode;
@@ -47,7 +48,7 @@ use settings::Settings;
 use util::{wide, wide_os};
 
 pub const APP_NAME: &str = "RSnip";
-const MAIN_CLASS: &str = "RSnip.Main";
+pub const MAIN_CLASS: &str = "RSnip.Main";
 
 pub const WM_APP_TRAY: u32 = WM_APP + 1;
 pub const WM_APP_CAPTURE: u32 = WM_APP + 2;
@@ -68,7 +69,11 @@ const WM_APP_UPDATE_CHECKED: u32 = WM_APP + 11;
 /// The update's installer was downloaded; `lparam` is a `Box<Result<PathBuf, String>>`.
 const WM_APP_UPDATE_READY: u32 = WM_APP + 12;
 /// `rsnip --update` was run again: check for an update and install it.
-const WM_APP_UPDATE_NOW: u32 = WM_APP + 13;
+pub const WM_APP_UPDATE_NOW: u32 = WM_APP + 13;
+/// The Settings window changed settings: reload and apply them.
+pub const WM_APP_SETTINGS_CHANGED: u32 = WM_APP + 14;
+/// The Settings window wants a new shortcut for the action with index `wparam`.
+pub const WM_APP_RECORD_SHORTCUT: u32 = WM_APP + 15;
 
 const TIMER_REGION: usize = 1;
 const TIMER_FULL: usize = 2;
@@ -165,6 +170,7 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("--gallery") => return gallery::run(args.get(1).map(PathBuf::from)),
         Some("--pin") => return args.get(1).map_or((), |file| pin::run(PathBuf::from(file))),
+        Some("--settings") => return gallery::run_settings(),
         _ => {}
     }
     let mode = args.iter().find_map(|a| match a.as_str() {
@@ -310,8 +316,10 @@ unsafe fn notify(hwnd: HWND, title: &str, text: &str) {
     tray::notify(hwnd, ICON_LARGE.get(), title, text);
 }
 
+/// Changes a setting. Starts from what's stored, so changes made in the Settings window meanwhile
+/// aren't overwritten.
 fn update_settings(f: impl FnOnce(&mut Settings)) -> Settings {
-    let mut s = SETTINGS.get();
+    let mut s = Settings::load();
     f(&mut s);
     s.store();
     SETTINGS.set(s);
@@ -322,6 +330,12 @@ pub fn shell_open(path: &Path) {
     let verb = wide("open");
     let file = wide_os(path.as_os_str());
     unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), null(), null(), SW_SHOWNORMAL) };
+}
+
+fn open_settings() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+    let _ = std::process::Command::new(exe).arg("--settings").spawn();
 }
 
 /// Opens the library window, optionally with `file` selected.
@@ -392,6 +406,20 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
         }
         WM_APP_UPDATE_READY => {
             on_update_ready(hwnd, *Box::from_raw(lparam as *mut Result<PathBuf, String>));
+            0
+        }
+        WM_APP_SETTINGS_CHANGED => {
+            let s = Settings::load();
+            SETTINGS.set(s);
+            hook::set_shortcuts(&s.shortcuts);
+            hook::set_win_shift_s(s.win_shift_s);
+            tray::set_tip(hwnd, &tip(&s));
+            0
+        }
+        WM_APP_RECORD_SHORTCUT => {
+            if let Some(action) = shortcuts::Action::from_index(wparam) {
+                record_shortcut(hwnd, action);
+            }
             0
         }
         WM_APP_UPDATE_NOW => {
@@ -507,6 +535,7 @@ unsafe fn on_menu(hwnd: HWND) {
             update_settings(|s| s.record_gif = !s.record_gif);
         }
         tray::CMD_GALLERY => open_gallery(None),
+        tray::CMD_SETTINGS => open_settings(),
         tray::CMD_OPEN_FOLDER => shell_open(&output::screenshots_dir()),
         tray::CMD_HOTKEY => record_shortcut(hwnd, shortcuts::Action::Region),
         tray::CMD_SAVE => {

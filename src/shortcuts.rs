@@ -52,7 +52,7 @@ impl Action {
         }
     }
 
-    fn index(self) -> usize {
+    pub fn index(self) -> usize {
         Action::ALL.iter().position(|&a| a == self).unwrap()
     }
 
@@ -99,6 +99,39 @@ pub fn assign(table: &mut Table, action: Action, key: u32) -> Option<Action> {
 
 pub fn get(table: &Table, action: Action) -> u32 {
     table[action.index()]
+}
+
+/// Actions sharing a shortcut (only possible if the settings were edited by hand).
+pub fn conflicts(table: &Table) -> Vec<(Action, Action)> {
+    let mut out = Vec::new();
+    for i in 0..COUNT {
+        for j in i + 1..COUNT {
+            if table[i] != 0 && table[i] == table[j] {
+                out.push((Action::ALL[i], Action::ALL[j]));
+            }
+        }
+    }
+    out
+}
+
+/// A shortcut's name without asking Windows (which names keys in the keyboard's language): for
+/// systems without the tray app, and tests.
+#[cfg_attr(windows, allow(dead_code))]
+pub fn fallback_name(key: u32) -> String {
+    let (vk, mods) = (key & 0xFFFF, key >> 16);
+    let mut parts: Vec<String> = [(1, "Ctrl"), (4, "Alt"), (2, "Shift"), (8, "Win")]
+        .into_iter()
+        .filter(|&(bit, _)| mods & bit != 0)
+        .map(|(_, name)| name.to_string())
+        .collect();
+    parts.push(match vk {
+        PRINT_SCREEN => "PrtScn".into(),
+        0x13 => "Pause".into(),
+        0x30..=0x39 | 0x41..=0x5A => char::from(vk as u8).to_string(),
+        0x70..=0x87 => format!("F{}", vk - 0x6F),
+        _ => format!("Key 0x{vk:02X}"),
+    });
+    parts.join("+")
 }
 
 /// The action a key press (packed like a shortcut) triggers; the first one if several share it.
@@ -149,6 +182,22 @@ mod tests {
         assert_eq!(assign(&mut table, Action::Full, PRINT_SCREEN), None, "already its own");
         assert_eq!(assign(&mut table, Action::Full, 0), None, "clearing takes nothing");
         assert_eq!(table, [0; COUNT]);
+        assert!(conflicts(&table).is_empty());
+    }
+
+    #[test]
+    fn conflicts_are_reported() {
+        let table = [PRINT_SCREEN, 0, PRINT_SCREEN, 0, SHIFT_PRTSCN, SHIFT_PRTSCN];
+        assert_eq!(conflicts(&table), [(Action::Region, Action::Last), (Action::Record, Action::Text)]);
+    }
+
+    #[test]
+    fn fallback_names() {
+        assert_eq!(fallback_name(PRINT_SCREEN), "PrtScn");
+        assert_eq!(fallback_name(SHIFT_PRTSCN), "Shift+PrtScn");
+        assert_eq!(fallback_name(0x58 | (1 | 2) << 16), "Ctrl+Shift+X");
+        assert_eq!(fallback_name(0x7B | 4 << 16), "Alt+F12");
+        assert_eq!(fallback_name(0xBA), "Key 0xBA");
     }
 
     /// Settings holding just `pairs`.

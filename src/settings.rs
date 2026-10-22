@@ -5,6 +5,7 @@ use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, RECT};
 use windows_sys::Win32::System::Registry::*;
 
+use crate::options::{self, Flag};
 use crate::shortcuts::{self, Action};
 use crate::util::{wide, wide_os};
 use crate::APP_NAME;
@@ -31,32 +32,31 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             shortcuts: shortcuts::defaults(),
-            save_to_folder: true,
-            notify: true,
-            win_shift_s: true,
-            open_editor: false,
-            open_library_on_launch: false,
-            record_gif: false,
-            check_updates: true,
-            auto_update: false,
+            save_to_folder: options::SAVE_TO_FOLDER.default,
+            notify: options::NOTIFY.default,
+            win_shift_s: options::WIN_SHIFT_S.default,
+            open_editor: options::OPEN_EDITOR.default,
+            open_library_on_launch: options::OPEN_LIBRARY_ON_LAUNCH.default,
+            record_gif: options::RECORD_GIF.default,
+            check_updates: options::CHECK_UPDATES.default,
+            auto_update: options::AUTO_UPDATE.default,
         }
     }
 }
 
 impl Settings {
     pub fn load() -> Settings {
-        let d = Settings::default();
-        let flag = |name, default| read_dword(KEY, name).map_or(default, |v| v != 0);
+        let flag = |f: Flag| f.read(|name| read_dword(KEY, name));
         Settings {
             shortcuts: shortcuts::load(|name| read_dword(KEY, name)),
-            save_to_folder: flag("SaveToFolder", d.save_to_folder),
-            notify: flag("Notify", d.notify),
-            win_shift_s: flag("WinShiftS", d.win_shift_s),
-            open_editor: flag("OpenEditor", d.open_editor),
-            open_library_on_launch: flag("OpenLibraryOnLaunch", d.open_library_on_launch),
-            record_gif: flag("RecordGif", d.record_gif),
-            check_updates: flag("CheckUpdates", d.check_updates),
-            auto_update: flag("AutoUpdate", d.auto_update),
+            save_to_folder: flag(options::SAVE_TO_FOLDER),
+            notify: flag(options::NOTIFY),
+            win_shift_s: flag(options::WIN_SHIFT_S),
+            open_editor: flag(options::OPEN_EDITOR),
+            open_library_on_launch: flag(options::OPEN_LIBRARY_ON_LAUNCH),
+            record_gif: flag(options::RECORD_GIF),
+            check_updates: flag(options::CHECK_UPDATES),
+            auto_update: flag(options::AUTO_UPDATE),
         }
     }
 
@@ -64,14 +64,19 @@ impl Settings {
         for action in Action::ALL {
             write_dword(action.setting(), shortcuts::get(&self.shortcuts, action));
         }
-        write_dword("SaveToFolder", self.save_to_folder as u32);
-        write_dword("Notify", self.notify as u32);
-        write_dword("WinShiftS", self.win_shift_s as u32);
-        write_dword("OpenEditor", self.open_editor as u32);
-        write_dword("OpenLibraryOnLaunch", self.open_library_on_launch as u32);
-        write_dword("RecordGif", self.record_gif as u32);
-        write_dword("CheckUpdates", self.check_updates as u32);
-        write_dword("AutoUpdate", self.auto_update as u32);
+        let flags = [
+            (options::SAVE_TO_FOLDER, self.save_to_folder),
+            (options::NOTIFY, self.notify),
+            (options::WIN_SHIFT_S, self.win_shift_s),
+            (options::OPEN_EDITOR, self.open_editor),
+            (options::OPEN_LIBRARY_ON_LAUNCH, self.open_library_on_launch),
+            (options::RECORD_GIF, self.record_gif),
+            (options::CHECK_UPDATES, self.check_updates),
+            (options::AUTO_UPDATE, self.auto_update),
+        ];
+        for (flag, on) in flags {
+            write_dword(flag.name, on as u32);
+        }
     }
 }
 
@@ -100,7 +105,7 @@ pub fn set_last_region(r: RECT) {
     }
 }
 
-fn read_dword(subkey: &str, name: &str) -> Option<u32> {
+pub fn read_dword(subkey: &str, name: &str) -> Option<u32> {
     let (subkey, name) = (wide(subkey), wide(name));
     let mut value = 0u32;
     let mut size = 4u32;

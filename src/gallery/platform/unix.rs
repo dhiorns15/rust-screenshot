@@ -19,17 +19,52 @@ fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// True if this is the only library window (held with a lock file until the process exits).
-pub fn claim_single_instance(_title: &str) -> bool {
+/// True if this is the only window of its kind (held with a lock file until the process exits).
+pub fn claim_single_instance(name: &str, _title: &str) -> bool {
     static LOCK: OnceLock<File> = OnceLock::new();
     let user = std::env::var("USER").unwrap_or_default();
-    let path = std::env::temp_dir().join(format!("rsnip-gallery-{user}.lock"));
+    let path = std::env::temp_dir().join(format!("rsnip-{}-{user}.lock", name.to_lowercase()));
     let Ok(file) = File::options().create(true).truncate(false).write(true).open(&path) else { return true };
     if file.try_lock().is_err() {
         return false;
     }
     let _ = LOCK.set(file);
     true
+}
+
+// There's no tray app here: no startup entry, global shortcuts or installer.
+pub fn start_with_windows() -> bool {
+    false
+}
+
+pub fn set_start_with_windows(_on: bool) -> bool {
+    false
+}
+
+pub fn tray_running() -> bool {
+    false
+}
+
+pub fn tell_tray(_request: super::super::env::TrayRequest) {}
+
+pub fn start_tray() {}
+
+pub fn open_settings() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe).arg("--settings").spawn();
+    }
+}
+
+pub fn snipping_key() -> bool {
+    false
+}
+
+pub fn installed() -> bool {
+    false
+}
+
+pub fn shortcut_name(key: u32) -> String {
+    crate::shortcuts::fallback_name(key)
 }
 
 /// `~/Pictures/Screenshots`, or wherever the desktop's Pictures folder is.

@@ -37,7 +37,7 @@ pub fn picker(ui: &mut Ui, color: &mut Color32) {
     ui.horizontal(|ui| {
         let (swatch, _) = ui.allocate_exact_size(Vec2::new(28.0, 24.0), Sense::hover());
         ui.painter().rect_filled(swatch, 4.0, Color32::from(state.hsva));
-        let label = ui.label(RichText::new("Hex").color(theme::MUTED));
+        let label = ui.label(RichText::new("Hex").color(theme::palette(ui).muted));
         let field = egui::TextEdit::singleline(&mut state.hex).desired_width(90.0).char_limit(7);
         if ui.add(field).labelled_by(label.id).changed() {
             if let Some(parsed) = parse_hex(&state.hex) {
@@ -79,7 +79,7 @@ fn sv_square(ui: &mut Ui, hsva: &mut Hsva) {
         }
     }
     ui.painter().add(mesh);
-    ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0f32, theme::BORDER), egui::StrokeKind::Outside);
+    ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0f32, theme::palette(ui).border), egui::StrokeKind::Outside);
     let marker = Pos2::new(rect.left() + hsva.s * rect.width(), rect.top() + (1.0 - hsva.v) * rect.height());
     ui.painter().circle_stroke(marker, 6.0, Stroke::new(2.0f32, Color32::WHITE));
     ui.painter().circle_stroke(marker, 7.5, Stroke::new(1.0f32, Color32::from_black_alpha(160)));

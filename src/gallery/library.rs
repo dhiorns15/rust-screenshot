@@ -152,7 +152,7 @@ impl App {
         if visible.is_empty() {
             ui.add_space(12.0);
             let text = if self.entries.is_empty() { "No screenshots yet. Press your capture hotkey to take one." } else { "Nothing matches." };
-            ui.label(RichText::new(text).color(theme::MUTED));
+            ui.label(RichText::new(text).color(theme::palette(ui).muted));
             return;
         }
 
@@ -187,6 +187,9 @@ impl App {
 
     /// Where the library goes (left or bottom), and the screenshots folder; added right to left.
     fn library_buttons(&mut self, ui: &mut egui::Ui) {
+        if ui.add(IconButton::new(icon::GEAR_SIX, "Settings")).on_hover_text("Settings").clicked() {
+            self.env.open_settings();
+        }
         if ui.add(IconButton::new(icon::FOLDER_OPEN, "Open the folder")).on_hover_text(format!("Open the folder\n{}", self.env.dir.display())).clicked() {
             open_with_shell(&self.env.dir);
         }
@@ -205,7 +208,7 @@ impl App {
             self.bulk_bar(ui);
         } else {
             let noun = if count == 1 { "screenshot" } else { "screenshots" };
-            ui.label(RichText::new(format!("{count} {noun}")).small().color(theme::MUTED));
+            ui.label(RichText::new(format!("{count} {noun}")).small().color(theme::palette(ui).muted));
         }
     }
 
@@ -233,7 +236,7 @@ impl App {
                     match row {
                         Row::Header(label) => {
                             let at = rect.left_bottom() + Vec2::new(4.0, -8.0);
-                            ui.painter().text(at, Align2::LEFT_BOTTOM, label, egui::FontId::proportional(13.0), theme::MUTED);
+                            ui.painter().text(at, Align2::LEFT_BOTTOM, label, egui::FontId::proportional(13.0), theme::palette(ui).muted);
                         }
                         Row::Item(i) => {
                             if let Some(done) = self.item(ui, rect, *i) {
@@ -272,7 +275,7 @@ impl App {
                 if end_x >= viewport.min.x && start_x <= viewport.max.x {
                     let label_x = sticky_label_x(start_x, end_x, viewport.min.x);
                     let at = origin + Vec2::new(label_x + 4.0, LABEL_HEIGHT - 4.0);
-                    ui.painter().text(at, Align2::LEFT_BOTTOM, &labels[n], egui::FontId::proportional(13.0), theme::MUTED);
+                    ui.painter().text(at, Align2::LEFT_BOTTOM, &labels[n], egui::FontId::proportional(13.0), theme::palette(ui).muted);
                     for m in n..end {
                         if xs[m] + COLUMN_WIDTH >= viewport.min.x && xs[m] <= viewport.max.x {
                             let rect = Rect::from_min_size(origin + Vec2::new(xs[m], LABEL_HEIGHT), Vec2::new(COLUMN_WIDTH, ROW_HEIGHT));
@@ -301,7 +304,7 @@ impl App {
             painter.rect_filled(tile, 8.0, theme::ACCENT.gamma_multiply(0.22));
             painter.rect_stroke(tile, 8.0, Stroke::new(1.5f32, theme::ACCENT), egui::StrokeKind::Middle);
         } else if response.hovered() {
-            painter.rect_filled(tile, 8.0, theme::RAISED);
+            painter.rect_filled(tile, 8.0, theme::palette(ui).raised);
         }
         if open && !selected {
             painter.rect_stroke(tile, 8.0, Stroke::new(1.0f32, theme::ACCENT.gamma_multiply(0.7)), egui::StrokeKind::Middle);
@@ -315,7 +318,7 @@ impl App {
                 painter.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
             }
             _ => {
-                painter.rect_filled(thumb_area, 4.0, theme::RAISED);
+                painter.rect_filled(thumb_area, 4.0, theme::palette(ui).raised);
                 // MP4s have no thumbnail; GIFs show their first frame.
                 let mp4 = entry.video && !entry.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("gif"));
                 if mp4 {

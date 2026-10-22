@@ -7,6 +7,7 @@
 
 mod gallery;
 mod icon_art;
+mod options;
 mod shortcuts;
 mod update;
 
@@ -15,6 +16,9 @@ include!("win_main.rs");
 
 #[cfg(not(windows))]
 fn main() {
+    if std::env::args().any(|a| a == "--settings") {
+        return gallery::run_settings();
+    }
     let file = std::env::args().skip(1).find(|a| !a.starts_with("--")).map(std::path::PathBuf::from);
     gallery::run(file);
 }
