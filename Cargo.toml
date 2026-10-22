@@ -5,6 +5,11 @@ edition = "2021"
 description = "A Snagit-style screenshot tool for Windows, with a screenshot library and editor that also runs on Linux"
 license = "MIT"
 
+[features]
+# Lets tools see and drive the library window: run a build with this feature with EGUI_INSPECTION=1
+# and it serves its UI tree on localhost:5719 (see CONTRIBUTING.md). Never in releases.
+inspect = ["eframe/inspection"]
+
 [build-dependencies]
 embed-resource = "3"
 png = "0.17"
