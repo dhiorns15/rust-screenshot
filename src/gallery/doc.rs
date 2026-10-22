@@ -358,6 +358,18 @@ pub fn remove_layers(path: &Path) {
     }
 }
 
+/// Deletes saved layers in `dir` whose screenshot is gone, e.g. deleted in Explorer.
+pub fn prune_layers(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir.join(".rsnip")) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let shot = name.strip_suffix(".base.png").or_else(|| name.strip_suffix(".json"));
+        if shot.is_some_and(|shot| !dir.join(shot).exists()) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Keeps the `.rsnip` folder out of the way in Explorer.
 fn hide(dir: &Path) {
     use windows_sys::Win32::Storage::FileSystem::{GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, INVALID_FILE_ATTRIBUTES};
@@ -789,5 +801,21 @@ mod tests {
         assert!(doc.dirty());
         doc.undo();
         assert!(doc.current().shapes[0] == boxed(3.0, Color32::RED));
+    }
+
+    #[test]
+    fn prunes_layers_of_deleted_screenshots() {
+        let dir = std::env::temp_dir().join(format!("rsnip-prune-{}", std::process::id()));
+        let layers = dir.join(".rsnip");
+        std::fs::create_dir_all(&layers).unwrap();
+        std::fs::write(dir.join("kept.png"), b"png").unwrap();
+        for name in ["kept.png.json", "kept.png.base.png", "gone.png.json", "gone.png.base.png", "notes.txt"] {
+            std::fs::write(layers.join(name), b"x").unwrap();
+        }
+        prune_layers(&dir);
+        let mut left: Vec<String> = std::fs::read_dir(&layers).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(left, ["kept.png.base.png", "kept.png.json", "notes.txt"]);
     }
 }

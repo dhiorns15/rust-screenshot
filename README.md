@@ -80,7 +80,8 @@ Each move, resize or restyle is one undo step.
 
 Annotations stay editable after saving: the saved PNG is flattened for sharing, and the original
 image plus your annotations are kept in a hidden `.rsnip` folder beside it, so reopening the
-screenshot lets you keep editing. If the PNG is changed by another program, it opens as a plain image.
+screenshot lets you keep editing. If the PNG is changed by another program, it opens as a plain image. Editing data for screenshots
+deleted outside RSnip is cleaned up automatically.
 
 Ctrl+Z / Ctrl+Y undo/redo, Ctrl+C copies the edited image, Ctrl+S overwrites the file,
 Ctrl+Shift+S saves a copy, Ctrl+scroll zooms, Ctrl+0 fits to the window.

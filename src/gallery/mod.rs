@@ -143,6 +143,7 @@ impl App {
             status: None,
         };
         app.rescan();
+        doc::prune_layers(&app.dir);
         match file {
             Some(file) => app.open(&file),
             None => {
@@ -170,6 +171,11 @@ impl App {
             })
             .collect();
         entries.sort_by_key(|e| std::cmp::Reverse(e.modified));
+        let listed: HashSet<&Path> = entries.iter().map(|e| e.path.as_path()).collect();
+        let vanished = self.entries.iter().any(|e| !listed.contains(e.path.as_path()));
+        if vanished {
+            doc::prune_layers(&self.dir);
+        }
         self.entries = entries;
     }
 
