@@ -434,7 +434,7 @@ impl Editor {
             if let (Some(drag), Some(pos)) = (&mut self.drag, response.interact_pointer_pos()) {
                 let p = to_img(pos);
                 drag.current = p;
-                if drag.points.last().map_or(true, |last| last.distance(p) * scale >= 1.5) {
+                if drag.points.last().is_none_or(|last| last.distance(p) * scale >= 1.5) {
                     drag.points.push(p);
                 }
             }

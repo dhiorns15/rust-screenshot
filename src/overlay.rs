@@ -198,7 +198,11 @@ pub fn select(shot: &Screenshot, targets: Vec<Target>) -> Option<Selection> {
         OVERLAY_HWND.store(hwnd as isize, Relaxed);
 
         let mut msg: MSG = zeroed();
-        while !(*ptr).done {
+        loop {
+            // The window procedure sets `done` while dispatching.
+            if (*ptr).done {
+                break;
+            }
             match GetMessageW(&mut msg, null_mut(), 0, 0) {
                 0 => {
                     PostQuitMessage(msg.wParam as i32);

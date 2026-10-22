@@ -400,7 +400,7 @@ pub fn render(snapshot: &Snapshot, font: Option<&FontVec>) -> RgbaImage {
     let mut out = RgbaImage::new(w, h);
     for (dst, src) in out.as_mut().chunks_exact_mut(4).zip(pixmap.data().chunks_exact(4)) {
         let a = src[3] as u16;
-        let un = |c: u8| if a == 0 { 0 } else { (c as u16 * 255 / a).min(255) as u8 };
+        let un = |c: u8| (c as u16 * 255).checked_div(a).map_or(0, |v| v.min(255) as u8);
         dst.copy_from_slice(&[un(src[0]), un(src[1]), un(src[2]), src[3]]);
     }
     out

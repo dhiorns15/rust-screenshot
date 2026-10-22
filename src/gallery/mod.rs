@@ -169,7 +169,7 @@ impl App {
                 Some(Entry { path: e.path(), name, modified })
             })
             .collect();
-        entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.modified));
         self.entries = entries;
     }
 
@@ -576,7 +576,7 @@ fn copy_path(path: &Path) -> PathBuf {
 }
 
 fn open_with_shell(path: &Path) {
-    unsafe { crate::shell_open(path) };
+    crate::shell_open(path);
 }
 
 fn show_in_folder(path: &Path) {

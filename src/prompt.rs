@@ -16,8 +16,8 @@ use crate::WM_APP_HOTKEY_RECORDED;
 const CLASS: &str = "RSnip.Prompt";
 
 thread_local! {
-    static TEXT: RefCell<Vec<u16>> = RefCell::new(Vec::new());
-    static WINDOW: RefCell<HWND> = RefCell::new(null_mut());
+    static TEXT: RefCell<Vec<u16>> = const { RefCell::new(Vec::new()) };
+    static WINDOW: RefCell<HWND> = const { RefCell::new(null_mut()) };
 }
 
 pub unsafe fn register_class(hinstance: HINSTANCE) {

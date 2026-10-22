@@ -190,10 +190,10 @@ fn update_settings(f: impl FnOnce(&mut Settings)) -> Settings {
     s
 }
 
-pub unsafe fn shell_open(path: &Path) {
+pub fn shell_open(path: &Path) {
     let verb = wide("open");
     let file = wide_os(path.as_os_str());
-    ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), null(), null(), SW_SHOWNORMAL);
+    unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), null(), null(), SW_SHOWNORMAL) };
 }
 
 /// Opens the library window, optionally with `file` selected.
