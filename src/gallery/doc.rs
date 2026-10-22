@@ -406,20 +406,12 @@ pub fn prune_layers(dir: &Path) {
 
 /// Keeps the `.rsnip` folder out of the way in Explorer.
 fn hide(dir: &Path) {
-    use windows_sys::Win32::Storage::FileSystem::{GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, INVALID_FILE_ATTRIBUTES};
-    let wide = crate::util::wide_os(dir.as_os_str());
-    unsafe {
-        let attrs = GetFileAttributesW(wide.as_ptr());
-        if attrs != INVALID_FILE_ATTRIBUTES && attrs & FILE_ATTRIBUTE_HIDDEN == 0 {
-            SetFileAttributesW(wide.as_ptr(), attrs | FILE_ATTRIBUTE_HIDDEN);
-        }
-    }
+    super::platform::hide(dir);
 }
 
 /// Raw font file, also handed to egui so the live text preview uses the same glyphs.
 pub fn load_font_bytes() -> Option<Vec<u8>> {
-    let fonts = std::env::var_os("WINDIR").map(|w| Path::new(&w).join("Fonts"))?;
-    ["seguisb.ttf", "segoeui.ttf", "arial.ttf"].iter().find_map(|name| std::fs::read(fonts.join(name)).ok())
+    super::platform::font_bytes()
 }
 
 /// Arrow geometry shared by the preview and the renderer: end of the shaft and the head triangle.

@@ -1,0 +1,147 @@
+//! The library on Windows, sharing the tray app's clipboard, settings and capture code.
+
+use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::ptr::{null, null_mut};
+use std::time::SystemTime;
+
+use image::RgbaImage;
+use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, FILETIME, SYSTEMTIME};
+use windows_sys::Win32::Storage::FileSystem::{GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, INVALID_FILE_ATTRIBUTES};
+use windows_sys::Win32::System::Threading::CreateMutexW;
+use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+use windows_sys::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW};
+use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE};
+
+use crate::capture::Image;
+use crate::gallery::doc::flatten;
+use crate::util::{wide, wide_os};
+
+/// Pinning, OCR, copying as files and dragging files out are available.
+pub const EXTRAS: bool = true;
+
+/// True if this is the only library window; otherwise brings the existing one to the front.
+pub fn claim_single_instance(title: &str) -> bool {
+    let name = wide("Local\\RSnip.Gallery");
+    // Held (never closed) for the life of the process.
+    let _mutex = unsafe { CreateMutexW(null(), 0, name.as_ptr()) };
+    if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
+        return true;
+    }
+    let title = wide(title);
+    unsafe {
+        let hwnd = FindWindowW(null(), title.as_ptr());
+        if !hwnd.is_null() {
+            ShowWindow(hwnd, SW_RESTORE);
+            SetForegroundWindow(hwnd);
+        }
+    }
+    false
+}
+
+pub fn screenshots_dir() -> PathBuf {
+    crate::output::screenshots_dir()
+}
+
+pub fn setting(name: &str) -> Option<u32> {
+    crate::settings::get(name)
+}
+
+pub fn set_setting(name: &str, value: u32) {
+    crate::settings::set(name, value);
+}
+
+/// BGRA pixels for the Windows APIs, composited over white since they ignore transparency.
+fn to_bgra(img: &RgbaImage) -> Image {
+    let img = flatten(img);
+    let (width, height) = (img.width() as i32, img.height() as i32);
+    let data = img.into_raw().chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255]).collect();
+    Image { width, height, data }
+}
+
+pub fn copy_image(img: &RgbaImage) -> Result<(), String> {
+    crate::output::copy_to_clipboard(null_mut(), &to_bgra(img))
+}
+
+pub fn copy_text(text: &str) -> Result<(), String> {
+    crate::output::copy_text_to_clipboard(null_mut(), text)
+}
+
+pub fn copy_files(paths: &[PathBuf]) -> Result<(), String> {
+    crate::output::copy_files_to_clipboard(null_mut(), paths)
+}
+
+pub fn open(path: &Path) {
+    crate::shell_open(path);
+}
+
+pub fn show_in_folder(path: &Path) {
+    let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn();
+}
+
+/// Moves a file to the Recycle Bin.
+pub fn recycle(path: &Path) -> bool {
+    // pFrom must be double-null-terminated.
+    let mut from = wide_os(path.as_os_str());
+    from.push(0);
+    let mut op = SHFILEOPSTRUCTW {
+        hwnd: null_mut(),
+        wFunc: FO_DELETE,
+        pFrom: from.as_ptr(),
+        pTo: null(),
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI) as u16,
+        fAnyOperationsAborted: 0,
+        hNameMappings: null_mut(),
+        lpszProgressTitle: null(),
+    };
+    unsafe { SHFileOperationW(&mut op) == 0 && op.fAnyOperationsAborted == 0 }
+}
+
+/// Keeps a folder out of the way in Explorer.
+pub fn hide(dir: &Path) {
+    let wide = wide_os(dir.as_os_str());
+    unsafe {
+        let attrs = GetFileAttributesW(wide.as_ptr());
+        if attrs != INVALID_FILE_ATTRIBUTES && attrs & FILE_ATTRIBUTE_HIDDEN == 0 {
+            SetFileAttributesW(wide.as_ptr(), attrs | FILE_ATTRIBUTE_HIDDEN);
+        }
+    }
+}
+
+/// The font for text annotations.
+pub fn font_bytes() -> Option<Vec<u8>> {
+    let fonts = std::env::var_os("WINDIR").map(|w| Path::new(&w).join("Fonts"))?;
+    ["seguisb.ttf", "segoeui.ttf", "arial.ttf"].iter().find_map(|name| std::fs::read(fonts.join(name)).ok())
+}
+
+/// The local calendar date of `t` as (year, month, day).
+pub fn local_date(t: SystemTime) -> (i32, u32, u32) {
+    // FILETIME counts 100 ns ticks since 1601.
+    let since_1970 = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    let ticks = since_1970.as_nanos() as u64 / 100 + 116_444_736_000_000_000;
+    let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+    let (mut utc, mut local): (SYSTEMTIME, SYSTEMTIME) = unsafe { (std::mem::zeroed(), std::mem::zeroed()) };
+    unsafe {
+        if FileTimeToSystemTime(&ft, &mut utc) == 0 || SystemTimeToTzSpecificLocalTime(null(), &utc, &mut local) == 0 {
+            local = utc;
+        }
+    }
+    (local.wYear as i32, local.wMonth as u32, local.wDay as u32)
+}
+
+pub fn pin(img: &RgbaImage) -> Result<(), String> {
+    crate::pin::pin_image(&to_bgra(img))
+}
+
+pub fn pin_file(path: &Path) {
+    crate::pin::spawn(path);
+}
+
+/// Reads the text in `img`; blocks, so call it off the UI thread.
+pub fn read_text(img: &RgbaImage) -> Result<String, String> {
+    crate::ocr::recognize(&to_bgra(img))
+}
+
+pub fn drag_files(paths: &[PathBuf]) -> Result<(), String> {
+    super::super::dragout::drag_files(paths)
+}

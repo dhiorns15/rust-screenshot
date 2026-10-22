@@ -27,3 +27,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create $env:GITHUB_REF_NAME target/release/rsnip.exe $env:ZIP --title "RSnip $env:GITHUB_REF_NAME" --generate-notes
+
+  linux:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tar -czf "rsnip-$GITHUB_REF_NAME-linux-x64.tar.gz" -C target/release rsnip -C "$GITHUB_WORKSPACE" README.md LICENSE
+          gh release upload "$GITHUB_REF_NAME" "rsnip-$GITHUB_REF_NAME-linux-x64.tar.gz"

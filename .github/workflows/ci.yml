@@ -9,12 +9,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
-    # RSnip is Windows-only.
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       # Installs the toolchain pinned in rust-toolchain.toml.
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  # The library and editor build on Linux too.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings

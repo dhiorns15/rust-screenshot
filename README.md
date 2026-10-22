@@ -27,8 +27,24 @@ cargo build --release
 
 The binary is `target\release\rsnip.exe`.
 
+### Linux
+
+The library and editor also run on Linux (X11 or Wayland). Capturing is left to your desktop's
+screenshot tool (or Flameshot, `grim`/`slurp`, …): RSnip browses `~/Pictures/Screenshots` and
+annotates what's there.
+
+```
+cargo build --release
+./target/release/rsnip [file]
+```
+
+For example, bind a key to `grim -g "$(slurp)" ~/Pictures/Screenshots/shot-$(date +%s).png && rsnip`
+to capture an area and open it straight in the editor. Pinning, OCR, copying as files, dragging files
+out, and capture/recording are Windows-only. Settings live in `~/.config/rsnip/settings.json`.
+
 To publish a release, bump `version` in `Cargo.toml`, commit, then `git tag vX.Y.Z && git push --tags`.
-The release workflow runs the tests and attaches the exe and a zip to a new GitHub Release.
+The release workflow runs the tests and attaches the Windows exe, a zip, and a Linux build to a new
+GitHub Release.
 
 ## Usage
 

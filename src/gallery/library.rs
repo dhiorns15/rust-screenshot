@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use eframe::egui::{self, Align, Align2, Color32, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
-use super::{dragout, open_with_shell, show_in_folder, App, THUMB};
+use super::{open_with_shell, platform, App, THUMB};
 
 const ROW_HEIGHT: f32 = THUMB.y + 40.0;
 const HEADER_HEIGHT: f32 = 30.0;
@@ -36,19 +36,8 @@ impl Day {
 
     /// The local calendar day of `t`.
     pub fn local(t: SystemTime) -> Day {
-        use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
-        use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
-        // FILETIME counts 100 ns ticks since 1601.
-        let since_1970 = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
-        let ticks = since_1970.as_nanos() as u64 / 100 + 116_444_736_000_000_000;
-        let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
-        let (mut utc, mut local): (SYSTEMTIME, SYSTEMTIME) = unsafe { (std::mem::zeroed(), std::mem::zeroed()) };
-        unsafe {
-            if FileTimeToSystemTime(&ft, &mut utc) == 0 || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0 {
-                local = utc;
-            }
-        }
-        Day { year: local.wYear as i32, month: local.wMonth as u32, day: local.wDay as u32 }
+        let (year, month, day) = platform::local_date(t);
+        Day { year, month, day }
     }
 }
 
@@ -175,7 +164,7 @@ impl App {
             Some(Action::Drag(path)) => {
                 let paths = self.targets(&path, &order);
                 // Blocks until the drop; Explorer, chat apps and mail clients take them as files.
-                if let Err(e) = dragout::drag_files(&paths) {
+                if let Err(e) = platform::drag_files(&paths) {
                     self.set_status(format!("Couldn't drag: {e}"));
                 }
             }
@@ -183,8 +172,8 @@ impl App {
                 let paths = self.targets(&path, &order);
                 match label {
                     "Open in default app" => paths.iter().for_each(|p| open_with_shell(p)),
-                    "Show in folder" => show_in_folder(&path),
-                    "Pin to screen" => paths.iter().for_each(|p| crate::pin::spawn(p)),
+                    "Show in folder" => platform::show_in_folder(&path),
+                    "Pin to screen" => paths.iter().for_each(|p| platform::pin_file(p)),
                     "Copy as files" => self.copy_files(&paths),
                     "Delete" => self.delete(&paths),
                     _ => {}
@@ -249,7 +238,7 @@ impl App {
         if response.clicked() {
             action = Some(Action::Click(path.clone(), ui.input(|i| i.modifiers)));
         }
-        if response.drag_started() {
+        if response.drag_started() && platform::EXTRAS {
             action = Some(Action::Drag(path.clone()));
         }
         response.context_menu(|ui| {
@@ -258,7 +247,8 @@ impl App {
             } else {
                 &["Open in default app", "Show in folder", "Pin to screen", "Copy as files", "Delete"]
             };
-            for &label in labels {
+            let windows_only = ["Copy as files", "Pin to screen"];
+            for &label in labels.iter().filter(|l| platform::EXTRAS || !windows_only.contains(l)) {
                 let text = if many && label != "Pin to screen" { format!("{label} ({})", self.selected.len()) } else { label.to_string() };
                 if ui.button(text).clicked() {
                     action = Some(Action::Menu(path.clone(), label));
@@ -303,7 +293,7 @@ impl App {
         let paths: Vec<PathBuf> = self.entries.iter().map(|e| e.path.clone()).filter(|p| self.selected.contains(p)).collect();
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{} selected", paths.len())).strong());
-            if ui.small_button("Copy as files").on_hover_text("Paste them into a folder, chat or email").clicked() {
+            if platform::EXTRAS && ui.small_button("Copy as files").on_hover_text("Paste them into a folder, chat or email").clicked() {
                 self.copy_files(&paths);
             }
             if ui.small_button("Delete").on_hover_text("Move them to the Recycle Bin").clicked() {
@@ -316,7 +306,7 @@ impl App {
     }
 
     fn copy_files(&mut self, paths: &[PathBuf]) {
-        match crate::output::copy_files_to_clipboard(std::ptr::null_mut(), paths) {
+        match platform::copy_files(paths) {
             Ok(()) if paths.len() == 1 => self.set_status("Copied the file"),
             Ok(()) => self.set_status(format!("Copied {} files", paths.len())),
             Err(e) => self.set_status(e),

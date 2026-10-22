@@ -1,14 +1,14 @@
 //! Screenshot library and editor window (`rsnip --gallery [file]`).
 
 mod doc;
+#[cfg(windows)]
 mod dragout;
 mod library;
+mod platform;
 mod editor;
 
 use std::collections::{HashMap, HashSet};
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::ptr::{null, null_mut};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -18,13 +18,7 @@ use eframe::egui::{
     self, Align, Align2, Color32, ColorImage, Key, KeyboardShortcut, Layout, Modifiers, RichText, Sense,
     Stroke, TextureHandle, TextureOptions, Vec2, ViewportCommand,
 };
-use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-use windows_sys::Win32::System::Threading::CreateMutexW;
-use windows_sys::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW};
-use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE};
 
-use crate::capture::Image;
-use crate::util::{wide, wide_os};
 use doc::{apply_effects, flatten, render, Doc, Effects};
 use editor::{Editor, Tool, ToolState, PALETTE, TEXT_SIZES, TOOLS};
 
@@ -38,25 +32,16 @@ fn request_file() -> PathBuf {
 }
 
 pub fn run(file: Option<PathBuf>) {
-    let name = wide("Local\\RSnip.Gallery");
-    let _mutex = unsafe { CreateMutexW(null(), 0, name.as_ptr()) };
-    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+    if !platform::claim_single_instance(TITLE) {
+        // The running library picks this up and opens the file.
         let request = file.map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
         let _ = std::fs::write(request_file(), request);
-        let title = wide(TITLE);
-        unsafe {
-            let hwnd = FindWindowW(null(), title.as_ptr());
-            if !hwnd.is_null() {
-                ShowWindow(hwnd, SW_RESTORE);
-                SetForegroundWindow(hwnd);
-            }
-        }
         return;
     }
     let _ = std::fs::remove_file(request_file());
 
     let size = 64;
-    let bgra = crate::icon::render(size);
+    let bgra = crate::icon_art::render(size);
     let rgba = bgra.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -138,7 +123,7 @@ impl App {
         });
 
         let mut app = App {
-            dir: crate::output::screenshots_dir(),
+            dir: platform::screenshots_dir(),
             entries: Vec::new(),
             last_scan: Instant::now(),
             filter: String::new(),
@@ -235,11 +220,11 @@ impl App {
 
     fn set_effects(&mut self, effects: Effects) {
         self.effects = effects;
-        crate::settings::set("ExportBorder", effects.border.is_some() as u32);
+        platform::set_setting("ExportBorder", effects.border.is_some() as u32);
         if let Some(c) = effects.border {
-            crate::settings::set("ExportBorderColor", u32::from_be_bytes([0, c.r(), c.g(), c.b()]));
+            platform::set_setting("ExportBorderColor", u32::from_be_bytes([0, c.r(), c.g(), c.b()]));
         }
-        crate::settings::set("ExportShadow", effects.shadow as u32);
+        platform::set_setting("ExportShadow", effects.shadow as u32);
     }
 
     fn save(&mut self, as_copy: bool) -> bool {
@@ -295,7 +280,7 @@ impl App {
         let result = std::fs::create_dir_all(&dir)
             .map_err(|e| e.to_string())
             .and_then(|()| img.save_with_format(&path, image::ImageFormat::Png).map_err(|e| e.to_string()))
-            .and_then(|()| crate::output::copy_files_to_clipboard(null_mut(), &[path]));
+            .and_then(|()| platform::copy_files(&[path]));
         match result {
             Ok(()) => self.set_status("Copied as a file — paste it into a folder, chat or email"),
             Err(e) => self.set_status(format!("Couldn't copy: {e}")),
@@ -304,7 +289,7 @@ impl App {
 
     fn copy(&mut self) {
         let Some(img) = self.rendered() else { return };
-        match crate::output::copy_to_clipboard(null_mut(), &to_bgra(&img)) {
+        match platform::copy_image(&img) {
             Ok(()) => self.set_status("Copied to clipboard"),
             Err(e) => self.set_status(e),
         }
@@ -312,7 +297,7 @@ impl App {
 
     fn pin(&mut self) {
         let Some(img) = self.rendered() else { return };
-        if let Err(e) = crate::pin::pin_image(&to_bgra(&img)) {
+        if let Err(e) = platform::pin(&img) {
             self.set_status(format!("Couldn't pin: {e}"));
         }
     }
@@ -320,10 +305,9 @@ impl App {
     /// Starts reading the text in the edited image; `poll` copies it when done.
     fn copy_text(&mut self) {
         let Some(img) = self.rendered() else { return };
-        let img = to_bgra(&img);
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let _ = tx.send(crate::ocr::recognize(&img));
+            let _ = tx.send(platform::read_text(&img));
         });
         self.ocr = Some(rx);
         self.set_status("Reading text…");
@@ -333,7 +317,7 @@ impl App {
     fn delete(&mut self, paths: &[PathBuf]) {
         let mut failed = 0;
         for path in paths {
-            if !recycle(path) {
+            if !platform::recycle(path) {
                 failed += 1;
                 continue;
             }
@@ -368,7 +352,7 @@ impl App {
                     if text.trim().is_empty() {
                         return Err("No text found in this image".into());
                     }
-                    crate::output::copy_text_to_clipboard(null_mut(), &text).map(|()| text.lines().count())
+                    platform::copy_text(&text).map(|()| text.lines().count())
                 });
                 match copied {
                     Ok(1) => self.set_status("Copied 1 line of text"),
@@ -482,12 +466,14 @@ impl App {
             if ui.add_enabled(enabled, egui::Button::new("Copy")).on_hover_text("Copy to clipboard (Ctrl+C)").clicked() {
                 self.copy();
             }
-            if ui.add_enabled(enabled, egui::Button::new("Pin")).on_hover_text("Keep the image on top of other windows for reference").clicked() {
-                self.pin();
-            }
-            let reading = self.ocr.is_some();
-            if ui.add_enabled(enabled && !reading, egui::Button::new("Copy text")).on_hover_text("Recognise the text in the image and copy it (OCR)").clicked() {
-                self.copy_text();
+            if platform::EXTRAS {
+                if ui.add_enabled(enabled, egui::Button::new("Pin")).on_hover_text("Keep the image on top of other windows for reference").clicked() {
+                    self.pin();
+                }
+                let reading = self.ocr.is_some();
+                if ui.add_enabled(enabled && !reading, egui::Button::new("Copy text")).on_hover_text("Recognise the text in the image and copy it (OCR)").clicked() {
+                    self.copy_text();
+                }
             }
             let dirty = self.dirty();
             if ui.add_enabled(enabled && dirty, egui::Button::new("Save")).on_hover_text("Overwrite the screenshot (Ctrl+S)").clicked() {
@@ -505,7 +491,7 @@ impl App {
             self.save_jpg();
             ui.close_menu();
         }
-        if ui.button("Copy as file").on_hover_text("Paste it into a folder, chat or email as an attachment").clicked() {
+        if platform::EXTRAS && ui.button("Copy as file").on_hover_text("Paste it into a folder, chat or email as an attachment").clicked() {
             self.copy_as_file();
             ui.close_menu();
         }
@@ -649,45 +635,16 @@ fn is_video(path: &Path) -> bool {
 }
 
 fn open_with_shell(path: &Path) {
-    crate::shell_open(path);
-}
-
-fn show_in_folder(path: &Path) {
-    let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn();
-}
-
-fn recycle(path: &Path) -> bool {
-    // pFrom must be double-null-terminated.
-    let mut from = wide_os(path.as_os_str());
-    from.push(0);
-    let mut op = SHFILEOPSTRUCTW {
-        hwnd: null_mut(),
-        wFunc: FO_DELETE,
-        pFrom: from.as_ptr(),
-        pTo: null(),
-        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI) as u16,
-        fAnyOperationsAborted: 0,
-        hNameMappings: null_mut(),
-        lpszProgressTitle: null(),
-    };
-    unsafe { SHFileOperationW(&mut op) == 0 && op.fAnyOperationsAborted == 0 }
+    platform::open(path);
 }
 
 fn load_effects() -> Effects {
-    let get = crate::settings::get;
+    let get = platform::setting;
     let [_, r, g, b] = get("ExportBorderColor").unwrap_or(0x202020).to_be_bytes();
     Effects {
         border: (get("ExportBorder") == Some(1)).then_some(Color32::from_rgb(r, g, b)),
         shadow: get("ExportShadow") == Some(1),
     }
-}
-
-/// BGRA pixels for the Windows APIs, composited over white since they ignore transparency.
-fn to_bgra(img: &image::RgbaImage) -> Image {
-    let img = flatten(img);
-    let (width, height) = (img.width() as i32, img.height() as i32);
-    let data = img.into_raw().chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255]).collect();
-    Image { width, height, data }
 }
 
 #[cfg(test)]
@@ -708,6 +665,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn reads_rendered_text_back() {
         use super::doc::{load_font, render, Shape, Snapshot};
         let base = image::RgbaImage::from_pixel(420, 80, image::Rgba([255, 255, 255, 255]));
@@ -719,7 +677,7 @@ mod tests {
             shadow: false,
         };
         let img = render(&Snapshot { base: std::sync::Arc::new(base), shapes: vec![text] }, load_font().as_ref());
-        match crate::ocr::recognize(&super::to_bgra(&img)) {
+        match super::platform::read_text(&img) {
             Ok(read) => assert!(read.to_lowercase().contains("hello rsnip 123"), "read {read:?}"),
             // Server images (like CI's) may not have an OCR language installed.
             Err(e) if e.starts_with("No text-recognition language") => eprintln!("skipped: {e}"),
