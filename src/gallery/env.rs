@@ -10,7 +10,7 @@ use std::sync::mpsc::{channel, Receiver};
 
 use super::platform;
 use crate::shortcuts::Action;
-use crate::update::Release;
+use crate::update::{Release, Version};
 
 pub struct Env {
     pub dir: PathBuf,
@@ -20,6 +20,8 @@ pub struct Env {
     pub check_updates: bool,
     /// This system has the tray app, with its capture, shortcut and startup options (Windows).
     pub tray_app: bool,
+    /// This build's version (a fixed one in the sandbox, so snapshots survive version bumps).
+    pub version: Version,
     settings: Store,
     #[cfg_attr(not(test), allow(dead_code))]
     sandbox: Option<RefCell<Sandbox>>,
@@ -64,6 +66,7 @@ impl Env {
             request_file: request_file(),
             check_updates: cfg!(not(windows)) && crate::options::CHECK_UPDATES.read(platform::setting),
             tray_app: cfg!(windows),
+            version: Version::current(),
             settings: Store::Platform,
             sandbox: None,
         }
@@ -78,6 +81,7 @@ impl Env {
             dir,
             check_updates: false,
             tray_app: cfg!(windows),
+            version: Version(1, 2, 3),
             settings: Store::Memory(RefCell::default()),
             sandbox: Some(RefCell::new(sandbox)),
         }

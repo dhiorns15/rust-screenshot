@@ -15,7 +15,7 @@ use super::theme::{self, icon, Appearance};
 use super::{platform, Dock};
 use crate::options::{self, Flag};
 use crate::shortcuts::{self, Action};
-use crate::update::{Release, Version};
+use crate::update::Release;
 
 pub const TITLE: &str = "RSnip Settings";
 const REPO: &str = "https://github.com/dhiorns15/rust-screenshot";
@@ -316,7 +316,7 @@ impl SettingsApp {
                     self.update = UpdateCheck::Done(result);
                 }
             }
-            let current = Version::current();
+            let current = self.env.version;
             let status = match &self.update {
                 UpdateCheck::Idle => format!("RSnip {current}"),
                 UpdateCheck::Checking(_) => "Checking…".into(),
@@ -348,7 +348,7 @@ impl SettingsApp {
 
     fn about(&mut self, ui: &mut Ui) {
         theme::card(ui, |ui| {
-            ui.label(RichText::new(format!("RSnip {}", Version::current())).size(18.0).strong());
+            ui.label(RichText::new(format!("RSnip {}", self.env.version)).size(18.0).strong());
             ui.label(RichText::new("A small, open-source screenshot tool, written in Rust.").color(theme::palette(ui).muted));
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
