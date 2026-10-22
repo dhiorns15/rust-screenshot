@@ -46,7 +46,12 @@ fn main() {
     }
     let out = std::env::var("OUT_DIR").unwrap();
     let icon = Path::new(&out).join("rsnip.ico");
-    std::fs::write(&icon, ico()).unwrap();
+    let ico = ico();
+    std::fs::write(&icon, &ico).unwrap();
+    // Also next to the exe (OUT_DIR is target/<profile>/build/rsnip-<hash>/out), for the installer.
+    if let Some(profile_dir) = Path::new(&out).ancestors().nth(3) {
+        let _ = std::fs::write(profile_dir.join("rsnip.ico"), &ico);
+    }
 
     let version = std::env::var("CARGO_PKG_VERSION").unwrap();
     let numbers: Vec<u16> = version.split(['.', '-']).take(3).map(|p| p.parse().unwrap_or(0)).collect();

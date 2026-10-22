@@ -22,11 +22,13 @@ jobs:
           $zip = "rsnip-$env:GITHUB_REF_NAME-windows-x64.zip"
           Compress-Archive -Path target/release/rsnip.exe, README.md, LICENSE -DestinationPath $zip
           "ZIP=$zip" >> $env:GITHUB_ENV
+      - run: installer/build.ps1
+        shell: pwsh
       - name: Publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME target/release/rsnip.exe $env:ZIP --title "RSnip $env:GITHUB_REF_NAME" --generate-notes
+        run: gh release create $env:GITHUB_REF_NAME (Get-ChildItem target/installer/*-setup.exe).FullName target/release/rsnip.exe $env:ZIP --title "RSnip $env:GITHUB_REF_NAME" --generate-notes
 
   linux:
     needs: release

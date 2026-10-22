@@ -14,8 +14,14 @@ A small, open-source, Snagit-style screenshot tool for Windows, written in Rust.
 
 ## Download
 
-Get `rsnip.exe` from the [Releases page](https://github.com/dhiorns15/rust-screenshot/releases).
-It is a single self-contained exe; put it anywhere and run it.
+From the [Releases page](https://github.com/dhiorns15/rust-screenshot/releases), get either:
+
+- **The installer**, `rsnip-vX.Y.Z-windows-x64-setup.exe` (Windows 10 or later, 64-bit). It installs
+  for your user only (no admin prompt) into `%LOCALAPPDATA%\Programs\RSnip`, adds *RSnip* and
+  *RSnip Library* to the Start menu, and can start RSnip when you sign in. Running a newer installer
+  upgrades in place, closing RSnip first. Uninstall it from *Settings → Apps*; your screenshots and
+  settings are kept.
+- **`rsnip.exe`** on its own: a single self-contained exe; put it anywhere and run it.
 
 ## Build
 
@@ -25,7 +31,14 @@ Requires the Rust MSVC toolchain.
 cargo build --release
 ```
 
-The binary is `target\release\rsnip.exe`.
+The binary is `target\release\rsnip.exe`. To package it as an installer (needs
+[Inno Setup 6](https://jrsoftware.org/isinfo.php), e.g. `winget install JRSoftware.InnoSetup`):
+
+```
+powershell -File installer\build.ps1
+```
+
+The installer is written to `target\installer`.
 
 ### Linux
 
@@ -43,8 +56,8 @@ to capture an area and open it straight in the editor. Pinning, OCR, copying as 
 out, and capture/recording are Windows-only. Settings live in `~/.config/rsnip/settings.json`.
 
 To publish a release, bump `version` in `Cargo.toml`, commit, then `git tag vX.Y.Z && git push --tags`.
-The release workflow runs the tests and attaches the Windows exe, a zip, and a Linux build to a new
-GitHub Release.
+The release workflow runs the tests and attaches the Windows installer, exe and zip, and a Linux
+build, to a new GitHub Release.
 
 ## Usage
 

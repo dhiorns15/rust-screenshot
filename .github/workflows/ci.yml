@@ -18,6 +18,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      # Package the debug build to check the installer builds, installs, upgrades and uninstalls.
+      - run: cargo build
+      - run: installer/build.ps1 -Bin ..\target\debug
+        shell: pwsh
+      - run: installer/smoke-test.ps1
+        shell: pwsh
 
   # The library and editor build on Linux too.
   linux:
