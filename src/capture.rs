@@ -79,15 +79,24 @@ pub unsafe fn dib_from_pixels(hdc: HDC, width: i32, height: i32, data: &[u8]) ->
 
 /// Captures every monitor at physical resolution.
 pub fn capture_screen() -> Option<Screenshot> {
-    unsafe {
-        let x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        let w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        let h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        if w <= 0 || h <= 0 {
-            return None;
-        }
+    let (x, y, w, h) = unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )
+    };
+    capture_rect(rect(x, y, x + w, y + h)).map(|image| Screenshot { x, y, image })
+}
 
+/// Captures part of the screen, given in virtual-screen coordinates.
+pub fn capture_rect(r: RECT) -> Option<Image> {
+    let (x, y, w, h) = (r.left, r.top, r.right - r.left, r.bottom - r.top);
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    unsafe {
         let screen = GetDC(null_mut());
         let mem = CreateCompatibleDC(screen);
         let (bitmap, bits) = create_dib(screen, w, h);
@@ -107,7 +116,7 @@ pub fn capture_screen() -> Option<Screenshot> {
         }
         DeleteDC(mem);
         ReleaseDC(null_mut(), screen);
-        image.map(|image| Screenshot { x, y, image })
+        image
     }
 }
 
@@ -185,7 +194,7 @@ pub fn capture_window_in_front(hwnd: HWND) -> Option<Image> {
 }
 
 /// Waits while still dispatching messages, so the keyboard hook never stalls.
-unsafe fn pump_messages_for(duration: std::time::Duration) {
+pub unsafe fn pump_messages_for(duration: std::time::Duration) {
     let start = std::time::Instant::now();
     let mut msg: MSG = zeroed();
     while start.elapsed() < duration {

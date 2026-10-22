@@ -45,6 +45,7 @@ Run `rsnip.exe`. It sits in the notification area.
 | Fine-tune | A magnifier next to the cursor shows the pixels under it with their position and colour (M hides it). Arrow keys move the mouse 1 px, Shift+arrows 10 px, including while dragging. C copies the colour under the cursor as #RRGGBB |
 | Cancel | Esc or right-click |
 | Same area again | Tray menu → *Capture last region*, or R in the selection overlay, captures exactly the area you captured last time |
+| Scrolling capture | Tray menu → *Scrolling capture*, then click a window (or drag over the part that scrolls). RSnip scrolls it to the end and stitches one tall image; sticky headers and footers appear once. Esc stops early |
 | Delayed capture | Tray menu → *Delayed capture* → 3, 5 or 10 seconds, to open a menu or tooltip first. The countdown shows in the tray tooltip |
 | Open library | Tray menu → *Open library & editor*, or click the "saved" notification |
 
@@ -111,6 +112,7 @@ rsnip --full           capture all monitors
 rsnip --delay N        start a region capture in N seconds
 rsnip --text           select an area and copy the text in it
 rsnip --last           capture the same area as last time
+rsnip --scroll         pick a window, scroll it and capture its whole length
 rsnip --gallery [file] open the library, optionally with a file selected
 rsnip --pin <file>      pin an image on top of other windows
 ```

@@ -6,6 +6,7 @@
 //! `rsnip --delay N`  starts a region capture in N seconds.
 //! `rsnip --text`     selects a region and copies the text in it.
 //! `rsnip --last`     captures the same area as last time.
+//! `rsnip --scroll`   picks a window, scrolls it and captures the whole length.
 //! `rsnip --gallery [file]` opens the screenshot library / editor.
 //! `rsnip --pin <file>` shows an image pinned on top of other windows.
 
@@ -21,7 +22,9 @@ mod output;
 mod overlay;
 mod pin;
 mod prompt;
+mod scroll;
 mod settings;
+mod stitch;
 mod tray;
 mod util;
 
@@ -62,6 +65,7 @@ const TIMER_FULL: usize = 2;
 const TIMER_COUNTDOWN: usize = 3;
 const TIMER_TEXT: usize = 4;
 const TIMER_LAST: usize = 5;
+const TIMER_SCROLL: usize = 6;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -71,6 +75,8 @@ pub enum Mode {
     Text = 2,
     /// The same area as the last capture.
     Last = 3,
+    /// Scroll the picked window and stitch it into one tall image.
+    Scroll = 4,
 }
 
 impl Mode {
@@ -79,6 +85,7 @@ impl Mode {
             1 => Mode::Full,
             2 => Mode::Text,
             3 => Mode::Last,
+            4 => Mode::Scroll,
             _ => Mode::Region,
         }
     }
@@ -113,6 +120,7 @@ fn main() {
         "--full" => Some(Mode::Full),
         "--text" => Some(Mode::Text),
         "--last" => Some(Mode::Last),
+        "--scroll" => Some(Mode::Scroll),
         _ => None,
     });
     let delay = args.iter().position(|a| a == "--delay").and_then(|i| args.get(i + 1)?.parse().ok());
@@ -303,6 +311,7 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 TIMER_FULL => capture(hwnd, Mode::Full),
                 TIMER_TEXT => capture(hwnd, Mode::Text),
                 TIMER_LAST => capture(hwnd, Mode::Last),
+                TIMER_SCROLL => capture(hwnd, Mode::Scroll),
                 _ => {}
             }
             0
@@ -364,6 +373,9 @@ unsafe fn on_menu(hwnd: HWND) {
         }
         tray::CMD_LAST => {
             SetTimer(hwnd, TIMER_LAST, 250, None);
+        }
+        tray::CMD_SCROLL => {
+            SetTimer(hwnd, TIMER_SCROLL, 250, None);
         }
         tray::CMD_GALLERY => open_gallery(None),
         tray::CMD_OPEN_FOLDER => shell_open(&output::screenshots_dir()),
@@ -454,6 +466,13 @@ fn take(mode: Mode) -> Option<(Image, bool)> {
     }
     let targets = capture::window_targets(&shot);
     let (selection, pin) = overlay::select(&shot, targets, last)?;
+    if mode == Mode::Scroll {
+        let (area, window) = match selection {
+            overlay::Selection::Area(r) => (r, None),
+            overlay::Selection::Window { hwnd, rect, .. } => (rect, Some(hwnd)),
+        };
+        return scroll::capture(shot.to_screen_rect(area), window).map(|image| (image, false));
+    }
     let (image, area) = match selection {
         overlay::Selection::Area(r) | overlay::Selection::Window { rect: r, occluded: false, .. } => (shot.image.crop(r), r),
         // Something was on top of the window: raise it and capture it again cleanly.
