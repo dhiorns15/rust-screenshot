@@ -21,6 +21,9 @@ pub struct Settings {
     pub open_editor: bool,
     pub open_library_on_launch: bool,
     pub record_gif: bool,
+    pub check_updates: bool,
+    /// Install updates without asking (installed copies only).
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -33,6 +36,8 @@ impl Default for Settings {
             open_editor: false,
             open_library_on_launch: false,
             record_gif: false,
+            check_updates: true,
+            auto_update: false,
         }
     }
 }
@@ -50,6 +55,8 @@ impl Settings {
             open_editor: flag("OpenEditor", d.open_editor),
             open_library_on_launch: flag("OpenLibraryOnLaunch", d.open_library_on_launch),
             record_gif: flag("RecordGif", d.record_gif),
+            check_updates: flag("CheckUpdates", d.check_updates),
+            auto_update: flag("AutoUpdate", d.auto_update),
         }
     }
 
@@ -61,6 +68,8 @@ impl Settings {
         write_dword("OpenEditor", self.open_editor as u32);
         write_dword("OpenLibraryOnLaunch", self.open_library_on_launch as u32);
         write_dword("RecordGif", self.record_gif as u32);
+        write_dword("CheckUpdates", self.check_updates as u32);
+        write_dword("AutoUpdate", self.auto_update as u32);
     }
 }
 

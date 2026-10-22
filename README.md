@@ -58,6 +58,8 @@ cargo build --release
 For example, bind a key to `grim -g "$(slurp)" ~/Pictures/Screenshots/shot-$(date +%s).png && rsnip`
 to capture an area and open it straight in the editor. Pinning, OCR, copying as files, dragging files
 out, and capture/recording are Windows-only. Settings live in `~/.config/rsnip/settings.json`.
+When a new version is out, the library's status bar links to it (checked with `curl` each time the
+library opens; set `"CheckUpdates": 0` in the settings file to turn that off).
 
 To publish a release, bump `version` in `Cargo.toml`, commit, then `git tag vX.Y.Z && git push --tags`.
 The release workflow runs the tests and attaches the Windows installer, exe and zip, and a Linux
@@ -82,6 +84,7 @@ Run `rsnip.exe`. It sits in the notification area.
 | Record video | Tray menu → *Record screen area*, pick an area, and it records to MP4 (or GIF, via *Record as GIF instead of MP4*), mouse pointer included. A red frame marks the area and a bar shows the time; click *Stop* or press your capture hotkey to finish. The video is saved to the screenshots folder and copied as a file, ready to paste |
 | Delayed capture | Tray menu → *Delayed capture* → 3, 5 or 10 seconds, to open a menu or tooltip first. The countdown shows in the tray tooltip |
 | Open library | Tray menu → *Open library & editor*, or click the "saved" notification |
+| Update | When a new version is out, a notification says so (once per version) and the tray menu offers *Update to RSnip x.y.z…*. If you used the installer, clicking either downloads the new installer, checks its SHA-256 against GitHub's, installs it and restarts RSnip. A standalone `rsnip.exe` opens the download page instead |
 
 Alt+PrtScn and Win+PrtScn are left alone and keep their Windows behaviour.
 
@@ -95,6 +98,11 @@ Alt+PrtScn and Win+PrtScn are left alone and keep their Windows behaviour.
 - **Show notifications**
 - **Start with Windows**: adds an entry under `HKCU\...\CurrentVersion\Run`.
 - **Open library on launch**: also open the library window when RSnip starts; when off, it starts quietly in the tray.
+- **Updates**: *Check now*; *Check automatically* (on by default: shortly after RSnip starts, then
+  daily, it asks GitHub for the latest release; nothing else is sent); *Install updates
+  automatically* (off by default; installed copies only): installs a new version as soon as it's
+  found, unless you're in the middle of something (capturing, recording, a pin or the library open).
+  If the library has unsaved edits when an update installs, it asks about them first.
 
 Settings are stored in `HKCU\Software\RSnip`.
 
@@ -151,6 +159,7 @@ rsnip --scroll         pick a window, scroll it and capture its whole length
 rsnip --record         pick an area and record it (run again to stop)
 rsnip --gallery [file] open the library, optionally with a file selected
 rsnip --pin <file>      pin an image on top of other windows
+rsnip --update         check for a newer version and install it
 ```
 
 ## Troubleshooting

@@ -19,10 +19,11 @@ use eframe::egui::{
     Stroke, TextureHandle, TextureOptions, Vec2, ViewportCommand,
 };
 
+use crate::update;
 use doc::{apply_effects, flatten, render, Doc, Effects};
 use editor::{Editor, Tool, ToolState, PALETTE, TEXT_SIZES, TOOLS};
 
-const TITLE: &str = "RSnip Library";
+pub const TITLE: &str = "RSnip Library";
 const THUMB: Vec2 = Vec2::new(200.0, 112.0);
 const RESCAN_EVERY: Duration = Duration::from_secs(2);
 
@@ -87,6 +88,9 @@ struct App {
     effects: Effects,
     /// Text recognition running for "Copy text".
     ocr: Option<Receiver<Result<String, String>>>,
+    /// A newer release, once the update check has found one.
+    newer: Option<update::Release>,
+    update_rx: Option<Receiver<update::Release>>,
     /// Library items selected for bulk actions.
     selected: HashSet<PathBuf>,
     /// Where Shift+click ranges start.
@@ -139,6 +143,8 @@ impl App {
             status: None,
             effects: load_effects(),
             ocr: None,
+            newer: None,
+            update_rx: check_for_update(&cc.egui_ctx),
             selected: HashSet::new(),
             anchor: None,
         };
@@ -361,6 +367,10 @@ impl App {
                 }
             }
         }
+        if let Some(release) = self.update_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.newer = Some(release);
+            self.update_rx = None;
+        }
         if self.last_scan.elapsed() >= RESCAN_EVERY {
             self.rescan();
         }
@@ -528,6 +538,12 @@ impl App {
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if let Some(release) = &self.newer {
+                    let link = ui.link(format!("RSnip {} is available", release.version));
+                    if link.on_hover_text(&release.page).clicked() {
+                        platform::open(Path::new(&release.page));
+                    }
+                }
                 let Some(editor) = &mut self.editor else { return };
                 if ui.small_button("100%").clicked() {
                     editor.zoom = Some(1.0);
@@ -611,6 +627,23 @@ impl eframe::App for App {
 }
 
 /// "name (edited).png", "name (edited 2).png", ...
+/// Looks for a newer release in the background, unless `CheckUpdates` is off. On Windows the tray
+/// app does this (and can install it), so the library only checks on other systems.
+fn check_for_update(ctx: &egui::Context) -> Option<Receiver<update::Release>> {
+    if cfg!(windows) || platform::setting("CheckUpdates") == Some(0) {
+        return None;
+    }
+    let (tx, rx) = channel();
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        if let Ok(Some(release)) = update::check() {
+            let _ = tx.send(release);
+            ctx.request_repaint();
+        }
+    });
+    Some(rx)
+}
+
 fn copy_path(path: &Path, ext: &str) -> PathBuf {
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
     let dir = path.parent().unwrap_or(Path::new("."));

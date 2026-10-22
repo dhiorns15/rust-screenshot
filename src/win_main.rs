@@ -10,6 +10,7 @@
 // `rsnip --record`   picks an area and records it to video; run again (or the hotkey) to stop.
 // `rsnip --gallery [file]` opens the screenshot library / editor.
 // `rsnip --pin <file>` shows an image pinned on top of other windows.
+// `rsnip --update`   checks for a newer version and installs it.
 
 mod capture;
 mod encode;
@@ -62,6 +63,12 @@ pub const WM_APP_OCR: u32 = WM_APP + 8;
 pub const WM_APP_STOP_RECORDING: u32 = WM_APP + 9;
 /// A recording finished saving; `lparam` is a `Box<Result<PathBuf, String>>`.
 pub const WM_APP_RECORDED: u32 = WM_APP + 10;
+/// An update check finished; `wparam` is the `Check`, `lparam` a `Box<Result<Option<Release>, String>>`.
+const WM_APP_UPDATE_CHECKED: u32 = WM_APP + 11;
+/// The update's installer was downloaded; `lparam` is a `Box<Result<PathBuf, String>>`.
+const WM_APP_UPDATE_READY: u32 = WM_APP + 12;
+/// `rsnip --update` was run again: check for an update and install it.
+const WM_APP_UPDATE_NOW: u32 = WM_APP + 13;
 
 const TIMER_REGION: usize = 1;
 const TIMER_FULL: usize = 2;
@@ -70,6 +77,22 @@ const TIMER_TEXT: usize = 4;
 const TIMER_LAST: usize = 5;
 const TIMER_SCROLL: usize = 6;
 const TIMER_RECORD: usize = 7;
+const TIMER_UPDATE: usize = 8;
+
+/// The first update check waits a little so it doesn't slow down signing in, then repeats daily.
+const UPDATE_FIRST_CHECK_MS: u32 = 15_000;
+const UPDATE_CHECK_EVERY_MS: u32 = 24 * 60 * 60 * 1000;
+
+/// Why an update check runs, which decides what happens with the result.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Check {
+    /// The daily check: says once per new version that it's available.
+    Daily = 0,
+    /// "Check now" in the menu: always reports the outcome.
+    Manual = 1,
+    /// `rsnip --update`: installs a newer version straight away.
+    Install = 2,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -114,6 +137,12 @@ thread_local! {
     /// Seconds left before a delayed capture.
     static COUNTDOWN: Cell<u32> = const { Cell::new(0) };
     static RECORDING: RefCell<Option<record::Recording>> = const { RefCell::new(None) };
+    /// A newer release, once a check has found one.
+    static AVAILABLE: RefCell<Option<update::Release>> = const { RefCell::new(None) };
+    /// An update is downloading.
+    static UPDATING: Cell<bool> = const { Cell::new(false) };
+    /// The last notification was about an available update, so clicking it installs that.
+    static UPDATE_BALLOON: Cell<bool> = const { Cell::new(false) };
 }
 
 fn main() {
@@ -133,14 +162,15 @@ fn main() {
         _ => None,
     });
     let delay = args.iter().position(|a| a == "--delay").and_then(|i| args.get(i + 1)?.parse().ok());
-    unsafe { run_tray(mode, delay) }
+    let update_now = args.iter().any(|a| a == "--update");
+    unsafe { run_tray(mode, delay, update_now) }
 }
 
 fn tip(hotkey: Hotkey) -> String {
     format!("{APP_NAME} — press {} to capture", hotkey.name())
 }
 
-unsafe fn run_tray(mode: Option<Mode>, delay: Option<u32>) {
+unsafe fn run_tray(mode: Option<Mode>, delay: Option<u32>, update_now: bool) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     let class = wide(MAIN_CLASS);
@@ -150,6 +180,7 @@ unsafe fn run_tray(mode: Option<Mode>, delay: Option<u32>) {
         let other = FindWindowW(class.as_ptr(), null());
         if !other.is_null() {
             match (delay, mode) {
+                _ if update_now => PostMessageW(other, WM_APP_UPDATE_NOW, 0, 0),
                 (Some(secs), _) => PostMessageW(other, WM_APP_DELAYED, secs as usize, 0),
                 (None, Some(m)) => PostMessageW(other, WM_APP_CAPTURE, m as usize, 0),
                 (None, None) => PostMessageW(other, WM_APP_ALREADY_RUNNING, 0, 0),
@@ -211,7 +242,9 @@ unsafe fn run_tray(mode: Option<Mode>, delay: Option<u32>) {
         notify(hwnd, "Keyboard hook failed", "Print Screen won't be captured; use the tray icon instead.");
     }
 
+    SetTimer(hwnd, TIMER_UPDATE, UPDATE_FIRST_CHECK_MS, None);
     match (delay, mode) {
+        _ if update_now => start_check(hwnd, Check::Install),
         (Some(secs), _) => start_countdown(hwnd, secs),
         (None, Some(m)) => {
             PostMessageW(hwnd, WM_APP_CAPTURE, m as usize, 0);
@@ -248,6 +281,7 @@ unsafe fn cancel_countdown(hwnd: HWND) {
 }
 
 unsafe fn notify(hwnd: HWND, title: &str, text: &str) {
+    UPDATE_BALLOON.set(false);
     tray::notify(hwnd, ICON_LARGE.get(), title, text);
 }
 
@@ -286,6 +320,7 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                     SetTimer(hwnd, TIMER_REGION, 150, None);
                 }
                 WM_CONTEXTMENU => on_menu(hwnd),
+                tray::NIN_BALLOONUSERCLICK if UPDATE_BALLOON.get() => start_update(hwnd),
                 tray::NIN_BALLOONUSERCLICK => {
                     let last = LAST_SAVED.with(|l| l.borrow().clone());
                     match last {
@@ -320,6 +355,24 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             on_text(hwnd, *Box::from_raw(lparam as *mut Result<String, String>));
             0
         }
+        WM_APP_UPDATE_CHECKED => {
+            let result = *Box::from_raw(lparam as *mut Result<Option<update::Release>, String>);
+            let check = match wparam {
+                1 => Check::Manual,
+                2 => Check::Install,
+                _ => Check::Daily,
+            };
+            on_update_checked(hwnd, check, result);
+            0
+        }
+        WM_APP_UPDATE_READY => {
+            on_update_ready(hwnd, *Box::from_raw(lparam as *mut Result<PathBuf, String>));
+            0
+        }
+        WM_APP_UPDATE_NOW => {
+            start_check(hwnd, Check::Install);
+            0
+        }
         WM_APP_DELAYED => {
             start_countdown(hwnd, wparam as u32);
             0
@@ -333,6 +386,12 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 TIMER_LAST => capture(hwnd, Mode::Last),
                 TIMER_SCROLL => capture(hwnd, Mode::Scroll),
                 TIMER_RECORD => capture(hwnd, Mode::Record),
+                TIMER_UPDATE => {
+                    if SETTINGS.get().check_updates {
+                        start_check(hwnd, Check::Daily);
+                    }
+                    SetTimer(hwnd, TIMER_UPDATE, UPDATE_CHECK_EVERY_MS, None);
+                }
                 _ => {}
             }
             0
@@ -377,8 +436,14 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
 unsafe fn on_menu(hwnd: HWND) {
     let s = SETTINGS.get();
     let startup = settings::startup_enabled();
-    let recording = RECORDING.with(|r| r.borrow().is_some());
-    match tray::show_menu(hwnd, &s, startup, COUNTDOWN.get(), recording) {
+    let state = tray::MenuState {
+        startup,
+        countdown: COUNTDOWN.get(),
+        recording: RECORDING.with(|r| r.borrow().is_some()),
+        update: AVAILABLE.with(|a| a.borrow().as_ref().map(|r| r.version)),
+        installed: update::installed(),
+    };
+    match tray::show_menu(hwnd, &s, &state) {
         cmd if cmd > tray::CMD_DELAY && tray::DELAYS.contains(&(cmd - tray::CMD_DELAY)) => {
             start_countdown(hwnd, cmd - tray::CMD_DELAY);
         }
@@ -433,10 +498,102 @@ unsafe fn on_menu(hwnd: HWND) {
                 notify(hwnd, "Couldn't change startup setting", "Writing to the registry failed.");
             }
         }
+        tray::CMD_UPDATE => start_update(hwnd),
+        tray::CMD_CHECK_UPDATES => start_check(hwnd, Check::Manual),
+        tray::CMD_AUTO_CHECK => {
+            update_settings(|s| s.check_updates = !s.check_updates);
+        }
+        tray::CMD_AUTO_UPDATE => {
+            update_settings(|s| s.auto_update = !s.auto_update);
+        }
         tray::CMD_EXIT => {
             DestroyWindow(hwnd);
         }
         _ => {}
+    }
+}
+
+/// Asks GitHub for the latest release on a worker thread; the answer comes back as
+/// `WM_APP_UPDATE_CHECKED`.
+fn start_check(hwnd: HWND, check: Check) {
+    let main = hwnd as isize;
+    std::thread::spawn(move || {
+        let result = Box::new(update::check());
+        unsafe { PostMessageW(main as HWND, WM_APP_UPDATE_CHECKED, check as usize, Box::into_raw(result) as isize) };
+    });
+}
+
+unsafe fn on_update_checked(hwnd: HWND, check: Check, result: Result<Option<update::Release>, String>) {
+    let release = match result {
+        Ok(Some(release)) => release,
+        Ok(None) => {
+            AVAILABLE.with(|a| a.borrow_mut().take());
+            if check != Check::Daily {
+                let version = update::Version::current();
+                notify(hwnd, "RSnip is up to date", &format!("You have the latest version, {version}."));
+            }
+            return;
+        }
+        Err(e) => {
+            if check != Check::Daily {
+                notify(hwnd, "Couldn't check for updates", &e);
+            }
+            return;
+        }
+    };
+    let version = release.version;
+    AVAILABLE.with(|a| *a.borrow_mut() = Some(release));
+    let installed = update::installed();
+    if check == Check::Install || (check == Check::Daily && SETTINGS.get().auto_update && installed && idle()) {
+        return start_update(hwnd);
+    }
+    // The daily check mentions each new version once; the menu offers it from then on.
+    if check == Check::Daily && settings::get("NotifiedVersion") == Some(version.pack()) {
+        return;
+    }
+    settings::set("NotifiedVersion", version.pack());
+    let action = if installed { "Click here to install it." } else { "Click here to download it." };
+    notify(hwnd, &format!("RSnip {version} is available"), action);
+    UPDATE_BALLOON.set(true);
+}
+
+/// Nothing is in progress that an automatic update would interrupt.
+unsafe fn idle() -> bool {
+    let (library, pin) = (wide(gallery::TITLE), wide("RSnip.Pin"));
+    !CAPTURING.get()
+        && COUNTDOWN.get() == 0
+        && RECORDING.with(|r| r.borrow().is_none())
+        && FindWindowW(null(), library.as_ptr()).is_null()
+        && FindWindowW(pin.as_ptr(), null()).is_null()
+}
+
+/// Installs the available update, or opens its download page if this copy wasn't installed.
+unsafe fn start_update(hwnd: HWND) {
+    let Some(release) = AVAILABLE.with(|a| a.borrow().clone()) else { return };
+    if !update::installed() || release.installer.is_none() {
+        return shell_open(Path::new(&release.page));
+    }
+    if UPDATING.replace(true) {
+        return;
+    }
+    notify(hwnd, &format!("Updating to RSnip {}", release.version), "RSnip will restart when the update is installed.");
+    let main = hwnd as isize;
+    std::thread::spawn(move || {
+        let result = update::download(&release).and_then(|path| {
+            // Give the library a chance to save its edits before the installer closes it.
+            let closed = update::close_library(std::time::Duration::from_secs(120));
+            if closed { Ok(path) } else { Err("Close the RSnip library, then try again.".to_owned()) }
+        });
+        let result = Box::new(result);
+        unsafe { PostMessageW(main as HWND, WM_APP_UPDATE_READY, 0, Box::into_raw(result) as isize) };
+    });
+}
+
+/// Runs the downloaded installer, which closes this instance and starts the new version.
+unsafe fn on_update_ready(hwnd: HWND, result: Result<PathBuf, String>) {
+    UPDATING.set(false);
+    if let Err(e) = result.and_then(|path| update::run_installer(&path)) {
+        notify(hwnd, "Couldn't update RSnip", &e);
     }
 }
 

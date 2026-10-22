@@ -59,6 +59,8 @@ Root: HKCU; Subkey: "{#RunKey}"; ValueType: string; ValueName: "RSnip"; ValueDat
 
 [Run]
 Filename: "{app}\rsnip.exe"; Description: "Start RSnip now"; Flags: nowait postinstall skipifsilent
+; RSnip's updater runs setup silently with /relaunch=yes, to start the new version afterwards.
+Filename: "{app}\rsnip.exe"; Flags: nowait; Check: Relaunch
 
 [Code]
 const
@@ -92,6 +94,11 @@ begin
   CloseWindows('', 'RSnip Library');
   // Let the processes exit after their windows have gone.
   Sleep(500);
+end;
+
+function Relaunch: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:relaunch|no}') = 'yes');
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;

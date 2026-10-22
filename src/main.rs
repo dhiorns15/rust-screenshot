@@ -7,6 +7,7 @@
 
 mod gallery;
 mod icon_art;
+mod update;
 
 #[cfg(windows)]
 include!("win_main.rs");

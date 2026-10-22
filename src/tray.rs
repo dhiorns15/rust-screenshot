@@ -8,6 +8,7 @@ use windows_sys::Win32::UI::Shell::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::settings::Settings;
+use crate::update::Version;
 use crate::util::{fill, wide};
 use crate::WM_APP_TRAY;
 
@@ -37,6 +38,10 @@ pub const CMD_SCROLL: u32 = 16;
 pub const CMD_RECORD: u32 = 17;
 pub const CMD_STOP_RECORD: u32 = 18;
 pub const CMD_RECORD_GIF: u32 = 19;
+pub const CMD_UPDATE: u32 = 20;
+pub const CMD_CHECK_UPDATES: u32 = 21;
+pub const CMD_AUTO_CHECK: u32 = 22;
+pub const CMD_AUTO_UPDATE: u32 = 23;
 /// `CMD_DELAY + n` starts a capture in `n` seconds.
 pub const CMD_DELAY: u32 = 100;
 pub const DELAYS: [u32; 3] = [3, 5, 10];
@@ -82,9 +87,20 @@ pub unsafe fn notify(hwnd: HWND, icon: HICON, title: &str, text: &str) {
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
+/// What the menu shows besides the settings.
+pub struct MenuState {
+    pub startup: bool,
+    /// Seconds left on a delayed capture, or 0.
+    pub countdown: u32,
+    pub recording: bool,
+    /// A newer version that is available.
+    pub update: Option<Version>,
+    /// Whether this copy was installed (and so can update itself).
+    pub installed: bool,
+}
+
 /// Shows the context menu at the cursor and returns the chosen command (0 if dismissed).
-/// `countdown` is the seconds left on a delayed capture, or 0.
-pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, startup: bool, countdown: u32, recording: bool) -> u32 {
+pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, state: &MenuState) -> u32 {
     let menu = CreatePopupMenu();
     let item = |id: u32, text: &str, checked: bool| {
         let text = wide(text);
@@ -99,14 +115,14 @@ pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, startup: bool, countdow
     item(CMD_FULL, "Capture all screens", false);
     item(CMD_LAST, "Capture last region", false);
     item(CMD_SCROLL, "Scrolling capture", false);
-    if recording {
+    if state.recording {
         item(CMD_STOP_RECORD, "Stop recording", false);
     } else {
         item(CMD_RECORD, "Record screen area", false);
     }
     item(CMD_TEXT, "Capture text (OCR)", false);
-    if countdown > 0 {
-        item(CMD_CANCEL_DELAY, &format!("Cancel delayed capture ({countdown} s)"), false);
+    if state.countdown > 0 {
+        item(CMD_CANCEL_DELAY, &format!("Cancel delayed capture ({} s)", state.countdown), false);
     } else {
         let delays = CreatePopupMenu();
         for secs in DELAYS {
@@ -126,9 +142,25 @@ pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, startup: bool, countdow
     item(CMD_SAVE, "Save screenshots to folder", settings.save_to_folder);
     item(CMD_RECORD_GIF, "Record as GIF instead of MP4", settings.record_gif);
     item(CMD_NOTIFY, "Show notifications", settings.notify);
-    item(CMD_STARTUP, "Start with Windows", startup);
+    item(CMD_STARTUP, "Start with Windows", state.startup);
     item(CMD_LIBRARY_ON_LAUNCH, "Open library on launch", settings.open_library_on_launch);
+    let updates = CreatePopupMenu();
+    let sub = |id: u32, text: &str, flags: MENU_ITEM_FLAGS| {
+        let text = wide(text);
+        AppendMenuW(updates, MF_STRING | flags, id as usize, text.as_ptr());
+    };
+    let checked = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
+    sub(CMD_CHECK_UPDATES, "Check now", 0);
+    sub(CMD_AUTO_CHECK, "Check automatically", checked(settings.check_updates));
+    let auto_update = checked(settings.auto_update) | if state.installed { 0 } else { MF_GRAYED };
+    sub(CMD_AUTO_UPDATE, "Install updates automatically", auto_update);
+    let text = wide("Updates");
+    AppendMenuW(menu, MF_POPUP, updates as usize, text.as_ptr());
     separator();
+    if let Some(version) = state.update {
+        let verb = if state.installed { "Update to" } else { "Download" };
+        item(CMD_UPDATE, &format!("{verb} RSnip {version}…"), false);
+    }
     item(CMD_EXIT, "Exit", false);
     SetMenuDefaultItem(menu, CMD_REGION, 0);
 

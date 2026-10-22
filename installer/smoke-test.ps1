@@ -11,23 +11,30 @@ $dir = Join-Path ([IO.Path]::GetTempPath()) 'rsnip-setup-test'
 $exe = "$dir\rsnip.exe"
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 
-function Install {
-    $p = Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dir`"", '/TASKS=startup' -Wait -PassThru
+function Install([string[]]$Extra = @()) {
+    $flags = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dir`"", '/TASKS=startup') + $Extra
+    $p = Start-Process $setup -ArgumentList $flags -Wait -PassThru
     if ($p.ExitCode) { throw "Setup exited with code $($p.ExitCode)" }
+}
+
+# Nothing else runs RSnip on CI, so any rsnip process is the installed one.
+function Running {
+    Get-Process rsnip -ErrorAction SilentlyContinue | Select-Object -First 1
 }
 
 Install
 if (!(Test-Path $exe)) { throw 'rsnip.exe was not installed' }
 if ((Get-ItemProperty $runKey).RSnip -notlike "*$exe*") { throw 'The start-at-sign-in entry is missing' }
+if (Running) { throw 'A silent install started RSnip without /relaunch=yes' }
 
-# Upgrading over a running copy closes it first.
+# Upgrading over a running copy closes it first; RSnip's updater also asks for a restart.
 $app = Start-Process $exe -PassThru
 Start-Sleep 2
-Install
+Install '/relaunch=yes'
 if (!$app.HasExited) { throw 'Setup left RSnip running' }
-
-$app = Start-Process $exe -PassThru
 Start-Sleep 2
+$app = Running
+if (!$app) { throw 'RSnip was not restarted after the update' }
 Start-Process "$dir\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES' -Wait
 # The uninstaller reruns itself from a temp copy and may return early, so wait for it.
 for ($i = 0; $i -lt 60 -and (Test-Path $exe); $i++) { Start-Sleep 1 }

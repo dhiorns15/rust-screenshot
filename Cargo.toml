@@ -1,6 +1,6 @@
 [package]
 name = "rsnip"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 description = "A Snagit-style screenshot tool for Windows, with a screenshot library and editor that also runs on Linux"
 license = "MIT"
@@ -22,6 +22,7 @@ tiny-skia = "0.11"
 [target.'cfg(windows)'.dependencies]
 gif = "0.13"
 png = "0.17"
+sha2 = "0.10"
 windows = { version = "0.58", features = ["Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Foundation", "Foundation_Collections", "implement", "Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_Media_MediaFoundation"] }
 windows-core = "0.58"
 
@@ -31,6 +32,7 @@ features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_Networking_WinHttp",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
