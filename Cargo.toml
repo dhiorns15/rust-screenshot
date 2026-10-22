@@ -11,9 +11,9 @@ png = "0.17"
 
 [dependencies]
 ab_glyph = "0.2"
-eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow"] }
-egui = { version = "0.29", default-features = false, features = ["serde"] }
-egui-phosphor = "0.7"
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow"] }
+egui = { version = "0.36", default-features = false, features = ["serde"] }
+egui-phosphor = "0.14"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -53,7 +53,7 @@ features = [
 # The library and editor on Linux and other Unix desktops.
 [target.'cfg(not(windows))'.dependencies]
 arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
-eframe = { version = "0.29", default-features = false, features = ["x11", "wayland"] }
+eframe = { version = "0.36", default-features = false, features = ["x11", "wayland"] }
 libc = "0.2"
 trash = "5"
 

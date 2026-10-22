@@ -298,12 +298,12 @@ impl App {
         let tile = rect.shrink(3.0);
         if selected {
             painter.rect_filled(tile, 8.0, theme::ACCENT.gamma_multiply(0.22));
-            painter.rect_stroke(tile, 8.0, Stroke::new(1.5f32, theme::ACCENT));
+            painter.rect_stroke(tile, 8.0, Stroke::new(1.5f32, theme::ACCENT), egui::StrokeKind::Middle);
         } else if response.hovered() {
             painter.rect_filled(tile, 8.0, theme::RAISED);
         }
         if open && !selected {
-            painter.rect_stroke(tile, 8.0, Stroke::new(1.0f32, theme::ACCENT.gamma_multiply(0.7)));
+            painter.rect_stroke(tile, 8.0, Stroke::new(1.0f32, theme::ACCENT.gamma_multiply(0.7)), egui::StrokeKind::Middle);
         }
 
         let thumb_area = Rect::from_min_size(rect.min + Vec2::new((rect.width() - THUMB.x) / 2.0, 8.0), THUMB);
@@ -358,7 +358,7 @@ impl App {
                 let text = if many && label != "Pin to screen" { format!("{label} ({})", self.selected.len()) } else { label.to_string() };
                 if ui.button(text).clicked() {
                     action = Some(Action::Menu(path.clone(), label));
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });

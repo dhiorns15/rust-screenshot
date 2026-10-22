@@ -182,7 +182,7 @@ impl Editor {
             return;
         }
         let r = screen_rect(shape.bounds(font), &to_screen).expand(2.0);
-        painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, ACCENT));
+        painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, ACCENT), egui::StrokeKind::Middle);
         paint_handles(painter, r, uniform(shape));
     }
 
@@ -219,7 +219,7 @@ impl Editor {
                 let shape = &self.doc.current().shapes[i];
                 if !matches!(shape, Shape::Text { .. }) {
                     let r = screen_rect(shape.bounds(font), &to_screen).expand(2.0);
-                    painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, Color32::from_white_alpha(140)));
+                    painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, Color32::from_white_alpha(140)), egui::StrokeKind::Middle);
                 }
             }
         }
@@ -228,7 +228,7 @@ impl Editor {
     /// Delete/Backspace removes the selection, Esc deselects, arrow keys nudge it (Shift: 10 px).
     pub(super) fn selection_keys(&mut self, ui: &Ui, tools: &mut ToolState) {
         let Some(index) = self.selection.as_ref().map(|s| s.index) else { return };
-        if ui.ctx().wants_keyboard_input() {
+        if ui.ctx().egui_wants_keyboard_input() {
             return;
         }
         let (delete, escape, nudge) = ui.input(|i| {

@@ -109,6 +109,6 @@ pub(super) fn paint_handles(painter: &egui::Painter, r: Rect, corners_only: bool
     for (_, p) in handle_points(r, corners_only) {
         let h = Rect::from_center_size(p, Vec2::splat(8.0));
         painter.rect_filled(h, 1.0, Color32::WHITE);
-        painter.rect_stroke(h, 1.0, Stroke::new(1.0f32, ACCENT));
+        painter.rect_stroke(h, 1.0, Stroke::new(1.0f32, ACCENT), egui::StrokeKind::Middle);
     }
 }

@@ -61,7 +61,7 @@ pub(super) fn paint_shape(
     let stroke = |width: f32, color: Color32| Stroke::new((width * scale).max(1.0), color);
     match shape {
         Shape::Box { rect, color, width } => {
-            painter.rect_stroke(screen_rect(rect), 0.0, stroke(*width, *color));
+            painter.rect_stroke(screen_rect(rect), 0.0, stroke(*width, *color), egui::StrokeKind::Middle);
         }
         Shape::Ellipse { rect, color, width } => {
             let points = ellipse_points(*rect).into_iter().map(&to_screen).collect();
@@ -73,7 +73,7 @@ pub(super) fn paint_shape(
         Shape::Blur { rect } | Shape::Pixelate { rect } => {
             let r = screen_rect(rect);
             painter.rect_filled(r, 0.0, Color32::from_gray(128).gamma_multiply(0.6));
-            painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, Color32::WHITE));
+            painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, Color32::WHITE), egui::StrokeKind::Middle);
             let label = if matches!(shape, Shape::Blur { .. }) { "Blur" } else { "Pixelate" };
             painter.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(14.0), Color32::WHITE);
         }
@@ -83,7 +83,7 @@ pub(super) fn paint_shape(
         Shape::Spotlight { rect } => {
             let r = screen_rect(rect);
             shade_outside(painter, r, canvas, Color32::from_black_alpha(SPOTLIGHT_DIM));
-            painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, Color32::from_white_alpha(160)));
+            painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, Color32::from_white_alpha(160)), egui::StrokeKind::Middle);
         }
         Shape::Line { from, to, color, width } => {
             painter.line_segment([to_screen(*from), to_screen(*to)], stroke(*width, *color));

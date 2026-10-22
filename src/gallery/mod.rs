@@ -133,7 +133,7 @@ impl App {
         let mut fonts = egui::FontDefinitions::default();
         theme::add_icons(&mut fonts);
         if let Some(bytes) = font_bytes.clone() {
-            fonts.font_data.insert(editor::ANNOTATION_FONT.to_owned(), egui::FontData::from_owned(bytes));
+            fonts.font_data.insert(editor::ANNOTATION_FONT.to_owned(), Arc::new(egui::FontData::from_owned(bytes)));
             fonts.families.insert(
                 egui::FontFamily::Name(editor::ANNOTATION_FONT.into()),
                 vec![editor::ANNOTATION_FONT.to_owned()],
@@ -419,7 +419,7 @@ impl App {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        let typing = self.editor.as_ref().is_some_and(|e| e.is_typing()) || ctx.wants_keyboard_input();
+        let typing = self.editor.as_ref().is_some_and(|e| e.is_typing()) || ctx.egui_wants_keyboard_input();
         if typing || self.editor.is_none() {
             return;
         }
@@ -604,43 +604,39 @@ impl App {
         } else if response.hovered() {
             ui.painter().circle_stroke(center, 9.5, Stroke::new(1.5f32, theme::MUTED));
         }
-        let popup = ui.make_persistent_id("custom_color");
         let response = response.on_hover_text("Pick any colour");
-        if response.clicked() {
-            ui.memory_mut(|m| m.toggle_popup(popup));
-        }
-        egui::popup::popup_below_widget(ui, popup, &response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-            egui::color_picker::color_picker_color32(ui, self.tools.color_mut(), egui::color_picker::Alpha::Opaque);
-        });
+        egui::Popup::from_toggle_button_response(&response)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| egui::color_picker::color_picker_color32(ui, self.tools.color_mut(), egui::color_picker::Alpha::Opaque));
     }
 
     fn export_menu(&mut self, ui: &mut egui::Ui) {
         ui.set_min_width(200.0);
         if ui.button(theme::label(icon::FLOPPY_DISK, "Save copy…")).on_hover_text("Save as a new file (Ctrl+Shift+S)").clicked() {
             self.save(true);
-            ui.close_menu();
+            ui.close();
         }
         if ui.button(theme::label(icon::FILE_JPG, "Save copy as JPG")).clicked() {
             self.save_jpg();
-            ui.close_menu();
+            ui.close();
         }
         if platform::EXTRAS {
             let as_file = ui.button(theme::label(icon::PAPERCLIP, "Copy as file"));
             if as_file.on_hover_text("Paste it into a folder, chat or email as an attachment").clicked() {
                 self.copy_as_file();
-                ui.close_menu();
+                ui.close();
             }
             ui.separator();
             let reading = self.ocr.is_some();
             let copy_text = ui.add_enabled(!reading, egui::Button::new(theme::label(icon::TEXT_AA, "Copy text (OCR)")));
             if copy_text.on_hover_text("Recognise the text in the image and copy it").clicked() {
                 self.copy_text();
-                ui.close_menu();
+                ui.close();
             }
             let pin = ui.button(theme::label(icon::PUSH_PIN, "Pin to screen"));
             if pin.on_hover_text("Keep the image on top of other windows for reference").clicked() {
                 self.pin();
-                ui.close_menu();
+                ui.close();
             }
         }
         ui.separator();
@@ -731,7 +727,8 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
         self.poll(ctx);
         let closing = ctx.input(|i| i.viewport().close_requested());
         if closing {
@@ -747,33 +744,33 @@ impl eframe::App for App {
             self.shortcuts(ctx);
         }
 
-        let bar = |fill| egui::Frame::none().fill(fill).inner_margin(egui::Margin::symmetric(10.0, 7.0)).stroke(egui::Stroke::new(1.0f32, theme::BORDER));
-        egui::TopBottomPanel::top("toolbar").frame(bar(theme::PANEL)).show_separator_line(false).show(ctx, |ui| self.toolbar(ui));
+        let bar = |fill| egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(10, 7)).stroke(egui::Stroke::new(1.0f32, theme::BORDER));
+        egui::Panel::top("toolbar").frame(bar(theme::PANEL)).show_separator_line(false).show(ui, |ui| self.toolbar(ui));
         if self.editor.is_some() {
-            egui::TopBottomPanel::top("options").frame(bar(theme::SUBPANEL)).show_separator_line(false).show(ctx, |ui| self.tool_options(ui));
+            egui::Panel::top("options").frame(bar(theme::SUBPANEL)).show_separator_line(false).show(ui, |ui| self.tool_options(ui));
         }
-        egui::TopBottomPanel::bottom("status")
-            .frame(egui::Frame::none().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10.0, 4.0)))
-            .show(ctx, |ui| self.status_bar(ui));
-        let library = egui::Frame::none().fill(theme::PANEL).inner_margin(egui::Margin::same(10.0));
+        egui::Panel::bottom("status")
+            .frame(egui::Frame::NONE.fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 4)))
+            .show(ui, |ui| self.status_bar(ui));
+        let library = egui::Frame::NONE.fill(theme::PANEL).inner_margin(egui::Margin::same(10));
         match self.dock {
             Dock::Left => {
-                egui::SidePanel::left("library")
+                egui::Panel::left("library")
                     .frame(library)
                     .resizable(true)
-                    .default_width(250.0)
-                    .width_range(200.0..=420.0)
-                    .show(ctx, |ui| self.library(ui));
+                    .default_size(250.0)
+                    .size_range(200.0..=420.0)
+                    .show(ui, |ui| self.library(ui));
             }
             Dock::Bottom => {
-                egui::TopBottomPanel::bottom("library_strip")
+                egui::Panel::bottom("library_strip")
                     .frame(library)
                     .resizable(false)
-                    .exact_height(library::STRIP_HEIGHT)
-                    .show(ctx, |ui| self.library(ui));
+                    .exact_size(library::STRIP_HEIGHT)
+                    .show(ui, |ui| self.library(ui));
             }
         }
-        egui::CentralPanel::default().frame(egui::Frame::none().fill(theme::CANVAS)).show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(theme::CANVAS)).show(ui, |ui| {
             match &mut self.editor {
                 Some(editor) => editor.ui(ui, &mut self.tools, self.font.as_ref()),
                 None => {

@@ -23,7 +23,7 @@ impl Harness {
         let bytes = super::super::doc::load_font_bytes();
         if let Some(bytes) = bytes.clone() {
             let mut fonts = egui::FontDefinitions::default();
-            fonts.font_data.insert(ANNOTATION_FONT.to_owned(), egui::FontData::from_owned(bytes));
+            fonts.font_data.insert(ANNOTATION_FONT.to_owned(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
             fonts.families.insert(egui::FontFamily::Name(ANNOTATION_FONT.into()), vec![ANNOTATION_FONT.to_owned()]);
             ctx.set_fonts(fonts);
         }
@@ -46,14 +46,15 @@ impl Harness {
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 600.0))),
             time: Some(self.time),
-            modifiers: self.modifiers,
-            events,
+            events: std::iter::once(Event::ModifiersChanged(self.modifiers)).chain(events).collect(),
             ..Default::default()
         };
         let (editor, tools, font) = (&mut self.editor, &mut self.tools, self.font.as_ref());
-        let _ = self.ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| editor.ui(ui, tools, font));
+        let mut output = self.ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| editor.ui(ui, tools, font));
         });
+        // Nothing renders here, so the texture uploads are dropped on purpose.
+        output.textures_delta.clear();
     }
 
     fn click_screen(&mut self, pos: Pos2) {
@@ -113,7 +114,7 @@ fn selected_text_field_fits_large_text() {
     h.type_text("Testing a long message");
     let pending = h.editor.text.as_ref().expect("text box open");
     let font = FontId::new(h.tools.text_size * h.editor.shown_scale, egui::FontFamily::Name(ANNOTATION_FONT.into()));
-    let needed = h.ctx.fonts(|f| f.layout_no_wrap(pending.text.clone(), font, Color32::WHITE).size().x);
+    let needed = h.ctx.fonts_mut(|f| f.layout_no_wrap(pending.text.clone(), font, Color32::WHITE).size().x);
     let anchor = h.editor.canvas.min.x + 100.0 * h.editor.shown_scale;
     assert!((pending.field.min.x - anchor).abs() < 4.0, "field drifted from the text: {} vs {}", pending.field.min.x, anchor);
     assert!(pending.field.width() >= needed, "field {} narrower than text {}", pending.field.width(), needed);

@@ -71,7 +71,7 @@ impl Editor {
                     });
                 });
             });
-        let typing = ui.ctx().wants_keyboard_input();
+        let typing = ui.ctx().egui_wants_keyboard_input();
         apply |= !typing && ui.input(|i| i.key_pressed(Key::Enter));
         cancel |= !typing && ui.input(|i| i.key_pressed(Key::Escape));
         if apply {
@@ -95,7 +95,7 @@ pub(super) fn shade_outside(painter: &egui::Painter, r: Rect, canvas: Rect, shad
 pub(super) fn crop_shade(painter: &egui::Painter, r: Rect, canvas: Rect, size: Vec2, handles: bool) {
     let c = canvas;
     shade_outside(painter, r, c, Color32::from_black_alpha(150));
-    painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, Color32::WHITE));
+    painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, Color32::WHITE), egui::StrokeKind::Middle);
     if handles {
         paint_handles(painter, r, false);
     }

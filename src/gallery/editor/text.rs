@@ -99,7 +99,7 @@ impl Editor {
         let Some(i) = hovered else { return };
         if let Shape::Text { pos, text, size, .. } = &self.doc.current().shapes[i] {
             let b = text_bounds(*pos, text, *size, font);
-            painter.rect_stroke(Rect::from_two_pos(to_screen(b.min), to_screen(b.max)), 2.0, Stroke::new(1.0f32, Color32::from_white_alpha(140)));
+            painter.rect_stroke(Rect::from_two_pos(to_screen(b.min), to_screen(b.max)), 2.0, Stroke::new(1.0f32, Color32::from_white_alpha(140)), egui::StrokeKind::Middle);
         }
         if tools.tool == Tool::Text {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
@@ -134,13 +134,13 @@ impl Editor {
                 const HINT: &str = "Type, then Enter";
                 // Hard-edged stand-in for the soft shadow the renderer draws.
                 if tools.text_shadow && !pending.text.is_empty() {
-                    let galley = ui.fonts(|f| f.layout_no_wrap(pending.text.clone(), font.clone(), Color32::from_black_alpha(170)));
+                    let galley = ui.fonts_mut(|f| f.layout_no_wrap(pending.text.clone(), font.clone(), Color32::from_black_alpha(170)));
                     let offset = shadow_offset(tools.text_size, scale);
                     ui.painter().galley(ui.cursor().min + margin + offset, galley, Color32::BLACK);
                 }
                 // The box grows to fit the text (clip_text(false)); this is just its minimum width.
                 let min_width = if pending.text.is_empty() {
-                    ui.fonts(|f| f.layout_no_wrap(HINT.into(), font.clone(), color).size().x)
+                    ui.fonts_mut(|f| f.layout_no_wrap(HINT.into(), font.clone(), color).size().x)
                 } else {
                     tools.text_size * scale * 0.5
                 };
@@ -148,16 +148,21 @@ impl Editor {
                     .font(font)
                     .text_color(color)
                     .hint_text(HINT)
-                    .margin(margin)
+                    .margin(egui::Margin::symmetric(margin.x as i8, margin.y as i8))
                     .clip_text(false)
-                    .frame(false)
+                    .frame(egui::Frame::NONE)
                     .desired_width(min_width);
                 let response = ui.add(edit);
                 pending.field = response.rect;
                 // No background box: the text shows over the image as it will look, with a thin outline marking it selected.
-                ui.painter().rect_stroke(response.rect.expand(2.0), 2.0, Stroke::new(1.0f32, Color32::from_rgb(30, 120, 240)));
+                ui.painter().rect_stroke(response.rect.expand(2.0), 2.0, Stroke::new(1.0f32, Color32::from_rgb(30, 120, 240)), egui::StrokeKind::Middle);
                 if !pending.focused {
                     response.request_focus();
+                    // Start typing at the end of reopened text.
+                    let mut state = egui::text_edit::TextEditState::load(ui.ctx(), response.id).unwrap_or_default();
+                    let end = egui::text::CCursor::new(pending.text.chars().count());
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+                    state.store(ui.ctx(), response.id);
                     pending.focused = true;
                 }
             });
@@ -170,7 +175,7 @@ impl Editor {
             .show(ui.ctx(), |ui| {
                 let (rect, response) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::drag());
                 ui.painter().rect_filled(rect, 2.0, Color32::WHITE);
-                ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0f32, Color32::from_rgb(30, 120, 240)));
+                ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0f32, Color32::from_rgb(30, 120, 240)), egui::StrokeKind::Middle);
                 response.on_hover_text("Drag to resize")
             })
             .inner;

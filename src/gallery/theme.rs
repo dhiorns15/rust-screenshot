@@ -1,7 +1,7 @@
 //! The library window's look: neutral dark surfaces, a blue accent, rounded controls, and Phosphor
 //! icons (https://phosphoricons.com, MIT).
 
-use eframe::egui::{self, Color32, Margin, Response, RichText, Rounding, Sense, Stroke, Ui, Vec2, Widget};
+use eframe::egui::{self, Color32, CornerRadius, Margin, Response, RichText, Sense, Stroke, Ui, Vec2, Widget};
 pub use egui_phosphor::regular as icon;
 
 use super::editor::Tool;
@@ -26,8 +26,8 @@ pub fn apply(ctx: &egui::Context) {
     v.faint_bg_color = RAISED;
     v.extreme_bg_color = Color32::from_rgb(18, 19, 22);
     v.window_stroke = Stroke::new(1.0f32, BORDER);
-    v.window_rounding = Rounding::same(10.0);
-    v.menu_rounding = Rounding::same(8.0);
+    v.window_corner_radius = CornerRadius::same(10);
+    v.menu_corner_radius = CornerRadius::same(8);
     v.hyperlink_color = ACCENT;
     v.selection.bg_fill = ACCENT.gamma_multiply(0.45);
     v.selection.stroke = Stroke::new(1.0f32, ACCENT);
@@ -47,15 +47,17 @@ pub fn apply(ctx: &egui::Context) {
     w.active.bg_stroke = Stroke::NONE;
     w.open.weak_bg_fill = HOVER;
     for state in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
-        state.rounding = Rounding::same(6.0);
+        state.corner_radius = CornerRadius::same(6);
         state.expansion = 0.0;
     }
-    ctx.set_visuals(v);
-    ctx.style_mut(|s| {
+    // Always dark, whatever the system theme.
+    ctx.set_theme(egui::Theme::Dark);
+    ctx.set_visuals_of(egui::Theme::Dark, v);
+    ctx.style_mut_of(egui::Theme::Dark, |s| {
         s.spacing.item_spacing = Vec2::new(6.0, 6.0);
         s.spacing.button_padding = Vec2::new(10.0, 5.0);
         s.spacing.interact_size.y = 26.0;
-        s.spacing.menu_margin = Margin::same(6.0);
+        s.spacing.menu_margin = Margin::same(6);
     });
 }
 
@@ -133,10 +135,10 @@ pub fn primary_button(text: impl Into<String>) -> egui::Button<'static> {
 
 /// A rounded container that groups related controls, like a segmented control.
 pub fn group<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(RAISED)
-        .rounding(8.0)
-        .inner_margin(Margin::same(2.0))
+        .corner_radius(8)
+        .inner_margin(Margin::same(2))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.horizontal(add).inner
