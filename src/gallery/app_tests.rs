@@ -252,23 +252,27 @@ mod snapshots {
 
     #[test]
     fn library_on_the_left() {
+        let _gpu = super::super::tests::gpu();
         snapshot(&mut library("snap-left"), "library_left");
     }
 
     #[test]
     fn library_along_the_bottom() {
+        let _gpu = super::super::tests::gpu();
         let mut h = window(fixtures("snap-bottom"), SIZE, |env| env.set_setting(Dock::SETTING, Dock::Bottom.to_setting()));
         snapshot(&mut h, "library_bottom");
     }
 
     #[test]
     fn narrow_window() {
+        let _gpu = super::super::tests::gpu();
         let mut h = window(fixtures("snap-narrow"), Vec2::new(760.0, 600.0), |_| {});
         snapshot(&mut h, "narrow");
     }
 
     #[test]
     fn text_tool_and_text() {
+        let _gpu = super::super::tests::gpu();
         let mut h = library("snap-text");
         click(&mut h, "Text");
         let canvas = h.state().editor.as_ref().unwrap().canvas;
@@ -284,6 +288,7 @@ mod snapshots {
 
     #[test]
     fn selected_arrow() {
+        let _gpu = super::super::tests::gpu();
         let mut h = library("snap-arrow");
         click(&mut h, "Arrow");
         drag_on_canvas(&mut h, (0.2, 0.7), (0.7, 0.25));
@@ -292,6 +297,7 @@ mod snapshots {
 
     #[test]
     fn export_menu() {
+        let _gpu = super::super::tests::gpu();
         let mut h = library("snap-export");
         h.get_by_label_contains("Export").click();
         snapshot(&mut h, "export_menu");
@@ -299,6 +305,7 @@ mod snapshots {
 
     #[test]
     fn colour_picker() {
+        let _gpu = super::super::tests::gpu();
         let mut h = library("snap-colour");
         click(&mut h, "Pick any colour");
         snapshot(&mut h, "colour_picker");
@@ -306,6 +313,7 @@ mod snapshots {
 
     #[test]
     fn empty_library() {
+        let _gpu = super::super::tests::gpu();
         let mut h = window(tests::sandbox_dir("snap-empty"), SIZE, |_| {});
         snapshot(&mut h, "empty_library");
     }
@@ -323,6 +331,7 @@ mod snapshots {
     #[test]
     #[ignore]
     fn render_window() {
+        let _gpu = super::super::tests::gpu();
         let spec = std::env::var("RSNIP_UI").unwrap_or_default();
         let out = std::env::var("RSNIP_UI_OUT").unwrap_or_else(|_| "target/ui.png".into());
         let mut size = SIZE;

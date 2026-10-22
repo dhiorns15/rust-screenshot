@@ -188,6 +188,7 @@ mod snapshots {
 
     #[test]
     fn sections() {
+        let _gpu = super::super::tests::gpu();
         let mut h = rendered("snap-settings", |env| {
             // As the tray app stores them: every action, here PrtScn for a region and Shift+PrtScn to record.
             let mut table = shortcuts::defaults();
@@ -210,6 +211,7 @@ mod snapshots {
 
     #[test]
     fn shortcut_problems() {
+        let _gpu = super::super::tests::gpu();
         let mut h = rendered("snap-settings-problems", |env| {
             env.set_setting(Action::Full.setting(), shortcuts::PRINT_SCREEN);
             env.sandboxed().snipping_key = true;
@@ -222,6 +224,7 @@ mod snapshots {
     #[test]
     #[ignore]
     fn render_settings() {
+        let _gpu = super::super::tests::gpu();
         let spec = std::env::var("RSNIP_UI").unwrap_or_default();
         let out = std::env::var("RSNIP_UI_OUT").unwrap_or_else(|_| "target/settings.png".into());
         let mut appearance = Appearance::Dark;
@@ -247,6 +250,7 @@ mod snapshots {
 
     #[test]
     fn light_theme() {
+        let _gpu = super::super::tests::gpu();
         let mut h = rendered("snap-settings-light", |env| env.set_setting(Appearance::SETTING, Appearance::Light.to_setting()));
         snapshot(&mut h, Section::General, "settings_light");
     }

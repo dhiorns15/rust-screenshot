@@ -874,6 +874,14 @@ fn load_effects(env: &Env) -> Effects {
 mod tests {
     use super::*;
 
+    /// Held by each test that renders on the GPU: lavapipe (the software GPU on Linux CI) can crash
+    /// when many devices are created at once.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn gpu() -> std::sync::MutexGuard<'static, ()> {
+        static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        GPU.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// An empty folder of its own for one test.
     pub(crate) fn sandbox_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rsnip-{name}-{}", std::process::id()));
