@@ -118,7 +118,8 @@ fn dim(pixels: &[u8]) -> Vec<u8> {
 
 /// Lets the user pick a region of `shot`. Returns it in image coordinates and whether to pin it,
 /// or `None` if cancelled.
-pub fn select(shot: &Screenshot, targets: Vec<Target>, last: Option<RECT>) -> Option<(Selection, bool)> {
+/// `magnifier`: whether the magnifier shows at first (M toggles it).
+pub fn select(shot: &Screenshot, targets: Vec<Target>, last: Option<RECT>, magnifier: bool) -> Option<(Selection, bool)> {
     unsafe {
         let (w, h) = (shot.image.width, shot.image.height);
         let screen = GetDC(null_mut());
@@ -175,7 +176,7 @@ pub fn select(shot: &Screenshot, targets: Vec<Target>, last: Option<RECT>) -> Op
             dragging: false,
             current: None,
             origin: POINT { x: shot.x, y: shot.y },
-            magnifier: true,
+            magnifier,
             note: None,
             pin: false,
             last,

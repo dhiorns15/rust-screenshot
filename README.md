@@ -97,7 +97,7 @@ Run `rsnip.exe`. It sits in the notification area.
 | All screens | Press A in the selection overlay, or use *Capture all screens* in the tray menu |
 | Copy text (OCR) | Tray menu → *Capture text (OCR)*: select an area and its text is copied to the clipboard. In the editor, *Export → Copy text (OCR)* reads the whole image. Uses the OCR built into Windows |
 | Pin to screen | Press P in the selection overlay to pin the highlighted area, or use *Export → Pin to screen* in the editor or a thumbnail's right-click menu. The pin floats above other windows: drag to move, mouse wheel to fade, Ctrl+wheel to zoom, right-click to copy or save, double-click or Esc to close |
-| Fine-tune | A magnifier next to the cursor shows the pixels under it with their position and colour (M hides it). Arrow keys move the mouse 1 px, Shift+arrows 10 px, including while dragging. C copies the colour under the cursor as #RRGGBB |
+| Fine-tune | A magnifier next to the cursor shows the pixels under it with their position and colour (M hides or shows it; Settings → Capture sets whether it starts shown). Arrow keys move the mouse 1 px, Shift+arrows 10 px, including while dragging. C copies the colour under the cursor as #RRGGBB |
 | Cancel | Esc or right-click |
 | Same area again | Tray menu → *Capture last region*, or R in the selection overlay, captures exactly the area you captured last time |
 | Scrolling capture | Tray menu → *Scrolling capture*, then click a window (or drag over the part that scrolls). RSnip scrolls it to the end and stitches one tall image; sticky headers and footers appear once. Esc stops early |
@@ -116,7 +116,7 @@ Changes apply straight away.
 | Section | |
 | --- | --- |
 | General | **Theme**: System (follows Windows' light or dark mode), Light or Dark. **Start with Windows**, **Open the library when RSnip starts** (otherwise it starts quietly in the tray), **Show notifications** |
-| Capture | **Save screenshots to the folder** (when off, captures go to the clipboard only), **Open the editor after capture** (this saves the capture even if saving is off). Every capture is copied to the clipboard |
+| Capture | **Save screenshots to the folder** (when off, captures go to the clipboard only), **Open the editor after capture** (this saves the capture even if saving is off), **Show the magnifier** (or press M while selecting). Every capture is copied to the clipboard |
 | Shortcuts | A shortcut for each action (region, all screens, last region, scrolling, record, text). *Change* asks you to press the new combination (Esc cancels); giving it a key another action has moves it. **Also take over Win+Shift+S** for a region capture. It warns if Windows' own Print Screen setting is on or two actions share a key |
 | Recording | MP4 or GIF |
 | Library & editor | Library on the left or along the bottom; border and drop shadow on exports |

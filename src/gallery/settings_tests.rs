@@ -83,6 +83,9 @@ fn switches_save_the_option_and_tell_the_tray_app() {
     open(&mut h, Section::Capture);
     toggle(&mut h, "Open the editor after capture");
     assert_eq!(h.state().env.setting(options::OPEN_EDITOR.name), Some(1));
+    assert!(is_on(&h, "Show the magnifier"), "on by default");
+    toggle(&mut h, "Show the magnifier");
+    assert_eq!(h.state().env.setting(options::SHOW_MAGNIFIER.name), Some(0));
 }
 
 #[test]

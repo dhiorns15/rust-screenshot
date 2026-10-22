@@ -666,7 +666,7 @@ unsafe fn capture(hwnd: HWND, mode: Mode) {
 fn pick_area() -> Option<RECT> {
     let shot = capture::capture_screen()?;
     let last = settings::last_region().and_then(|r| shot.to_image_rect(r));
-    let (selection, _) = overlay::select(&shot, capture::window_targets(&shot), last)?;
+    let (selection, _) = overlay::select(&shot, capture::window_targets(&shot), last, SETTINGS.get().show_magnifier)?;
     let (overlay::Selection::Area(r) | overlay::Selection::Window { rect: r, .. }) = selection;
     Some(shot.to_screen_rect(r))
 }
@@ -755,7 +755,7 @@ fn take(mode: Mode) -> Option<(Image, bool)> {
         _ => {}
     }
     let targets = capture::window_targets(&shot);
-    let (selection, pin) = overlay::select(&shot, targets, last)?;
+    let (selection, pin) = overlay::select(&shot, targets, last, SETTINGS.get().show_magnifier)?;
     if mode == Mode::Scroll {
         let (area, window) = match selection {
             overlay::Selection::Area(r) => (r, None),

@@ -199,6 +199,8 @@ impl SettingsApp {
             }
             ui.separator();
             self.flag_row(ui, options::OPEN_EDITOR, "Open the editor after capture", "Every capture opens straight in the editor");
+            ui.separator();
+            self.flag_row(ui, options::SHOW_MAGNIFIER, "Show the magnifier", "Zoomed pixels, position and colour by the cursor. Press M while selecting to show or hide it");
         });
         ui.label(RichText::new("Every capture is also copied to the clipboard.").color(theme::palette(ui).muted));
     }

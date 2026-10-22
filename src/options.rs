@@ -21,6 +21,8 @@ pub const SAVE_TO_FOLDER: Flag = Flag { name: "SaveToFolder", default: true };
 pub const NOTIFY: Flag = Flag { name: "Notify", default: true };
 pub const WIN_SHIFT_S: Flag = Flag { name: "WinShiftS", default: true };
 pub const OPEN_EDITOR: Flag = Flag { name: "OpenEditor", default: false };
+/// Whether the capture overlay starts with its magnifier showing (M toggles it).
+pub const SHOW_MAGNIFIER: Flag = Flag { name: "ShowMagnifier", default: true };
 pub const OPEN_LIBRARY_ON_LAUNCH: Flag = Flag { name: "OpenLibraryOnLaunch", default: false };
 pub const RECORD_GIF: Flag = Flag { name: "RecordGif", default: false };
 pub const CHECK_UPDATES: Flag = Flag { name: "CheckUpdates", default: true };
@@ -36,5 +38,6 @@ mod tests {
         assert!(!OPEN_EDITOR.read(|_| None));
         assert!(OPEN_EDITOR.read(|_| Some(7)));
         assert!(!NOTIFY.read(|_| Some(0)));
+        assert!(SHOW_MAGNIFIER.read(|_| None), "the magnifier shows unless turned off");
     }
 }
