@@ -196,6 +196,11 @@ pub fn pin(_img: &RgbaImage) -> Result<(), String> {
 
 pub fn pin_file(_path: &Path) {}
 
+/// No text recognition here, so search uses names only.
+pub fn ocr() -> Option<super::super::env::Ocr> {
+    None
+}
+
 pub fn read_text(_img: &RgbaImage) -> Result<String, String> {
     Err(NOT_HERE.into())
 }

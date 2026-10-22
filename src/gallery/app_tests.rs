@@ -194,6 +194,49 @@ fn opening_the_picker_leaves_the_colour_alone() {
     assert_eq!(*h.state_mut().tools.color_mut(), before);
 }
 
+/// A library whose sandbox "reads" `text` in Screenshot b, once the reader has finished.
+fn library_with_text(name: &str, text: &str, setup: impl FnOnce(&Env) + 'static) -> (Harness<'static, App>, PathBuf) {
+    let dir = fixtures(name);
+    let env = Env::sandbox(dir.clone());
+    env.sandboxed().ocr_text.lock().unwrap().insert("Screenshot b.png".into(), text.into());
+    setup(&env);
+    let mut h = Harness::builder().with_size(SIZE).build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
+    for _ in 0..200 {
+        settle(&mut h);
+        if h.state().reading.is_empty() {
+            break;
+        }
+    }
+    (h, dir)
+}
+
+fn search(h: &mut Harness<App>, text: &str) {
+    use egui::accesskit::Role::TextInput;
+    h.get_by_role(TextInput).focus();
+    settle(h);
+    h.get_by_role(TextInput).type_text(text);
+    settle(h);
+}
+
+#[test]
+fn searches_the_text_read_from_screenshots() {
+    let (mut h, dir) = library_with_text("kittest-search", "Invoice 2026
+Total due", |_| {});
+    assert!(h.state().metas.values().all(|m| m.text.is_some()), "every screenshot was read");
+    assert_eq!(super::search::load(&dir.join("Screenshot b.png")).text.as_deref(), Some("Invoice 2026
+Total due"), "cached beside it");
+    search(&mut h, "INVOICE total");
+    assert!(shows(&h, "Screenshot b"));
+    assert!(!shows(&h, "Screenshot a") && !shows(&h, "Screenshot c"));
+}
+
+#[test]
+fn reading_text_can_be_turned_off() {
+    let (h, _) = library_with_text("kittest-search-off", "Invoice", |env| env.set_setting(super::search::SETTING, 0));
+    assert!(h.state().reading.is_empty());
+    assert!(h.state().metas.values().all(|m| m.text.is_none()), "nothing was read");
+}
+
 #[test]
 fn ctrl_and_shift_click_select_several() {
     let mut h = harness("kittest-select");
@@ -227,10 +270,10 @@ mod snapshots {
             .with_pixels_per_point(1.0)
             .wgpu()
             .build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
-        // Until every thumbnail has loaded.
+        // Until every thumbnail has loaded and every screenshot's text has been read.
         for _ in 0..200 {
             settle(&mut h);
-            if h.state().thumbs.len() == h.state().entries.len() {
+            if h.state().thumbs.len() == h.state().entries.len() && h.state().reading.is_empty() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));

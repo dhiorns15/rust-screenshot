@@ -6,7 +6,7 @@ use std::time::SystemTime;
 use eframe::egui::{self, Align, Align2, Color32, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
 use super::theme::{self, icon, IconButton};
-use super::{open_with_shell, platform, App, Dock, THUMB};
+use super::{open_with_shell, platform, search, App, Dock, THUMB};
 
 const ROW_HEIGHT: f32 = THUMB.y + 40.0;
 const HEADER_HEIGHT: f32 = 30.0;
@@ -41,7 +41,7 @@ fn sticky_label_x(start: f32, end: f32, scroll: f32) -> f32 {
 }
 
 fn search_hint() -> String {
-    format!("{}  Search", icon::MAGNIFYING_GLASS)
+    format!("{}  Search text, apps and names", icon::MAGNIFYING_GLASS)
 }
 
 /// A calendar day in local time.
@@ -125,9 +125,13 @@ enum Action {
 
 impl App {
     pub(super) fn library(&mut self, ui: &mut egui::Ui) {
-        let filter = self.filter.to_lowercase();
-        let visible: Vec<usize> =
-            (0..self.entries.len()).filter(|&i| filter.is_empty() || self.entries[i].name.to_lowercase().contains(&filter)).collect();
+        let none = search::Meta::default();
+        let visible: Vec<usize> = (0..self.entries.len())
+            .filter(|&i| {
+                let entry = &self.entries[i];
+                search::matches(&self.filter, &entry.name, self.metas.get(&entry.path).unwrap_or(&none))
+            })
+            .collect();
         // Forget selected files that were deleted or renamed.
         self.selected.retain(|p| self.entries.iter().any(|e| &e.path == p));
 
@@ -208,7 +212,11 @@ impl App {
             self.bulk_bar(ui);
         } else {
             let noun = if count == 1 { "screenshot" } else { "screenshots" };
-            ui.label(RichText::new(format!("{count} {noun}")).small().color(theme::palette(ui).muted));
+            let reading = match self.reading.len() {
+                0 => String::new(),
+                n => format!(" · reading text, {n} left"),
+            };
+            ui.label(RichText::new(format!("{count} {noun}{reading}")).small().color(theme::palette(ui).muted));
         }
     }
 
@@ -297,6 +305,12 @@ impl App {
         let response = ui.interact(rect, ui.id().with(("entry", &entry.path)), Sense::click_and_drag());
         let selected = self.selected.contains(&entry.path);
         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, &entry.name));
+        // Where it came from, and why it matched the search.
+        let tip = self.metas.get(&entry.path).and_then(|m| search::describe(&self.filter, m));
+        let response = match tip {
+            Some(tip) => response.on_hover_text(tip),
+            None => response,
+        };
         let open = self.editor.as_ref().is_some_and(|e| e.doc.path == entry.path);
         let painter = ui.painter_at(rect);
         let tile = rect.shrink(3.0);

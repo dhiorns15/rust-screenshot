@@ -119,7 +119,7 @@ Changes apply straight away.
 | Capture | **Save screenshots to the folder** (when off, captures go to the clipboard only), **Open the editor after capture** (this saves the capture even if saving is off), **Show the magnifier** (or press M while selecting). Every capture is copied to the clipboard |
 | Shortcuts | A shortcut for each action (region, all screens, last region, scrolling, record, text). *Change* asks you to press the new combination (Esc cancels); giving it a key another action has moves it. **Also take over Win+Shift+S** for a region capture. It warns if Windows' own Print Screen setting is on or two actions share a key |
 | Recording | MP4 or GIF |
-| Library & editor | Library on the left or along the bottom; border and drop shadow on exports |
+| Library & editor | Library on the left or along the bottom; **Read text in screenshots for search**; border and drop shadow on exports |
 | Updates | **Check automatically** (on by default: shortly after RSnip starts, then daily, it asks GitHub for the latest release; nothing else is sent), **Install automatically** (off by default; installed copies only: installs a new version as soon as it's found, unless you're in the middle of something), *Check now* |
 | About | Version and links |
 
@@ -172,6 +172,11 @@ The *Export* menu saves a copy (PNG or JPG), copies the image *as a file* so it 
 attachment into a folder, chat or email, copies the text in it (OCR), or pins it to the screen. Its
 *Border* and *Drop shadow* options are added to every copy, save and export (the annotations stay
 editable without them).
+Search finds screenshots by the words in them, the app and window they were captured from, and their name
+(every word must match something, in any order). RSnip reads the text with Windows' built-in text
+recognition, in the background, and keeps it beside the screenshots in the hidden `.rsnip` folder; nothing
+leaves your PC. Hover a result to see where it came from and the line that matched. On Linux, search uses
+names only.
 The library groups screenshots by date (Today, Yesterday, This week, …). Ctrl+click and Shift+click
 select several, to copy them as files, delete them, pin them or drag them out together.
 Recordings appear with an MP4/GIF badge and open in your video player.

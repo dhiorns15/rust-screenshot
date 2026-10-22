@@ -12,6 +12,7 @@ mod library;
 mod platform;
 mod editor;
 mod env;
+mod search;
 mod settings_window;
 mod theme;
 
@@ -127,6 +128,12 @@ struct App {
     /// Where Shift+click ranges start.
     anchor: Option<PathBuf>,
     dock: Dock,
+    /// What's known about each listed screenshot for search (see `search`).
+    metas: HashMap<PathBuf, search::Meta>,
+    /// Screenshots waiting for their text to be read, and the reader's channels.
+    reading: HashSet<PathBuf>,
+    read_tx: Option<Sender<PathBuf>>,
+    read_rx: Option<Receiver<(PathBuf, Option<doc::FileStamp>, String)>>,
     /// How wide the toolbar's actions were last frame, to decide whether they fit beside the tools.
     actions_width: f32,
 }
@@ -182,9 +189,18 @@ impl App {
             selected: HashSet::new(),
             anchor: None,
             dock: Dock::from_setting(env.setting(Dock::SETTING)),
+            metas: HashMap::new(),
+            reading: HashSet::new(),
+            read_tx: None,
+            read_rx: None,
             actions_width: 320.0,
             env,
         };
+        if let Some(ocr) = app.env.ocr.clone() {
+            let (tx, rx) = start_reader(ocr, ctx.clone());
+            app.read_tx = Some(tx);
+            app.read_rx = Some(rx);
+        }
         app.rescan();
         doc::prune_layers(&app.env.dir);
         match file {
@@ -220,7 +236,32 @@ impl App {
         if vanished {
             doc::prune_layers(&self.env.dir);
         }
+        self.metas.retain(|path, _| listed.contains(path.as_path()));
+        for e in &entries {
+            self.metas.entry(e.path.clone()).or_insert_with(|| search::load(&e.path));
+        }
         self.entries = entries;
+        self.read_new_text();
+    }
+
+    /// Sends screenshots whose text hasn't been read (or changed since) to the reader, newest first.
+    fn read_new_text(&mut self) {
+        if self.env.setting(search::SETTING) == Some(0) {
+            return;
+        }
+        let Some(tx) = &self.read_tx else { return };
+        let unread: Vec<PathBuf> = self
+            .entries
+            .iter()
+            .filter(|e| !e.video && !self.reading.contains(&e.path))
+            .filter(|e| self.metas.get(&e.path).is_some_and(|m| search::needs_text(m, &e.path)))
+            .map(|e| e.path.clone())
+            .collect();
+        for path in unread {
+            if tx.send(path.clone()).is_ok() {
+                self.reading.insert(path);
+            }
+        }
     }
 
     fn set_status(&mut self, text: impl Into<String>) {
@@ -386,6 +427,16 @@ impl App {
                 self.requested.remove(&path);
                 let tex = ctx.load_texture(path.to_string_lossy(), thumb, TextureOptions::LINEAR);
                 self.thumbs.insert(path, (modified, tex));
+            }
+        }
+        if let Some(rx) = &self.read_rx {
+            for (path, stamp, text) in rx.try_iter() {
+                self.reading.remove(&path);
+                if let Some(meta) = self.metas.get_mut(&path) {
+                    meta.text = Some(text);
+                    meta.stamp = stamp;
+                    let _ = search::save(&path, meta);
+                }
             }
         }
         if let Some(rx) = &self.ocr {
@@ -792,6 +843,34 @@ impl eframe::App for App {
         });
         self.unsaved_dialog(ctx);
     }
+}
+
+/// Reads the text in screenshots one at a time on a worker thread: paths in, (path, the file's
+/// stamp when read, text) out.
+#[allow(clippy::type_complexity)]
+fn start_reader(ocr: env::Ocr, ctx: egui::Context) -> (Sender<PathBuf>, Receiver<(PathBuf, Option<doc::FileStamp>, String)>) {
+    let (jobs, inbox) = channel::<PathBuf>();
+    let (results, rx) = channel();
+    std::thread::spawn(move || {
+        for path in inbox {
+            let stamp = doc::FileStamp::of(&path);
+            // A failed read (e.g. no OCR language installed) counts as no text, so it isn't
+            // retried until the file changes.
+            let text = ocr(&path).unwrap_or_default();
+            if results.send((path, stamp, text)).is_err() {
+                break;
+            }
+            ctx.request_repaint();
+        }
+    });
+    (jobs, rx)
+}
+
+/// Records where a capture came from (app and window title), for search. Called before its file
+/// is written, so the library finds it there.
+#[cfg(windows)]
+pub fn record_source(path: &Path, app: &str, window: &str) {
+    search::record_source(path, app, window);
 }
 
 /// RSnip's icon for a window's title bar and taskbar button.

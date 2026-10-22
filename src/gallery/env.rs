@@ -5,12 +5,16 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver};
 
 use super::platform;
 use crate::shortcuts::Action;
 use crate::update::{Release, Version};
+
+/// Reads the text in an image file (for search).
+pub type Ocr = Arc<dyn Fn(&Path) -> Result<String, String> + Send + Sync>;
 
 pub struct Env {
     pub dir: PathBuf,
@@ -22,6 +26,8 @@ pub struct Env {
     pub tray_app: bool,
     /// This build's version (a fixed one in the sandbox, so snapshots survive version bumps).
     pub version: Version,
+    /// Text recognition for search, where the system has it (Windows).
+    pub ocr: Option<Ocr>,
     settings: Store,
     #[cfg_attr(not(test), allow(dead_code))]
     sandbox: Option<RefCell<Sandbox>>,
@@ -50,6 +56,8 @@ pub struct Sandbox {
     /// Windows' own "Use the Print screen key to open screen capture".
     pub snipping_key: bool,
     pub latest: Option<Release>,
+    /// The text "read" from each file name, for search.
+    pub ocr_text: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
 }
 
 enum Store {
@@ -67,6 +75,7 @@ impl Env {
             check_updates: cfg!(not(windows)) && crate::options::CHECK_UPDATES.read(platform::setting),
             tray_app: cfg!(windows),
             version: Version::current(),
+            ocr: platform::ocr(),
             settings: Store::Platform,
             sandbox: None,
         }
@@ -76,12 +85,18 @@ impl Env {
     #[cfg(test)]
     pub fn sandbox(dir: PathBuf) -> Env {
         let sandbox = Sandbox { tray_running: true, ..Default::default() };
+        let texts = sandbox.ocr_text.clone();
+        let ocr: Ocr = Arc::new(move |path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            Ok(texts.lock().unwrap().get(name.as_ref()).cloned().unwrap_or_default())
+        });
         Env {
             request_file: dir.join("request.txt"),
             dir,
             check_updates: false,
             tray_app: cfg!(windows),
             version: Version(1, 2, 3),
+            ocr: Some(ocr),
             settings: Store::Memory(RefCell::default()),
             sandbox: Some(RefCell::new(sandbox)),
         }

@@ -652,12 +652,12 @@ unsafe fn capture(hwnd: HWND, mode: Mode) {
     let image = take(mode);
     CAPTURING.set(false);
     match (image, mode) {
-        (Some((image, true)), _) => {
+        (Some((image, true, _)), _) => {
             // Saving a big capture takes a moment; keep the hook's thread responsive.
             std::thread::spawn(move || pin::pin_image(&image));
         }
-        (Some((image, false)), Mode::Text) => read_text(hwnd, image),
-        (Some((image, false)), _) => deliver(hwnd, image),
+        (Some((image, false, _)), Mode::Text) => read_text(hwnd, image),
+        (Some((image, false, source)), _) => deliver(hwnd, image, source),
         (None, _) => {}
     }
 }
@@ -744,13 +744,19 @@ unsafe fn on_text(hwnd: HWND, result: Result<String, String>) {
     notify(hwnd, &title, &first);
 }
 
-/// The captured image, and whether the user asked to pin it (P in the overlay).
-fn take(mode: Mode) -> Option<(Image, bool)> {
+/// The window under the middle of `r` (screen coordinates).
+fn window_under(r: RECT) -> HWND {
+    capture::window_at((r.left + r.right) / 2, (r.top + r.bottom) / 2)
+}
+
+/// The captured image, whether the user asked to pin it (P in the overlay), and the window it
+/// shows (for search; may be null).
+fn take(mode: Mode) -> Option<(Image, bool, HWND)> {
     let shot = capture::capture_screen()?;
     let last = settings::last_region().and_then(|r| shot.to_image_rect(r));
     match (mode, last) {
-        (Mode::Full, _) => return Some((shot.image, false)),
-        (Mode::Last, Some(r)) => return Some((shot.image.crop(r), false)),
+        (Mode::Full, _) => return Some((shot.image, false, capture::foreground_window())),
+        (Mode::Last, Some(r)) => return Some((shot.image.crop(r), false, window_under(shot.to_screen_rect(r)))),
         // No last region (or it's off screen now): pick one as usual.
         _ => {}
     }
@@ -761,20 +767,23 @@ fn take(mode: Mode) -> Option<(Image, bool)> {
             overlay::Selection::Area(r) => (r, None),
             overlay::Selection::Window { hwnd, rect, .. } => (rect, Some(hwnd)),
         };
-        return scroll::capture(shot.to_screen_rect(area), window).map(|image| (image, false));
+        let source = window.unwrap_or_else(|| window_under(shot.to_screen_rect(area)));
+        return scroll::capture(shot.to_screen_rect(area), window).map(|image| (image, false, source));
     }
-    let (image, area) = match selection {
-        overlay::Selection::Area(r) | overlay::Selection::Window { rect: r, occluded: false, .. } => (shot.image.crop(r), r),
+    let (image, area, source) = match selection {
+        overlay::Selection::Area(r) => (shot.image.crop(r), r, window_under(shot.to_screen_rect(r))),
+        overlay::Selection::Window { hwnd, rect, occluded: false } => (shot.image.crop(rect), rect, hwnd),
         // Something was on top of the window: raise it and capture it again cleanly.
         overlay::Selection::Window { hwnd, rect, occluded: true } => {
-            (capture::capture_window_in_front(hwnd).unwrap_or_else(|| shot.image.crop(rect)), rect)
+            (capture::capture_window_in_front(hwnd).unwrap_or_else(|| shot.image.crop(rect)), rect, hwnd)
         }
     };
     settings::set_last_region(shot.to_screen_rect(area));
-    Some((image, pin))
+    Some((image, pin, source))
 }
 
-unsafe fn deliver(hwnd: HWND, img: Image) {
+/// Copies the capture and saves it; `source` is the window it shows, recorded for search.
+unsafe fn deliver(hwnd: HWND, img: Image, source: HWND) {
     let s = SETTINGS.get();
     let copied = match output::copy_to_clipboard(hwnd, &img) {
         Ok(()) => true,
@@ -795,6 +804,9 @@ unsafe fn deliver(hwnd: HWND, img: Image) {
         Ok(p) => p,
         Err(e) => return notify(hwnd, "Couldn't save screenshot", &e),
     };
+    if let Some((app, window)) = capture::window_source(source) {
+        gallery::record_source(&path, &app, &window);
+    }
     // PNG encoding of a large capture can take a moment; keep the hook's thread responsive.
     let target = hwnd as isize;
     std::thread::spawn(move || {

@@ -283,9 +283,109 @@ unsafe extern "system" fn enum_monitor(_: HMONITOR, _: HDC, r: *mut RECT, lparam
     1
 }
 
+/// The top-level window at screen point (`x`, `y`), e.g. under a captured area's centre.
+pub fn window_at(x: i32, y: i32) -> HWND {
+    unsafe {
+        let window = WindowFromPoint(POINT { x, y });
+        if window.is_null() {
+            window
+        } else {
+            GetAncestor(window, GA_ROOT)
+        }
+    }
+}
+
+pub fn foreground_window() -> HWND {
+    unsafe { GetForegroundWindow() }
+}
+
+/// The app and title of `window`, recorded with a capture for search.
+pub fn window_source(window: HWND) -> Option<(String, String)> {
+    if window.is_null() {
+        return None;
+    }
+    unsafe {
+        let mut title = [0u16; 512];
+        let len = GetWindowTextW(window, title.as_mut_ptr(), title.len() as i32);
+        let title = String::from_utf16_lossy(&title[..len.max(0) as usize]);
+        let mut pid = 0;
+        GetWindowThreadProcessId(window, &mut pid);
+        let app = process_path(pid).map(|exe| app_name(&exe, file_description(&exe).as_deref())).unwrap_or_default();
+        Some((app, title))
+    }
+}
+
+fn process_path(pid: u32) -> Option<std::path::PathBuf> {
+    use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0;
+        CloseHandle(process);
+        ok.then(|| std::path::PathBuf::from(String::from_utf16_lossy(&buf[..len as usize])))
+    }
+}
+
+/// An exe's "File description" (e.g. "Google Chrome"), from its version information.
+fn file_description(exe: &std::path::Path) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
+    let path = wide_os(exe.as_os_str());
+    unsafe {
+        let size = GetFileVersionInfoSizeW(path.as_ptr(), null_mut());
+        if size == 0 {
+            return None;
+        }
+        let mut info = vec![0u8; size as usize];
+        if GetFileVersionInfoW(path.as_ptr(), 0, size, info.as_mut_ptr().cast()) == 0 {
+            return None;
+        }
+        let query = |key: &str| -> Option<(*const u16, usize)> {
+            let key = wide(key);
+            let (mut ptr, mut len) = (null_mut(), 0u32);
+            (VerQueryValueW(info.as_ptr().cast(), key.as_ptr(), &mut ptr, &mut len) != 0 && !ptr.is_null() && len > 0)
+                .then_some((ptr as *const u16, len as usize))
+        };
+        // The first language the file has strings for.
+        let (translation, _) = query("\\VarFileInfo\\Translation")?;
+        let (lang, codepage) = (*translation, *translation.add(1));
+        let (text, len) = query(&format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription"))?;
+        let text = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
+        Some(text.trim_end_matches('\0').trim().to_string())
+    }
+}
+
+/// What to call an app: its description if it has one, else its file name without ".exe".
+pub fn app_name(exe: &std::path::Path, description: Option<&str>) -> String {
+    match description.map(str::trim).filter(|d| !d.is_empty()) {
+        Some(d) => d.to_string(),
+        None => exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_apps_by_description_or_file_name() {
+        let exe = std::path::Path::new(r"C:\Program Files\Google\Chrome\chrome.exe");
+        assert_eq!(app_name(exe, Some("Google Chrome")), "Google Chrome");
+        assert_eq!(app_name(exe, Some("  ")), "chrome");
+        assert_eq!(app_name(exe, None), "chrome");
+    }
+
+    #[test]
+    fn reads_an_exes_description() {
+        let explorer = std::path::Path::new(r"C:\Windows\explorer.exe");
+        assert_eq!(file_description(explorer).as_deref(), Some("Windows Explorer"));
+        assert_eq!(file_description(std::path::Path::new(r"C:\nope.exe")), None);
+        let me = process_path(std::process::id()).expect("this test's own exe");
+        assert!(me.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")));
+    }
 
     #[test]
     fn crop_clamps_to_bounds() {

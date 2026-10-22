@@ -354,14 +354,15 @@ struct Layers {
     shapes: Vec<Shape>,
 }
 
-#[derive(Serialize, Deserialize, PartialEq)]
-struct FileStamp {
+/// A file's size and modified time, to tell whether it changed since.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FileStamp {
     len: u64,
     modified_ns: u128,
 }
 
 impl FileStamp {
-    fn of(path: &Path) -> Option<FileStamp> {
+    pub fn of(path: &Path) -> Option<FileStamp> {
         let meta = std::fs::metadata(path).ok()?;
         let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
         Some(FileStamp { len: meta.len(), modified_ns: modified.as_nanos() })
@@ -390,6 +391,7 @@ pub fn remove_layers(path: &Path) {
         let _ = std::fs::remove_file(json);
         let _ = std::fs::remove_file(base);
     }
+    super::search::remove(path);
 }
 
 /// Deletes saved layers in `dir` whose screenshot is gone, e.g. deleted in Explorer.
@@ -397,7 +399,8 @@ pub fn prune_layers(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir.join(".rsnip")) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let shot = name.strip_suffix(".base.png").or_else(|| name.strip_suffix(".json"));
+        // "<shot>.meta.json" (search), "<shot>.base.png" and "<shot>.json" (editing).
+        let shot = name.strip_suffix(".meta.json").or_else(|| name.strip_suffix(".base.png")).or_else(|| name.strip_suffix(".json"));
         if shot.is_some_and(|shot| !dir.join(shot).exists()) {
             let _ = std::fs::remove_file(entry.path());
         }
@@ -969,14 +972,15 @@ mod tests {
         let layers = dir.join(".rsnip");
         std::fs::create_dir_all(&layers).unwrap();
         std::fs::write(dir.join("kept.png"), b"png").unwrap();
-        for name in ["kept.png.json", "kept.png.base.png", "gone.png.json", "gone.png.base.png", "notes.txt"] {
+        let files = ["kept.png.json", "kept.png.base.png", "kept.png.meta.json", "gone.png.json", "gone.png.base.png", "gone.png.meta.json", "notes.txt"];
+        for name in files {
             std::fs::write(layers.join(name), b"x").unwrap();
         }
         prune_layers(&dir);
         let mut left: Vec<String> = std::fs::read_dir(&layers).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         left.sort();
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(left, ["kept.png.base.png", "kept.png.json", "notes.txt"]);
+        assert_eq!(left, ["kept.png.base.png", "kept.png.json", "kept.png.meta.json", "notes.txt"], "search metadata of live screenshots is kept too");
     }
 
     #[test]

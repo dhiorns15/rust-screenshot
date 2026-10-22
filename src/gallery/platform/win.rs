@@ -200,6 +200,14 @@ pub fn pin_file(path: &Path) {
 }
 
 /// Reads the text in `img`; blocks, so call it off the UI thread.
+/// Windows' text recognition on an image file, for search.
+pub fn ocr() -> Option<super::super::env::Ocr> {
+    Some(std::sync::Arc::new(|path: &Path| {
+        let img = image::open(path).map_err(|e| e.to_string())?.to_rgba8();
+        read_text(&img)
+    }))
+}
+
 pub fn read_text(img: &RgbaImage) -> Result<String, String> {
     crate::ocr::recognize(&to_bgra(img))
 }

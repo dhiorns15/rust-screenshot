@@ -291,6 +291,16 @@ impl SettingsApp {
                 })
             });
         });
+        if self.env.ocr.is_some() {
+            theme::card(ui, |ui| {
+                let mut on = self.env.setting(super::search::SETTING) != Some(0);
+                let title = "Read text in screenshots for search";
+                let detail = "Uses Windows' built-in text recognition; the text stays on this PC";
+                if row(ui, title, detail, |ui| theme::switch(ui, &mut on, title)).changed() {
+                    self.set(super::search::SETTING, on as u32);
+                }
+            });
+        }
         theme::card(ui, |ui| {
             ui.label(RichText::new("Added to every copy, save and export").color(theme::palette(ui).muted));
             for (name, title) in [("ExportBorder", "Border"), ("ExportShadow", "Drop shadow")] {

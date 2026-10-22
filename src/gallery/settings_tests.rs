@@ -146,6 +146,9 @@ fn recording_format_and_library_position() {
     assert_eq!(h.state().env.setting(Dock::SETTING), Some(Dock::Bottom.to_setting()));
     toggle(&mut h, "Drop shadow");
     assert_eq!(h.state().env.setting("ExportShadow"), Some(1));
+    assert!(is_on(&h, "Read text in screenshots for search"), "on by default");
+    toggle(&mut h, "Read text in screenshots for search");
+    assert_eq!(h.state().env.setting(super::search::SETTING), Some(0));
 }
 
 #[test]
