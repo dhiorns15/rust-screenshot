@@ -108,6 +108,19 @@ pub enum Mode {
     Record = 5,
 }
 
+impl From<shortcuts::Action> for Mode {
+    fn from(action: shortcuts::Action) -> Mode {
+        match action {
+            shortcuts::Action::Region => Mode::Region,
+            shortcuts::Action::Full => Mode::Full,
+            shortcuts::Action::Last => Mode::Last,
+            shortcuts::Action::Scroll => Mode::Scroll,
+            shortcuts::Action::Record => Mode::Record,
+            shortcuts::Action::Text => Mode::Text,
+        }
+    }
+}
+
 impl Mode {
     fn from_wparam(w: usize) -> Mode {
         match w {
@@ -143,6 +156,8 @@ thread_local! {
     static UPDATING: Cell<bool> = const { Cell::new(false) };
     /// The last notification was about an available update, so clicking it installs that.
     static UPDATE_BALLOON: Cell<bool> = const { Cell::new(false) };
+    /// The action whose shortcut the "press the new shortcut" prompt is recording.
+    static RECORDING_SHORTCUT: Cell<shortcuts::Action> = const { Cell::new(shortcuts::Action::Region) };
 }
 
 fn main() {
@@ -166,8 +181,18 @@ fn main() {
     unsafe { run_tray(mode, delay, update_now) }
 }
 
-fn tip(hotkey: Hotkey) -> String {
-    format!("{APP_NAME} — press {} to capture", hotkey.name())
+/// The shortcut to mention in tips: the region capture's, or else the first one set.
+fn main_shortcut(s: &Settings) -> Option<(shortcuts::Action, String)> {
+    let set = |a: shortcuts::Action| Some(shortcuts::get(&s.shortcuts, a)).filter(|&k| k != 0).map(|k| (a, Hotkey::unpack(k).name()));
+    set(shortcuts::Action::Region).or_else(|| shortcuts::Action::ALL.into_iter().find_map(set))
+}
+
+fn tip(s: &Settings) -> String {
+    match main_shortcut(s) {
+        Some((shortcuts::Action::Region, key)) => format!("{APP_NAME} — press {key} to capture"),
+        Some((action, key)) => format!("{APP_NAME} — {key}: {}", action.label().to_lowercase()),
+        None => APP_NAME.to_string(),
+    }
 }
 
 unsafe fn run_tray(mode: Option<Mode>, delay: Option<u32>, update_now: bool) {
@@ -232,12 +257,12 @@ unsafe fn run_tray(mode: Option<Mode>, delay: Option<u32>, update_now: bool) {
 
     let settings = Settings::load();
     SETTINGS.set(settings);
-    hook::set_hotkey(settings.hotkey);
+    hook::set_shortcuts(&settings.shortcuts);
     hook::set_win_shift_s(settings.win_shift_s);
     settings::refresh_startup_path();
 
     TASKBAR_CREATED.set(RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()));
-    tray::add(hwnd, icon, &tip(settings.hotkey));
+    tray::add(hwnd, icon, &tip(&settings));
     if !hook::install(hinstance) {
         notify(hwnd, "Keyboard hook failed", "Print Screen won't be captured; use the tray icon instead.");
     }
@@ -277,7 +302,7 @@ unsafe fn start_countdown(hwnd: HWND, secs: u32) {
 unsafe fn cancel_countdown(hwnd: HWND) {
     KillTimer(hwnd, TIMER_COUNTDOWN);
     COUNTDOWN.set(0);
-    tray::set_tip(hwnd, &tip(SETTINGS.get().hotkey));
+    tray::set_tip(hwnd, &tip(&SETTINGS.get()));
 }
 
 unsafe fn notify(hwnd: HWND, title: &str, text: &str) {
@@ -407,18 +432,28 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
         WM_APP_HOTKEY_RECORDED => {
             hook::set_recording(false);
             prompt::close();
+            let action = RECORDING_SHORTCUT.get();
             if wparam != 0 {
-                let hotkey = Hotkey::unpack(wparam as u32);
-                update_settings(|s| s.hotkey = hotkey);
-                hook::set_hotkey(hotkey);
-                tray::set_tip(hwnd, &tip(hotkey));
-                notify(hwnd, "Hotkey changed", &format!("Press {} to take a screenshot.", hotkey.name()));
+                let key = wparam as u32;
+                let mut moved = None;
+                let s = update_settings(|s| moved = shortcuts::assign(&mut s.shortcuts, action, key));
+                hook::set_shortcuts(&s.shortcuts);
+                tray::set_tip(hwnd, &tip(&s));
+                let name = Hotkey::unpack(key).name();
+                let text = match moved {
+                    Some(other) => format!("{name} now does {}, instead of {}.", action.label().to_lowercase(), other.label().to_lowercase()),
+                    None => format!("{name} now does {}.", action.label().to_lowercase()),
+                };
+                notify(hwnd, "Shortcut changed", &text);
             }
             0
         }
         WM_APP_ALREADY_RUNNING => {
-            let hotkey = SETTINGS.get().hotkey.name();
-            notify(hwnd, "RSnip is already running", &format!("Press {hotkey} to take a screenshot."));
+            let text = match main_shortcut(&SETTINGS.get()) {
+                Some((action, key)) => format!("Press {key}: {}.", action.label().to_lowercase()),
+                None => "Use the tray icon to capture, or set shortcuts in Settings.".into(),
+            };
+            notify(hwnd, "RSnip is already running", &text);
             0
         }
         WM_DESTROY => {
@@ -426,7 +461,7 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             0
         }
         _ if msg != 0 && msg == TASKBAR_CREATED.get() => {
-            tray::add(hwnd, ICON.get(), &tip(SETTINGS.get().hotkey));
+            tray::add(hwnd, ICON.get(), &tip(&SETTINGS.get()));
             0
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -473,10 +508,7 @@ unsafe fn on_menu(hwnd: HWND) {
         }
         tray::CMD_GALLERY => open_gallery(None),
         tray::CMD_OPEN_FOLDER => shell_open(&output::screenshots_dir()),
-        tray::CMD_HOTKEY => {
-            hook::set_recording(true);
-            prompt::show(hwnd, &s.hotkey.name());
-        }
+        tray::CMD_HOTKEY => record_shortcut(hwnd, shortcuts::Action::Region),
         tray::CMD_SAVE => {
             update_settings(|s| s.save_to_folder = !s.save_to_folder);
         }
@@ -511,6 +543,15 @@ unsafe fn on_menu(hwnd: HWND) {
         }
         _ => {}
     }
+}
+
+/// Shows the "press the new shortcut" prompt; the key comes back as `WM_APP_HOTKEY_RECORDED`.
+unsafe fn record_shortcut(hwnd: HWND, action: shortcuts::Action) {
+    RECORDING_SHORTCUT.set(action);
+    hook::set_recording(true);
+    let current = shortcuts::get(&SETTINGS.get().shortcuts, action);
+    let current = if current == 0 { "none".into() } else { Hotkey::unpack(current).name() };
+    prompt::show(hwnd, &current);
 }
 
 /// Asks GitHub for the latest release on a worker thread; the answer comes back as
@@ -639,8 +680,12 @@ unsafe fn start_recording(hwnd: HWND, area: RECT) {
     match record::start(hwnd, area, SETTINGS.get().record_gif) {
         Ok(recording) => {
             RECORDING.with(|r| *r.borrow_mut() = Some(recording));
-            let hotkey = SETTINGS.get().hotkey.name();
-            tray::set_tip(hwnd, &format!("{APP_NAME} — recording. Press {hotkey} or Stop to finish"));
+            // Any capture shortcut stops it (see `capture`).
+            let s = SETTINGS.get();
+            let key = shortcuts::get(&s.shortcuts, shortcuts::Action::Record);
+            let key = Some(key).filter(|&k| k != 0).map(|k| Hotkey::unpack(k).name()).or(main_shortcut(&s).map(|m| m.1));
+            let how = key.map_or("Click Stop".into(), |k| format!("Press {k} or Stop"));
+            tray::set_tip(hwnd, &format!("{APP_NAME} — recording. {how} to finish"));
         }
         Err(e) => notify(hwnd, "Couldn't start recording", &e),
     }
@@ -649,7 +694,7 @@ unsafe fn start_recording(hwnd: HWND, area: RECT) {
 /// Stops recording; the file is finished on a worker thread and reported as `WM_APP_RECORDED`.
 unsafe fn stop_recording(hwnd: HWND) {
     let Some(recording) = RECORDING.with(|r| r.borrow_mut().take()) else { return };
-    tray::set_tip(hwnd, &tip(SETTINGS.get().hotkey));
+    tray::set_tip(hwnd, &tip(&SETTINGS.get()));
     let finishing = recording.stop();
     let target = hwnd as isize;
     std::thread::spawn(move || {

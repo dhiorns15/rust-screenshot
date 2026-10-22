@@ -10,6 +10,7 @@ use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use crate::shortcuts;
 use crate::{Mode, WM_APP_CAPTURE, WM_APP_HOTKEY_RECORDED, WM_APP_OVERLAY_KEY};
 
 pub const MOD_CTRL: u32 = 1;
@@ -17,7 +18,6 @@ pub const MOD_SHIFT: u32 = 2;
 pub const MOD_ALT: u32 = 4;
 pub const MOD_WIN: u32 = 8;
 
-const VK_S: u32 = 0x53;
 /// Keys the capture overlay handles (see `overlay::State::on_key`). They are forwarded to it from
 /// the hook so they work even if the overlay didn't get keyboard focus.
 const OVERLAY_KEYS: [u32; 12] = [
@@ -44,8 +44,6 @@ pub struct Hotkey {
 }
 
 impl Hotkey {
-    pub const DEFAULT: Hotkey = Hotkey { vk: VK_SNAPSHOT as u32, mods: 0 };
-
     pub fn pack(self) -> u32 {
         self.vk & 0xFFFF | self.mods << 16
     }
@@ -94,14 +92,17 @@ pub static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
 /// Non-zero while the selection overlay is showing.
 pub static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
 static HOOK: AtomicIsize = AtomicIsize::new(0);
-static HOTKEY: AtomicU32 = AtomicU32::new(VK_SNAPSHOT as u32);
+/// Each capture action's shortcut (`shortcuts::Table`), 0 for none.
+static SHORTCUTS: [AtomicU32; shortcuts::COUNT] = [const { AtomicU32::new(0) }; shortcuts::COUNT];
 static WIN_SHIFT_S: AtomicBool = AtomicBool::new(true);
 static RECORDING: AtomicBool = AtomicBool::new(false);
 /// Key we acted on whose auto-repeats and release must also be swallowed.
 static HELD: AtomicU32 = AtomicU32::new(0);
 
-pub fn set_hotkey(hotkey: Hotkey) {
-    HOTKEY.store(hotkey.pack(), Relaxed);
+pub fn set_shortcuts(table: &shortcuts::Table) {
+    for (slot, &key) in SHORTCUTS.iter().zip(table) {
+        slot.store(key, Relaxed);
+    }
 }
 
 pub fn set_win_shift_s(enabled: bool) {
@@ -215,7 +216,7 @@ unsafe fn handle(vk: u32, down: bool) -> bool {
         return true;
     }
 
-    let hotkey = Hotkey::unpack(HOTKEY.load(Relaxed));
+    let table: shortcuts::Table = std::array::from_fn(|i| SHORTCUTS[i].load(Relaxed));
 
     let overlay = OVERLAY_HWND.load(Relaxed);
     if overlay != 0 {
@@ -225,19 +226,19 @@ unsafe fn handle(vk: u32, down: bool) -> bool {
             }
             return true;
         }
-        return vk == hotkey.vk;
+        // Keep shortcut keys from reaching other apps while the overlay is up.
+        return table.iter().any(|&k| k != 0 && Hotkey::unpack(k).vk == vk);
     }
 
-    let is_hotkey = vk == hotkey.vk && mods == hotkey.mods;
-    let is_win_shift_s = WIN_SHIFT_S.load(Relaxed) && vk == VK_S && mods == MOD_WIN | MOD_SHIFT;
-    if (is_hotkey || is_win_shift_s) && pressed {
+    let action = shortcuts::action_for(Hotkey { vk, mods }.pack(), &table, WIN_SHIFT_S.load(Relaxed));
+    if let (Some(action), true) = (action, pressed) {
         if down {
             HELD.store(vk, Relaxed);
         }
         if mods & (MOD_ALT | MOD_WIN) != 0 {
             mask_menu_key();
         }
-        post(main, WM_APP_CAPTURE, Mode::Region as usize);
+        post(main, WM_APP_CAPTURE, Mode::from(action) as usize);
         return true;
     }
     false
@@ -261,6 +262,6 @@ mod tests {
         let hk = Hotkey { vk: 0x58, mods: MOD_CTRL | MOD_SHIFT };
         assert!(Hotkey::unpack(hk.pack()) == hk);
         assert_eq!(hk.name(), "Ctrl+Shift+X");
-        assert_eq!(Hotkey::DEFAULT.name(), "PrtScn");
+        assert_eq!(Hotkey::unpack(shortcuts::PRINT_SCREEN).name(), "PrtScn");
     }
 }

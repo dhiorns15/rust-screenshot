@@ -7,7 +7,9 @@ use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::UI::Shell::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use crate::hook::Hotkey;
 use crate::settings::Settings;
+use crate::shortcuts::{self, Action};
 use crate::update::Version;
 use crate::util::{fill, wide};
 use crate::WM_APP_TRAY;
@@ -111,16 +113,22 @@ pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, state: &MenuState) -> u
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
     };
 
-    item(CMD_REGION, &format!("Capture region\t{}", settings.hotkey.name()), false);
-    item(CMD_FULL, "Capture all screens", false);
-    item(CMD_LAST, "Capture last region", false);
-    item(CMD_SCROLL, "Scrolling capture", false);
+    // Each action with its shortcut, if it has one.
+    let action = |id: u32, action: Action| {
+        let key = shortcuts::get(&settings.shortcuts, action);
+        let text = if key == 0 { action.label().to_string() } else { format!("{}\t{}", action.label(), Hotkey::unpack(key).name()) };
+        item(id, &text, false);
+    };
+    action(CMD_REGION, Action::Region);
+    action(CMD_FULL, Action::Full);
+    action(CMD_LAST, Action::Last);
+    action(CMD_SCROLL, Action::Scroll);
     if state.recording {
         item(CMD_STOP_RECORD, "Stop recording", false);
     } else {
-        item(CMD_RECORD, "Record screen area", false);
+        action(CMD_RECORD, Action::Record);
     }
-    item(CMD_TEXT, "Capture text (OCR)", false);
+    action(CMD_TEXT, Action::Text);
     if state.countdown > 0 {
         item(CMD_CANCEL_DELAY, &format!("Cancel delayed capture ({} s)", state.countdown), false);
     } else {
@@ -136,7 +144,9 @@ pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, state: &MenuState) -> u
     item(CMD_GALLERY, "Open library && editor", false);
     item(CMD_OPEN_FOLDER, "Open screenshots folder", false);
     separator();
-    item(CMD_HOTKEY, &format!("Change hotkey…\t{}", settings.hotkey.name()), false);
+    let region = shortcuts::get(&settings.shortcuts, Action::Region);
+    let region = if region == 0 { "none".into() } else { Hotkey::unpack(region).name() };
+    item(CMD_HOTKEY, &format!("Change region shortcut…\t{region}"), false);
     item(CMD_WIN_SHIFT_S, "Also take over Win+Shift+S", settings.win_shift_s);
     item(CMD_OPEN_EDITOR, "Open editor after capture", settings.open_editor);
     item(CMD_SAVE, "Save screenshots to folder", settings.save_to_folder);

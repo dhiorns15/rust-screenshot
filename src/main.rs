@@ -7,6 +7,7 @@
 
 mod gallery;
 mod icon_art;
+mod shortcuts;
 mod update;
 
 #[cfg(windows)]

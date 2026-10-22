@@ -5,7 +5,7 @@ use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, RECT};
 use windows_sys::Win32::System::Registry::*;
 
-use crate::hook::Hotkey;
+use crate::shortcuts::{self, Action};
 use crate::util::{wide, wide_os};
 use crate::APP_NAME;
 
@@ -14,7 +14,8 @@ const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 
 #[derive(Clone, Copy)]
 pub struct Settings {
-    pub hotkey: Hotkey,
+    /// Each capture action's shortcut (see `shortcuts`).
+    pub shortcuts: shortcuts::Table,
     pub save_to_folder: bool,
     pub notify: bool,
     pub win_shift_s: bool,
@@ -29,7 +30,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            hotkey: Hotkey::DEFAULT,
+            shortcuts: shortcuts::defaults(),
             save_to_folder: true,
             notify: true,
             win_shift_s: true,
@@ -46,9 +47,8 @@ impl Settings {
     pub fn load() -> Settings {
         let d = Settings::default();
         let flag = |name, default| read_dword(KEY, name).map_or(default, |v| v != 0);
-        let hotkey = read_dword(KEY, "Hotkey").map(Hotkey::unpack).filter(|h| h.vk != 0);
         Settings {
-            hotkey: hotkey.unwrap_or(d.hotkey),
+            shortcuts: shortcuts::load(|name| read_dword(KEY, name)),
             save_to_folder: flag("SaveToFolder", d.save_to_folder),
             notify: flag("Notify", d.notify),
             win_shift_s: flag("WinShiftS", d.win_shift_s),
@@ -61,7 +61,9 @@ impl Settings {
     }
 
     pub fn store(&self) {
-        write_dword("Hotkey", self.hotkey.pack());
+        for action in Action::ALL {
+            write_dword(action.setting(), shortcuts::get(&self.shortcuts, action));
+        }
         write_dword("SaveToFolder", self.save_to_folder as u32);
         write_dword("Notify", self.notify as u32);
         write_dword("WinShiftS", self.win_shift_s as u32);
