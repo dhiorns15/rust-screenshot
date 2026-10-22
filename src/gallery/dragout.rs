@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use windows::core::{implement, HRESULT, HSTRING};
 use windows::Win32::Foundation::{BOOL, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK};
 use windows::Win32::System::Com::{CoTaskMemFree, IDataObject};
-use windows::Win32::System::Ole::{DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, OleUninitialize, DROPEFFECT, DROPEFFECT_COPY};
+use windows::Win32::System::Ole::{DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, DROPEFFECT, DROPEFFECT_COPY};
 use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{BHID_DataObject, IShellItemArray, SHCreateShellItemArrayFromIDLists, SHParseDisplayName};
@@ -36,12 +36,10 @@ impl IDropSource_Impl for DropSource_Impl {
 /// own message loop), so call it from the UI thread when the mouse starts dragging.
 pub fn drag_files(paths: &[PathBuf]) -> Result<(), String> {
     unsafe {
-        // Usually already done by the windowing library; this just balances its own call.
-        let ole = OleInitialize(None).is_ok();
+        // Usually already done by the windowing library. Never undone: the shell's data object can
+        // leave work behind that calls back into this thread's OLE later.
+        let _ = OleInitialize(None);
         let result = drag(paths);
-        if ole {
-            OleUninitialize();
-        }
         release_mouse();
         result.map_err(|e| e.message())
     }
@@ -97,12 +95,20 @@ mod tests {
     fn offers_files_as_a_file_drop() {
         let path = std::env::temp_dir().join(format!("rsnip-drag-{}.png", std::process::id()));
         std::fs::write(&path, b"png").unwrap();
-        let has_hdrop = unsafe {
+        // Like the app's UI thread, the OLE thread lives as long as the process: the shell's data
+        // object can leave background work behind that calls back into it, and test threads exit.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let file = path.clone();
+        std::thread::spawn(move || unsafe {
             let _ = OleInitialize(None);
-            let data = data_object(std::slice::from_ref(&path)).expect("data object");
+            let data = data_object(std::slice::from_ref(&file)).expect("data object");
             let format = FORMATETC { cfFormat: 15, ptd: std::ptr::null_mut(), dwAspect: DVASPECT_CONTENT.0, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32 };
-            data.QueryGetData(&format) == S_OK
-        };
+            let _ = tx.send(data.QueryGetData(&format) == S_OK);
+            loop {
+                std::thread::park();
+            }
+        });
+        let has_hdrop = rx.recv().unwrap();
         std::fs::remove_file(&path).unwrap();
         assert!(has_hdrop, "CF_HDROP offered");
     }
