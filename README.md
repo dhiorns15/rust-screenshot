@@ -1,5 +1,7 @@
 # RSnip
 
+[![CI](https://github.com/dhiorns15/rust-screenshot/actions/workflows/ci.yml/badge.svg)](https://github.com/dhiorns15/rust-screenshot/actions/workflows/ci.yml)
+
 A small, open-source, Snagit-style screenshot tool for Windows, written in Rust.
 
 - **Takes over Print Screen** (and optionally **Win+Shift+S**) from the built-in Snipping Tool.
@@ -10,6 +12,11 @@ A small, open-source, Snagit-style screenshot tool for Windows, written in Rust.
   highlighter, blur, pen, text, numbered steps and crop, with undo/redo. Everything stays
   selectable to move, resize, restyle or delete.
 
+## Download
+
+Get `rsnip.exe` from the [Releases page](https://github.com/dhiorns15/rust-screenshot/releases).
+It is a single self-contained exe; put it anywhere and run it.
+
 ## Build
 
 Requires the Rust MSVC toolchain.
@@ -18,7 +25,10 @@ Requires the Rust MSVC toolchain.
 cargo build --release
 ```
 
-The binary is `target\release\rsnip.exe`. It is a single self-contained exe.
+The binary is `target\release\rsnip.exe`.
+
+To publish a release, bump `version` in `Cargo.toml`, commit, then `git tag vX.Y.Z && git push --tags`.
+The release workflow runs the tests and attaches the exe and a zip to a new GitHub Release.
 
 ## Usage
 

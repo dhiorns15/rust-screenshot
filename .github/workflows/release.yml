@@ -1,0 +1,29 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+      - run: cargo build --release
+      - name: Package
+        shell: pwsh
+        run: |
+          $zip = "rsnip-$env:GITHUB_REF_NAME-windows-x64.zip"
+          Compress-Archive -Path target/release/rsnip.exe, README.md, LICENSE -DestinationPath $zip
+          "ZIP=$zip" >> $env:GITHUB_ENV
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME target/release/rsnip.exe $env:ZIP --title "RSnip $env:GITHUB_REF_NAME" --generate-notes
