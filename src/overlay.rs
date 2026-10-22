@@ -300,10 +300,12 @@ impl State {
         self.px(8.0)
     }
 
-    /// The magnifier box and its label for the cursor at `p`.
+    /// The magnifier box and its label for the cursor at `p`. The label fits the widest text it can
+    /// show, so it's never clipped and doesn't change width as the numbers change.
     unsafe fn magnifier_rects(&self, p: POINT) -> (RECT, RECT) {
-        let label_height = self.text_size(&wide_text("0")).cy + 2 * self.px(4.0);
-        magnifier_layout(p, MAG_SPAN * self.zoom(), label_height, self.px(20.0), self.width, self.height)
+        let widest = self.text_size(&wide_text("-00000, -00000   #DDDDDD"));
+        let label = SIZE { cx: widest.cx + 2 * self.px(10.0), cy: widest.cy + 2 * self.px(4.0) };
+        magnifier_layout(p, MAG_SPAN * self.zoom(), label, self.px(20.0), self.width, self.height)
     }
 
     /// Everything the magnifier draws for the cursor at `p`.
@@ -541,15 +543,20 @@ unsafe fn frame(dc: HDC, r: &RECT, color: COLORREF) {
     DeleteObject(brush);
 }
 
-/// Places a `size`-pixel magnifier and its label `gap` pixels below-right of `p`, flipping to the
-/// other side of the cursor where it would leave the `width` × `height` image.
-fn magnifier_layout(p: POINT, size: i32, label_height: i32, gap: i32, width: i32, height: i32) -> (RECT, RECT) {
-    let total = size + gap / 4 + label_height;
-    let x = if p.x + gap + size <= width { p.x + gap } else { p.x - gap - size };
-    let y = if p.y + gap + total <= height { p.y + gap } else { p.y - gap - total };
-    let (x, y) = (x.max(0), y.max(0));
+/// Places a `size`-pixel magnifier with its `label` under it, `gap` pixels below-right of `p`,
+/// flipping to the other side of the cursor (and staying inside) where it would leave the
+/// `width` × `height` image. The label is at least as wide as the box; on the left of the cursor
+/// their right edges line up, so the box stays next to it.
+fn magnifier_layout(p: POINT, size: i32, label: SIZE, gap: i32, width: i32, height: i32) -> (RECT, RECT) {
+    let label_width = label.cx.max(size);
+    let block = (label_width, size + gap / 4 + label.cy);
+    let right_side = p.x + gap + block.0 <= width;
+    let x = if right_side { p.x + gap } else { p.x - gap - block.0 };
+    let y = if p.y + gap + block.1 <= height { p.y + gap } else { p.y - gap - block.1 };
+    let (x, y) = (x.clamp(0, (width - block.0).max(0)), y.clamp(0, (height - block.1).max(0)));
+    let box_x = if right_side { x } else { x + label_width - size };
     let label_top = y + size + gap / 4;
-    (rect(x, y, x + size, y + size), rect(x, label_top, x + size, label_top + label_height))
+    (rect(box_x, y, box_x + size, y + size), rect(x, label_top, x + label_width, label_top + label.cy))
 }
 
 unsafe fn blit(dst: HDC, r: &RECT, src: HDC) {
@@ -620,11 +627,29 @@ mod tests {
 
     #[test]
     fn magnifier_flips_away_from_edges() {
-        let (zoomed, label) = magnifier_layout(POINT { x: 100, y: 100 }, 120, 24, 20, 1920, 1080);
+        let label = SIZE { cx: 100, cy: 24 };
+        let (zoomed, label_rect) = magnifier_layout(POINT { x: 100, y: 100 }, 120, label, 20, 1920, 1080);
         assert_eq!((zoomed.left, zoomed.top), (120, 120));
-        assert!(label.top > zoomed.bottom);
-        let (zoomed, label) = magnifier_layout(POINT { x: 1900, y: 1070 }, 120, 24, 20, 1920, 1080);
+        assert!(label_rect.top > zoomed.bottom);
+        assert_eq!(label_rect.right - label_rect.left, 120, "never narrower than the box");
+        let (zoomed, label_rect) = magnifier_layout(POINT { x: 1900, y: 1070 }, 120, label, 20, 1920, 1080);
         assert_eq!(zoomed.right, 1880, "left of the cursor");
-        assert_eq!(label.bottom, 1050, "label ends above the cursor");
+        assert_eq!(label_rect.bottom, 1050, "label ends above the cursor");
+    }
+
+    #[test]
+    fn a_wide_label_stays_on_screen_everywhere() {
+        let (w, h, size) = (1920, 1080, 120);
+        let label = SIZE { cx: 260, cy: 30 };
+        for x in [0, 5, 960, 1700, 1800, 1919] {
+            for y in [0, 5, 540, 900, 1079] {
+                let (zoomed, label_rect) = magnifier_layout(POINT { x, y }, size, label, 20, w, h);
+                for r in [zoomed, label_rect] {
+                    assert!(r.left >= 0 && r.top >= 0 && r.right <= w && r.bottom <= h, "{x},{y}: {} {} {} {}", r.left, r.top, r.right, r.bottom);
+                }
+                assert_eq!(label_rect.right - label_rect.left, 260, "the whole text fits");
+                assert!(zoomed.left >= label_rect.left && zoomed.right <= label_rect.right, "the box sits over its label");
+            }
+        }
     }
 }
