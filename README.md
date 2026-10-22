@@ -9,7 +9,8 @@ your desktop's own tool (see [Linux](#linux)).
 - **Takes over Print Screen** (and optionally **Win+Shift+S**) from the built-in Snipping Tool.
 - **Freezes the screen** and lets you drag a region, or click a window/monitor to grab it.
 - **Copies every capture to the clipboard** and saves a PNG to your Screenshots folder.
-- **Remappable hotkey**: pick any key combination from the tray menu.
+- **Shortcuts for every action**: Print Screen can capture a region, all screens, record and more,
+  each on its own key, set in the Settings window.
 - **Library and editor**: browse every screenshot and annotate it with arrows, lines, boxes,
   ellipses, highlighter, blur, pixelate, redact, spotlight, pen, text, numbered steps and crop, with undo/redo. Everything stays
   selectable to move, resize, restyle or delete.
@@ -90,7 +91,7 @@ Run `rsnip.exe`. It sits in the notification area.
 
 | Action | How |
 | --- | --- |
-| Region capture | Print Screen (or your remapped hotkey), Win+Shift+S, or left-click the tray icon |
+| Region capture | Print Screen (or the shortcut you chose), Win+Shift+S, or left-click the tray icon |
 | Select | Drag a rectangle, or click to capture the highlighted window. If other windows overlap it, it is brought to the front and captured cleanly |
 | One screen | Press Enter or F in the selection overlay to capture the monitor under the mouse |
 | All screens | Press A in the selection overlay, or use *Capture all screens* in the tray menu |
@@ -100,30 +101,33 @@ Run `rsnip.exe`. It sits in the notification area.
 | Cancel | Esc or right-click |
 | Same area again | Tray menu → *Capture last region*, or R in the selection overlay, captures exactly the area you captured last time |
 | Scrolling capture | Tray menu → *Scrolling capture*, then click a window (or drag over the part that scrolls). RSnip scrolls it to the end and stitches one tall image; sticky headers and footers appear once. Esc stops early |
-| Record video | Tray menu → *Record screen area*, pick an area, and it records to MP4 (or GIF, via *Record as GIF instead of MP4*), mouse pointer included. A red frame marks the area and a bar shows the time; click *Stop* or press your capture hotkey to finish. The video is saved to the screenshots folder and copied as a file, ready to paste |
+| Record video | Tray menu → *Record screen area*, pick an area, and it records to MP4 (or GIF, chosen in Settings), mouse pointer included. A red frame marks the area and a bar shows the time; click *Stop* or press a capture shortcut to finish. The video is saved to the screenshots folder and copied as a file, ready to paste |
 | Delayed capture | Tray menu → *Delayed capture* → 3, 5 or 10 seconds, to open a menu or tooltip first. The countdown shows in the tray tooltip |
 | Open library | Tray menu → *Open library & editor*, or click the "saved" notification |
 | Update | When a new version is out, a notification says so (once per version) and the tray menu offers *Update to RSnip x.y.z…*. If you used the installer, clicking either downloads the new installer, checks its SHA-256 against GitHub's, installs it and restarts RSnip. A standalone `rsnip.exe` opens the download page instead |
 
 Alt+PrtScn and Win+PrtScn are left alone and keep their Windows behaviour.
 
-### Tray menu options
+### Settings
 
-- **Change hotkey…**: press the new combination (e.g. `F8` or `Ctrl+Shift+X`); Esc cancels.
-- **Also take over Win+Shift+S**: on by default.
-- **Open editor after capture**: every capture opens straight in the editor (it is still copied
-  to the clipboard). This saves the capture even if *Save screenshots to folder* is off.
-- **Save screenshots to folder**: when off, captures go to the clipboard only.
-- **Show notifications**
-- **Start with Windows**: adds an entry under `HKCU\...\CurrentVersion\Run`.
-- **Open library on launch**: also open the library window when RSnip starts; when off, it starts quietly in the tray.
-- **Updates**: *Check now*; *Check automatically* (on by default: shortly after RSnip starts, then
-  daily, it asks GitHub for the latest release; nothing else is sent); *Install updates
-  automatically* (off by default; installed copies only): installs a new version as soon as it's
-  found, unless you're in the middle of something (capturing, recording, a pin or the library open).
-  If the library has unsaved edits when an update installs, it asks about them first.
+Tray menu → *Settings…* (or the gear in the library, or `rsnip --settings`) opens the Settings window.
+Changes apply straight away.
 
-Settings are stored in `HKCU\Software\RSnip`.
+| Section | |
+| --- | --- |
+| General | **Theme**: System (follows Windows' light or dark mode), Light or Dark. **Start with Windows**, **Open the library when RSnip starts** (otherwise it starts quietly in the tray), **Show notifications** |
+| Capture | **Save screenshots to the folder** (when off, captures go to the clipboard only), **Open the editor after capture** (this saves the capture even if saving is off). Every capture is copied to the clipboard |
+| Shortcuts | A shortcut for each action (region, all screens, last region, scrolling, record, text). *Change* asks you to press the new combination (Esc cancels); giving it a key another action has moves it. **Also take over Win+Shift+S** for a region capture. It warns if Windows' own Print Screen setting is on or two actions share a key |
+| Recording | MP4 or GIF |
+| Library & editor | Library on the left or along the bottom; border and drop shadow on exports |
+| Updates | **Check automatically** (on by default: shortly after RSnip starts, then daily, it asks GitHub for the latest release; nothing else is sent), **Install automatically** (off by default; installed copies only: installs a new version as soon as it's found, unless you're in the middle of something), *Check now* |
+| About | Version and links |
+
+Giving an action Print Screen is how you choose what Print Screen does, e.g. PrtScn for all screens
+and Shift+PrtScn to record. By default PrtScn captures a region and the other actions have no
+shortcut. While recording, any capture shortcut stops it.
+
+Settings are stored in `HKCU\Software\RSnip` (on Linux, `~/.config/rsnip/settings.json`).
 
 ### Editor
 
@@ -188,6 +192,7 @@ rsnip --record         pick an area and record it (run again to stop)
 rsnip --gallery [file] open the library, optionally with a file selected
 rsnip --pin <file>      pin an image on top of other windows
 rsnip --update         check for a newer version and install it
+rsnip --settings       open the Settings window
 ```
 
 ## Troubleshooting

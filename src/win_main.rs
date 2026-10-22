@@ -498,9 +498,7 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
 
 unsafe fn on_menu(hwnd: HWND) {
     let s = SETTINGS.get();
-    let startup = settings::startup_enabled();
     let state = tray::MenuState {
-        startup,
         countdown: COUNTDOWN.get(),
         recording: RECORDING.with(|r| r.borrow().is_some()),
         update: AVAILABLE.with(|a| a.borrow().as_ref().map(|r| r.version)),
@@ -531,42 +529,10 @@ unsafe fn on_menu(hwnd: HWND) {
             SetTimer(hwnd, TIMER_RECORD, 250, None);
         }
         tray::CMD_STOP_RECORD => stop_recording(hwnd),
-        tray::CMD_RECORD_GIF => {
-            update_settings(|s| s.record_gif = !s.record_gif);
-        }
         tray::CMD_GALLERY => open_gallery(None),
         tray::CMD_SETTINGS => open_settings(),
         tray::CMD_OPEN_FOLDER => shell_open(&output::screenshots_dir()),
-        tray::CMD_HOTKEY => record_shortcut(hwnd, shortcuts::Action::Region),
-        tray::CMD_SAVE => {
-            update_settings(|s| s.save_to_folder = !s.save_to_folder);
-        }
-        tray::CMD_OPEN_EDITOR => {
-            update_settings(|s| s.open_editor = !s.open_editor);
-        }
-        tray::CMD_LIBRARY_ON_LAUNCH => {
-            update_settings(|s| s.open_library_on_launch = !s.open_library_on_launch);
-        }
-        tray::CMD_NOTIFY => {
-            update_settings(|s| s.notify = !s.notify);
-        }
-        tray::CMD_WIN_SHIFT_S => {
-            let s = update_settings(|s| s.win_shift_s = !s.win_shift_s);
-            hook::set_win_shift_s(s.win_shift_s);
-        }
-        tray::CMD_STARTUP => {
-            if !settings::set_startup(!startup) {
-                notify(hwnd, "Couldn't change startup setting", "Writing to the registry failed.");
-            }
-        }
         tray::CMD_UPDATE => start_update(hwnd),
-        tray::CMD_CHECK_UPDATES => start_check(hwnd, Check::Manual),
-        tray::CMD_AUTO_CHECK => {
-            update_settings(|s| s.check_updates = !s.check_updates);
-        }
-        tray::CMD_AUTO_UPDATE => {
-            update_settings(|s| s.auto_update = !s.auto_update);
-        }
         tray::CMD_EXIT => {
             DestroyWindow(hwnd);
         }
