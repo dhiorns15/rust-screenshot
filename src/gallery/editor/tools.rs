@@ -15,16 +15,24 @@ pub enum Tool {
     Pen,
     Text,
     Step,
+    Line,
+    Redact,
+    Spotlight,
+    Pixelate,
     Crop,
 }
 
-pub const TOOLS: [(Tool, &str, Key, &str); 10] = [
+pub const TOOLS: [(Tool, &str, Key, &str); 14] = [
     (Tool::Select, "Select", Key::V, "Click an annotation to select it, then move, resize, restyle or delete it (V)"),
-    (Tool::Arrow, "Arrow", Key::A, "Drag to draw an arrow (A)"),
+    (Tool::Arrow, "Arrow", Key::A, "Drag to draw an arrow; hold Shift to snap to 45° (A)"),
+    (Tool::Line, "Line", Key::L, "Drag to draw a line; hold Shift to snap to 45° (L)"),
     (Tool::Box, "Box", Key::B, "Drag to draw a box (B)"),
     (Tool::Ellipse, "Ellipse", Key::E, "Drag to draw an ellipse (E)"),
     (Tool::Highlight, "Highlight", Key::H, "Drag to highlight an area (H)"),
     (Tool::Blur, "Blur", Key::U, "Drag to blur sensitive content (U)"),
+    (Tool::Pixelate, "Pixelate", Key::X, "Drag to pixelate sensitive content (X)"),
+    (Tool::Redact, "Redact", Key::R, "Drag to cover content with a solid box (R)"),
+    (Tool::Spotlight, "Spotlight", Key::S, "Drag to dim everything outside an area (S)"),
     (Tool::Pen, "Pen", Key::P, "Draw freehand (P)"),
     (Tool::Text, "Text", Key::T, "Click to type text (T)"),
     (Tool::Step, "Step", Key::N, "Click to add numbered steps 1, 2, 3… (N)"),
@@ -74,6 +82,10 @@ impl Style {
             Shape::Pen { color, width, .. } => plain(Tool::Pen, *color, *width),
             Shape::Text { color, size, shadow, .. } => Style { kind: Tool::Text, color: *color, width: 0.0, text_size: *size, shadow: *shadow },
             Shape::Step { color, diameter, .. } => plain(Tool::Step, *color, (diameter - 20.0) / 4.0),
+            Shape::Line { color, width, .. } => plain(Tool::Line, *color, *width),
+            Shape::Redact { color, .. } => plain(Tool::Redact, *color, 0.0),
+            Shape::Spotlight { .. } => plain(Tool::Spotlight, Color32::TRANSPARENT, 0.0),
+            Shape::Pixelate { .. } => plain(Tool::Pixelate, Color32::TRANSPARENT, 0.0),
         }
     }
 
@@ -81,12 +93,16 @@ impl Style {
     pub fn apply(&self, shape: &Shape) -> Shape {
         let mut s = shape.clone();
         match &mut s {
-            Shape::Box { color, width, .. } | Shape::Ellipse { color, width, .. } | Shape::Arrow { color, width, .. } | Shape::Pen { color, width, .. } => {
+            Shape::Box { color, width, .. }
+            | Shape::Ellipse { color, width, .. }
+            | Shape::Arrow { color, width, .. }
+            | Shape::Line { color, width, .. }
+            | Shape::Pen { color, width, .. } => {
                 *color = self.color;
                 *width = self.width;
             }
-            Shape::Highlight { color, .. } => *color = self.color,
-            Shape::Blur { .. } => {}
+            Shape::Highlight { color, .. } | Shape::Redact { color, .. } => *color = self.color,
+            Shape::Blur { .. } | Shape::Spotlight { .. } | Shape::Pixelate { .. } => {}
             Shape::Text { color, size, shadow, .. } => {
                 *color = self.color;
                 *size = self.text_size;
@@ -131,6 +147,7 @@ impl Default for ToolState {
     fn default() -> Self {
         let mut colors = [PALETTE[0]; TOOLS.len()];
         colors[Tool::Highlight as usize] = PALETTE[2];
+        colors[Tool::Redact as usize] = PALETTE[6];
         ToolState { tool: Tool::Arrow, colors, width: 4.0, text_size: 28.0, text_shadow: true, selection: None }
     }
 }
@@ -180,12 +197,12 @@ impl ToolState {
     }
 
     pub fn uses_color(&self) -> bool {
-        !matches!(self.style_tool(), Tool::Select | Tool::Blur | Tool::Crop)
+        !matches!(self.style_tool(), Tool::Select | Tool::Blur | Tool::Pixelate | Tool::Spotlight | Tool::Crop)
     }
 
     /// Whether the Size slider means a line width (or step size).
     pub fn uses_width(&self) -> bool {
-        !matches!(self.style_tool(), Tool::Select | Tool::Highlight | Tool::Blur | Tool::Crop | Tool::Text)
+        matches!(self.style_tool(), Tool::Arrow | Tool::Line | Tool::Box | Tool::Ellipse | Tool::Pen | Tool::Step)
     }
 
     pub(super) fn step_diameter(&self) -> f32 {

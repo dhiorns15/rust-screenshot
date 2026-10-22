@@ -23,7 +23,7 @@ pub(super) struct Selection {
 pub(super) enum Grab {
     Move,
     Edges(Edges),
-    /// An arrow's tail (`false`) or head (`true`).
+    /// An arrow or line's start (`false`) or end (`true`).
     Endpoint(bool),
 }
 
@@ -102,7 +102,7 @@ impl Editor {
     ) -> Option<Grab> {
         let sel = self.selection.as_ref()?;
         let shape = &self.doc.current().shapes[sel.index];
-        if let Shape::Arrow { from, to, .. } = shape {
+        if let Shape::Arrow { from, to, .. } | Shape::Line { from, to, .. } = shape {
             if to_screen(*to).distance(p) <= 8.0 {
                 return Some(Grab::Endpoint(true));
             }
@@ -114,7 +114,7 @@ impl Editor {
         }
         // Highlights are often drawn line after line, so with a drawing tool a new one can start
         // inside the last; their body only moves them with the Select tool.
-        let filled = matches!(shape, Shape::Highlight { .. } | Shape::Blur { .. });
+        let filled = matches!(shape, Shape::Highlight { .. } | Shape::Blur { .. } | Shape::Redact { .. } | Shape::Pixelate { .. });
         let movable = !filled || self.last_tool == Tool::Select;
         (movable && shape.hit(to_img(p), PICK_SLACK / scale, font)).then_some(Grab::Move)
     }
@@ -133,7 +133,7 @@ impl Editor {
             Grab::Move => m.start.translated(delta),
             Grab::Endpoint(head) => {
                 let mut s = m.start.clone();
-                if let Shape::Arrow { from, to, .. } = &mut s {
+                if let Shape::Arrow { from, to, .. } | Shape::Line { from, to, .. } = &mut s {
                     *(if head { to } else { from }) += delta;
                 }
                 s
@@ -164,7 +164,7 @@ impl Editor {
 
     pub(super) fn paint_manip(&self, painter: &egui::Painter, scale: f32, to_screen: impl Fn(Pos2) -> Pos2, matching_font: bool) {
         if let Some(m) = &self.manip {
-            paint_shape(painter, &m.live, scale, to_screen, matching_font);
+            paint_shape(painter, &m.live, scale, to_screen, self.canvas, matching_font);
         }
     }
 
@@ -175,7 +175,7 @@ impl Editor {
             (None, Some(sel)) => &self.doc.current().shapes[sel.index],
             _ => return,
         };
-        if let Shape::Arrow { from, to, .. } = shape {
+        if let Shape::Arrow { from, to, .. } | Shape::Line { from, to, .. } = shape {
             for end in [from, to] {
                 painter.circle(to_screen(*end), 5.0, Color32::WHITE, Stroke::new(1.5f32, ACCENT));
             }

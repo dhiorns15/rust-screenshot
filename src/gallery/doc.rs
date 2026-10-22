@@ -24,14 +24,29 @@ pub enum Shape {
     Pen { points: Vec<Pos2>, color: Color32, width: f32 },
     Text { pos: Pos2, text: String, color: Color32, size: f32, shadow: bool },
     Step { center: Pos2, number: u32, color: Color32, diameter: f32 },
+    Line { from: Pos2, to: Pos2, color: Color32, width: f32 },
+    /// A solid box, for hiding things for certain (blur can sometimes be reversed).
+    Redact { rect: Rect, color: Color32 },
+    /// Dims everything outside `rect`.
+    Spotlight { rect: Rect },
+    Pixelate { rect: Rect },
 }
+
+/// Pixel size of the pixelate mosaic.
+const MOSAIC: usize = 12;
 
 impl Shape {
     /// The area the shape covers (text without its click padding).
     pub fn bounds(&self, font: Option<&FontVec>) -> Rect {
         match self {
-            Shape::Box { rect, .. } | Shape::Ellipse { rect, .. } | Shape::Highlight { rect, .. } | Shape::Blur { rect } => *rect,
-            Shape::Arrow { from, to, .. } => Rect::from_two_pos(*from, *to),
+            Shape::Box { rect, .. }
+            | Shape::Ellipse { rect, .. }
+            | Shape::Highlight { rect, .. }
+            | Shape::Blur { rect }
+            | Shape::Redact { rect, .. }
+            | Shape::Spotlight { rect }
+            | Shape::Pixelate { rect } => *rect,
+            Shape::Arrow { from, to, .. } | Shape::Line { from, to, .. } => Rect::from_two_pos(*from, *to),
             Shape::Pen { points, .. } => Rect::from_points(points),
             Shape::Text { pos, text, size, .. } => text_bounds(*pos, text, *size, font).shrink(4.0),
             Shape::Step { center, diameter, .. } => Rect::from_center_size(*center, Vec2::splat(*diameter)),
@@ -51,6 +66,12 @@ impl Shape {
             // The head is wider than the shaft.
             Shape::Arrow { from, to, width, .. } => segment_distance(p, *from, *to) <= width * 1.5 + tol,
             Shape::Pen { points, width, .. } => polyline_distance(points, false, p) <= width / 2.0 + tol,
+            Shape::Line { from, to, width, .. } => segment_distance(p, *from, *to) <= width / 2.0 + tol,
+            // Its inside is the part left bright, usually with other annotations in it.
+            Shape::Spotlight { rect } => {
+                let inner = rect.shrink(tol);
+                rect.expand(tol).contains(p) && !(inner.is_positive() && inner.contains(p))
+            }
             _ => self.bounds(font).expand(tol).contains(p),
         }
     }
@@ -58,10 +79,16 @@ impl Shape {
     pub fn translated(&self, d: Vec2) -> Shape {
         let mut s = self.clone();
         match &mut s {
-            Shape::Box { rect, .. } | Shape::Ellipse { rect, .. } | Shape::Highlight { rect, .. } | Shape::Blur { rect } => {
+            Shape::Box { rect, .. }
+            | Shape::Ellipse { rect, .. }
+            | Shape::Highlight { rect, .. }
+            | Shape::Blur { rect }
+            | Shape::Redact { rect, .. }
+            | Shape::Spotlight { rect }
+            | Shape::Pixelate { rect } => {
                 *rect = rect.translate(d)
             }
-            Shape::Arrow { from, to, .. } => {
+            Shape::Arrow { from, to, .. } | Shape::Line { from, to, .. } => {
                 *from += d;
                 *to += d;
             }
@@ -78,8 +105,14 @@ impl Shape {
         let map = |p: Pos2| to.min + (p - from.min) / from.size().max(Vec2::splat(0.001)) * to.size();
         let mut s = self.clone();
         match &mut s {
-            Shape::Box { rect, .. } | Shape::Ellipse { rect, .. } | Shape::Highlight { rect, .. } | Shape::Blur { rect } => *rect = to,
-            Shape::Arrow { from: a, to: b, .. } => {
+            Shape::Box { rect, .. }
+            | Shape::Ellipse { rect, .. }
+            | Shape::Highlight { rect, .. }
+            | Shape::Blur { rect }
+            | Shape::Redact { rect, .. }
+            | Shape::Spotlight { rect }
+            | Shape::Pixelate { rect } => *rect = to,
+            Shape::Arrow { from: a, to: b, .. } | Shape::Line { from: a, to: b, .. } => {
                 *a = map(*a);
                 *b = map(*b);
             }
@@ -471,6 +504,37 @@ pub fn render(snapshot: &Snapshot, font: Option<&FontVec>) -> RgbaImage {
                 }
             }
             Shape::Blur { rect } => blur(&mut pixmap, *rect),
+            Shape::Pixelate { rect } => pixelate(&mut pixmap, *rect),
+            Shape::Redact { rect, color } => {
+                if let Some(r) = sk_rect(*rect) {
+                    let mut p = paint(*color);
+                    p.anti_alias = false;
+                    pixmap.fill_rect(r, &p, id, None);
+                }
+            }
+            Shape::Spotlight { rect } => {
+                let (w, h) = (w as f32, h as f32);
+                let r = rect.intersect(Rect::from_min_max(Pos2::ZERO, Pos2::new(w, h)));
+                let outside = [
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(w, r.min.y)),
+                    Rect::from_min_max(Pos2::new(0.0, r.max.y), Pos2::new(w, h)),
+                    Rect::from_min_max(Pos2::new(0.0, r.min.y), Pos2::new(r.min.x, r.max.y)),
+                    Rect::from_min_max(Pos2::new(r.max.x, r.min.y), Pos2::new(w, r.max.y)),
+                ];
+                let mut dim = paint(Color32::from_black_alpha(SPOTLIGHT_DIM));
+                dim.anti_alias = false;
+                for part in outside.iter().filter_map(|r| sk_rect(*r)) {
+                    pixmap.fill_rect(part, &dim, id, None);
+                }
+            }
+            Shape::Line { from, to, color, width } => {
+                let mut pb = PathBuilder::new();
+                pb.move_to(from.x, from.y);
+                pb.line_to(to.x, to.y);
+                if let Some(path) = pb.finish() {
+                    pixmap.stroke_path(&path, &paint(*color), &stroke(*width), id, None);
+                }
+            }
             Shape::Arrow { from, to, color, width } => {
                 let (shaft_end, head) = arrow_geometry(*from, *to, *width);
                 let mut pb = PathBuilder::new();
@@ -627,22 +691,62 @@ fn draw_text_shadow(pixmap: &mut Pixmap, font: &FontVec, pos: Pos2, text: &str, 
     }
 }
 
-/// Strong blur (three box-blur passes ≈ Gaussian), enough to make text unreadable.
-fn blur(pixmap: &mut Pixmap, rect: Rect) {
+/// How dark Spotlight makes everything outside it.
+pub const SPOTLIGHT_DIM: u8 = 140;
+
+/// `rect` as whole pixels clipped to the pixmap: (x0, y0, width, height), or `None` if empty.
+fn pixel_region(pixmap: &Pixmap, rect: Rect) -> Option<(usize, usize, usize, usize)> {
     let (w, h) = (pixmap.width() as i32, pixmap.height() as i32);
     let x0 = (rect.min.x.floor() as i32).clamp(0, w);
     let y0 = (rect.min.y.floor() as i32).clamp(0, h);
     let x1 = (rect.max.x.ceil() as i32).clamp(0, w);
     let y1 = (rect.max.y.ceil() as i32).clamp(0, h);
     let (rw, rh) = ((x1 - x0) as usize, (y1 - y0) as usize);
-    if rw == 0 || rh == 0 {
-        return;
+    (rw > 0 && rh > 0).then_some((x0 as usize, y0 as usize, rw, rh))
+}
+
+/// Replaces each `MOSAIC`-sized block with its average colour, aligned to the image so adjacent
+/// pixelated areas line up.
+fn pixelate(pixmap: &mut Pixmap, rect: Rect) {
+    let Some((x0, y0, rw, rh)) = pixel_region(pixmap, rect) else { return };
+    let stride = pixmap.width() as usize * 4;
+    let data = pixmap.data_mut();
+    let (x1, y1) = (x0 + rw, y0 + rh);
+    let mut by = y0 - y0 % MOSAIC;
+    while by < y1 {
+        let mut bx = x0 - x0 % MOSAIC;
+        while bx < x1 {
+            let (ys, ye) = (by.max(y0), (by + MOSAIC).min(y1));
+            let (xs, xe) = (bx.max(x0), (bx + MOSAIC).min(x1));
+            let mut sum = [0u32; 4];
+            for y in ys..ye {
+                for x in xs..xe {
+                    let i = y * stride + x * 4;
+                    sum.iter_mut().zip(&data[i..i + 4]).for_each(|(s, &c)| *s += c as u32);
+                }
+            }
+            let n = ((ye - ys) * (xe - xs)) as u32;
+            let avg = sum.map(|s| (s / n) as u8);
+            for y in ys..ye {
+                for x in xs..xe {
+                    let i = y * stride + x * 4;
+                    data[i..i + 4].copy_from_slice(&avg);
+                }
+            }
+            bx += MOSAIC;
+        }
+        by += MOSAIC;
     }
-    let stride = w as usize * 4;
+}
+
+/// Strong blur (three box-blur passes ≈ Gaussian), enough to make text unreadable.
+fn blur(pixmap: &mut Pixmap, rect: Rect) {
+    let Some((x0, y0, rw, rh)) = pixel_region(pixmap, rect) else { return };
+    let stride = pixmap.width() as usize * 4;
     let data = pixmap.data_mut();
     let mut region = vec![0u8; rw * rh * 4];
     for y in 0..rh {
-        let src = (y0 as usize + y) * stride + x0 as usize * 4;
+        let src = (y0 + y) * stride + x0 * 4;
         region[y * rw * 4..(y + 1) * rw * 4].copy_from_slice(&data[src..src + rw * 4]);
     }
     let radius = ((rw.min(rh) / 6).clamp(4, 14)) as isize;
@@ -651,7 +755,7 @@ fn blur(pixmap: &mut Pixmap, rect: Rect) {
         box_blur(&mut region, rh, rw, rw * 4, 4, radius);
     }
     for y in 0..rh {
-        let dst = (y0 as usize + y) * stride + x0 as usize * 4;
+        let dst = (y0 + y) * stride + x0 * 4;
         data[dst..dst + rw * 4].copy_from_slice(&region[y * rw * 4..(y + 1) * rw * 4]);
     }
 }
@@ -817,5 +921,34 @@ mod tests {
         left.sort();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(left, ["kept.png.base.png", "kept.png.json", "notes.txt"]);
+    }
+
+    #[test]
+    fn renders_redact_spotlight_pixelate_and_line() {
+        // A horizontal gradient, so pixelation visibly averages.
+        let base = RgbaImage::from_fn(48, 24, |x, _| image::Rgba([(x * 5) as u8, 100, 200, 255]));
+        let px = |img: &RgbaImage, x: u32, y: u32| img.get_pixel(x, y).0;
+        let r = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(x1, y1));
+        let render_one = |shape: Shape| render(&Snapshot { base: Arc::new(base.clone()), shapes: vec![shape] }, None);
+
+        let out = render_one(Shape::Redact { rect: r(4.0, 4.0, 20.0, 20.0), color: Color32::BLACK });
+        assert_eq!(px(&out, 10, 10), [0, 0, 0, 255]);
+        assert_eq!(px(&out, 30, 10), px(&base, 30, 10), "outside is untouched");
+
+        let out = render_one(Shape::Spotlight { rect: r(12.0, 0.0, 36.0, 24.0) });
+        assert_eq!(px(&out, 20, 10), px(&base, 20, 10), "inside stays bright");
+        assert!(px(&out, 40, 10)[2] < px(&base, 40, 10)[2] / 2, "outside is dimmed");
+
+        let out = render_one(Shape::Pixelate { rect: r(0.0, 0.0, 24.0, 24.0) });
+        assert_eq!(px(&out, 0, 0), px(&out, 11, 11), "one block is one colour");
+        assert_ne!(px(&out, 11, 0), px(&out, 12, 0), "neighbouring blocks differ");
+        assert_eq!(px(&out, 30, 0), px(&base, 30, 0));
+
+        let out = render_one(Shape::Line { from: Pos2::new(0.0, 12.0), to: Pos2::new(48.0, 12.0), color: Color32::RED, width: 4.0 });
+        assert_eq!(px(&out, 24, 12), [255, 0, 0, 255]);
+
+        let spot = Shape::Spotlight { rect: r(10.0, 10.0, 40.0, 40.0) };
+        assert!(spot.hit(Pos2::new(10.0, 25.0), 3.0, None), "picked by its border");
+        assert!(!spot.hit(Pos2::new(25.0, 25.0), 3.0, None), "not by the bright area inside");
     }
 }

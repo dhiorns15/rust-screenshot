@@ -82,14 +82,19 @@ impl Editor {
     }
 }
 
-/// Darkens everything outside the crop area `r` (screen points) and labels its size in pixels.
-pub(super) fn crop_shade(painter: &egui::Painter, r: Rect, canvas: Rect, size: Vec2, handles: bool) {
-    let shade = Color32::from_black_alpha(150);
-    let c = canvas;
+/// Fills the part of `canvas` outside `r` (both screen points) with `shade`.
+pub(super) fn shade_outside(painter: &egui::Painter, r: Rect, canvas: Rect, shade: Color32) {
+    let (c, r) = (canvas, r.intersect(canvas));
     painter.rect_filled(Rect::from_min_max(c.min, Pos2::new(c.max.x, r.min.y)), 0.0, shade);
     painter.rect_filled(Rect::from_min_max(Pos2::new(c.min.x, r.max.y), c.max), 0.0, shade);
     painter.rect_filled(Rect::from_min_max(Pos2::new(c.min.x, r.min.y), Pos2::new(r.min.x, r.max.y)), 0.0, shade);
     painter.rect_filled(Rect::from_min_max(Pos2::new(r.max.x, r.min.y), Pos2::new(c.max.x, r.max.y)), 0.0, shade);
+}
+
+/// Darkens everything outside the crop area `r` (screen points) and labels its size in pixels.
+pub(super) fn crop_shade(painter: &egui::Painter, r: Rect, canvas: Rect, size: Vec2, handles: bool) {
+    let c = canvas;
+    shade_outside(painter, r, c, Color32::from_black_alpha(150));
     painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, Color32::WHITE));
     if handles {
         paint_handles(painter, r, false);

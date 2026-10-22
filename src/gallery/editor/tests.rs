@@ -14,6 +14,7 @@ struct Harness {
     tools: ToolState,
     font: Option<FontVec>,
     time: f64,
+    modifiers: egui::Modifiers,
 }
 
 impl Harness {
@@ -33,6 +34,7 @@ impl Harness {
             tools: ToolState { tool: Tool::Text, text_size: 88.0, ..ToolState::default() },
             font: bytes.and_then(|b| FontVec::try_from_vec(b).ok()),
             time: 0.0,
+            modifiers: egui::Modifiers::NONE,
         };
         h.frame(vec![]);
         h.frame(vec![]);
@@ -44,6 +46,7 @@ impl Harness {
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 600.0))),
             time: Some(self.time),
+            modifiers: self.modifiers,
             events,
             ..Default::default()
         };
@@ -366,5 +369,27 @@ fn highlights_can_start_inside_the_last_one() {
     match &h.editor.doc.current().shapes[1] {
         Shape::Highlight { rect, .. } => assert_eq!(rect.min, Pos2::new(150.0, 220.0)),
         _ => panic!("not a highlight"),
+    }
+}
+
+#[test]
+fn shift_snaps_lines_and_endpoints_drag() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Line;
+    h.modifiers = egui::Modifiers::SHIFT;
+    drag(&mut h, (100.0, 100.0), (300.0, 112.0));
+    h.modifiers = egui::Modifiers::NONE;
+    match &h.editor.doc.current().shapes[0] {
+        Shape::Line { from, to, .. } => {
+            assert_eq!(from.y, 100.0);
+            assert!((to.y - 100.0).abs() < 0.01, "snapped flat, got {to:?}");
+        }
+        _ => panic!("not a line"),
+    }
+    // Lines are selected after drawing and keep endpoint handles.
+    drag(&mut h, (100.0, 100.0), (100.0, 200.0));
+    match &h.editor.doc.current().shapes[0] {
+        Shape::Line { from, .. } => assert_eq!(*from, Pos2::new(100.0, 200.0)),
+        _ => panic!("not a line"),
     }
 }

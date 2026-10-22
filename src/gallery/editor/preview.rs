@@ -3,10 +3,10 @@
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke};
 
-use super::crop::crop_shade;
+use super::crop::{crop_shade, shade_outside};
 use super::text::{preview_font, shadow_offset};
 use super::{Drag, Tool, ToolState};
-use crate::gallery::doc::{arrow_geometry, ellipse_points, Shape};
+use crate::gallery::doc::{arrow_geometry, ellipse_points, Shape, SPOTLIGHT_DIM};
 
 /// The shape a finished drag with the current tool draws, if it's big enough to keep.
 pub(super) fn shape_from_drag(drag: &Drag, tools: &ToolState) -> Option<Shape> {
@@ -19,6 +19,10 @@ pub(super) fn shape_from_drag(drag: &Drag, tools: &ToolState) -> Option<Shape> {
         Tool::Ellipse if big_enough => Shape::Ellipse { rect, color, width },
         Tool::Highlight if big_enough => Shape::Highlight { rect, color },
         Tool::Blur if big_enough => Shape::Blur { rect },
+        Tool::Pixelate if big_enough => Shape::Pixelate { rect },
+        Tool::Redact if big_enough => Shape::Redact { rect, color },
+        Tool::Spotlight if big_enough => Shape::Spotlight { rect },
+        Tool::Line if drag.start.distance(drag.current) >= 2.0 => Shape::Line { from: drag.start, to: drag.current, color, width },
         Tool::Arrow if drag.start.distance(drag.current) >= 4.0 => Shape::Arrow { from: drag.start, to: drag.current, color, width },
         Tool::Pen => Shape::Pen { points: drag.points.clone(), color, width },
         _ => return None,
@@ -40,12 +44,19 @@ pub(super) fn preview(
         let size = Rect::from_two_pos(drag.start, drag.current).intersect(bounds).size();
         crop_shade(painter, r, canvas, size, false);
     } else if let Some(shape) = shape_from_drag(drag, tools) {
-        paint_shape(painter, &shape, scale, to_screen, false);
+        paint_shape(painter, &shape, scale, to_screen, canvas, false);
     }
 }
 
 /// Approximates how the renderer draws `shape`, in screen points.
-pub(super) fn paint_shape(painter: &egui::Painter, shape: &Shape, scale: f32, to_screen: impl Fn(Pos2) -> Pos2, matching_font: bool) {
+pub(super) fn paint_shape(
+    painter: &egui::Painter,
+    shape: &Shape,
+    scale: f32,
+    to_screen: impl Fn(Pos2) -> Pos2,
+    canvas: Rect,
+    matching_font: bool,
+) {
     let screen_rect = |r: &Rect| Rect::from_two_pos(to_screen(r.min), to_screen(r.max));
     let stroke = |width: f32, color: Color32| Stroke::new((width * scale).max(1.0), color);
     match shape {
@@ -59,11 +70,23 @@ pub(super) fn paint_shape(painter: &egui::Painter, shape: &Shape, scale: f32, to
         Shape::Highlight { rect, color } => {
             painter.rect_filled(screen_rect(rect), 0.0, color.gamma_multiply(0.45));
         }
-        Shape::Blur { rect } => {
+        Shape::Blur { rect } | Shape::Pixelate { rect } => {
             let r = screen_rect(rect);
             painter.rect_filled(r, 0.0, Color32::from_gray(128).gamma_multiply(0.6));
             painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, Color32::WHITE));
-            painter.text(r.center(), Align2::CENTER_CENTER, "Blur", FontId::proportional(14.0), Color32::WHITE);
+            let label = if matches!(shape, Shape::Blur { .. }) { "Blur" } else { "Pixelate" };
+            painter.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(14.0), Color32::WHITE);
+        }
+        Shape::Redact { rect, color } => {
+            painter.rect_filled(screen_rect(rect), 0.0, *color);
+        }
+        Shape::Spotlight { rect } => {
+            let r = screen_rect(rect);
+            shade_outside(painter, r, canvas, Color32::from_black_alpha(SPOTLIGHT_DIM));
+            painter.rect_stroke(r, 0.0, Stroke::new(1.0f32, Color32::from_white_alpha(160)));
+        }
+        Shape::Line { from, to, color, width } => {
+            painter.line_segment([to_screen(*from), to_screen(*to)], stroke(*width, *color));
         }
         Shape::Arrow { from, to, color, width } => {
             let (shaft_end, head) = arrow_geometry(*from, *to, *width);
@@ -89,4 +112,12 @@ pub(super) fn paint_shape(painter: &egui::Painter, shape: &Shape, scale: f32, to
             painter.text(c, Align2::CENTER_CENTER, number.to_string(), preview_font(diameter * 0.55 * scale, matching_font), Color32::WHITE);
         }
     }
+}
+
+/// `p` moved onto the nearest 45° line through `start`, keeping its distance.
+pub(super) fn snap_45(start: Pos2, p: Pos2) -> Pos2 {
+    let d = p - start;
+    let step = std::f32::consts::FRAC_PI_4;
+    let angle = (d.angle() / step).round() * step;
+    start + egui::Vec2::angled(angle) * d.length()
 }

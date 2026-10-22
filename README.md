@@ -8,8 +8,8 @@ A small, open-source, Snagit-style screenshot tool for Windows, written in Rust.
 - **Freezes the screen** and lets you drag a region, or click a window/monitor to grab it.
 - **Copies every capture to the clipboard** and saves a PNG to your Screenshots folder.
 - **Remappable hotkey**: pick any key combination from the tray menu.
-- **Library and editor**: browse every screenshot and annotate it with arrows, boxes, ellipses,
-  highlighter, blur, pen, text, numbered steps and crop, with undo/redo. Everything stays
+- **Library and editor**: browse every screenshot and annotate it with arrows, lines, boxes,
+  ellipses, highlighter, blur, pixelate, redact, spotlight, pen, text, numbered steps and crop, with undo/redo. Everything stays
   selectable to move, resize, restyle or delete.
 
 ## Download
@@ -63,11 +63,15 @@ Settings are stored in `HKCU\Software\RSnip`.
 | Tool | Key | |
 | --- | --- | --- |
 | Select | V | click an annotation to select it; drag to move it, drag its handles to resize it (arrows: drag either end) |
-| Arrow | A | drag |
+| Arrow | A | drag; hold Shift to snap to 45° |
+| Line | L | drag; hold Shift to snap to 45° |
 | Box | B | drag |
 | Ellipse | E | drag |
 | Highlight | H | drag; multiply-blended like a real highlighter |
 | Blur | U | drag; strong enough to make text unreadable |
+| Pixelate | X | drag; mosaic over sensitive content |
+| Redact | R | drag; a solid box (black by default) that hides content for certain |
+| Spotlight | S | drag; dims everything outside the area |
 | Pen | P | freehand |
 | Text | T | click, type, Enter. *Shadow* (on by default) adds a soft drop shadow for readability. Click existing text (or double-click it with any shape tool) to select and edit it; drag text to move it. While selected, resize it with the Size slider or the corner handle, and move it with the grip on its top-left corner. Clear it to delete |
 | Step | N | click to drop 1, 2, 3… markers |

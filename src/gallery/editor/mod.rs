@@ -14,7 +14,7 @@ use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Pos2, Rect, Sense,
 
 use super::doc::{render, Doc, Shape};
 use crop::{crop_grab, CropDrag, CropSelection};
-use preview::{preview, shape_from_drag};
+use preview::{preview, shape_from_drag, snap_45};
 use select::{Grab, Manip, Selection, PICK_SLACK};
 use text::PendingText;
 pub use tools::{Style, Tool, ToolState, ANNOTATION_FONT, PALETTE, TEXT_SIZES, TOOLS};
@@ -188,7 +188,10 @@ impl Editor {
             }
             self.paint_manip(&painter, scale, to_screen, font.is_some());
             if let (Some(drag), Some(pos)) = (&mut self.drag, response.interact_pointer_pos()) {
-                let p = to_img(pos);
+                let mut p = to_img(pos);
+                if ui.input(|i| i.modifiers.shift) && matches!(tools.tool, Tool::Arrow | Tool::Line) {
+                    p = snap_45(drag.start, p);
+                }
                 drag.current = p;
                 if drag.points.last().is_none_or(|last| last.distance(p) * scale >= 1.5) {
                     drag.points.push(p);
