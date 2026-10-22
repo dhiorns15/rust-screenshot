@@ -60,6 +60,10 @@ trash = "5"
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["eframe"] }
 
+# Pixel snapshots render on a GPU, so they run on Linux with a software one (ci/Dockerfile).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+egui_kittest = { version = "0.36", features = ["eframe", "snapshot", "wgpu"] }
+
 [profile.release]
 lto = true
 codegen-units = 1

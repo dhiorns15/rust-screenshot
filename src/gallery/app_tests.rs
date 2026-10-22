@@ -185,3 +185,146 @@ fn ctrl_and_shift_click_select_several() {
     h.key_press(Key::Escape);
     settle(&mut h);
 }
+
+/// Pixel snapshots of the window, rendered on a software GPU. Linux only, so every machine renders
+/// the same pixels: run them with the `ci/Dockerfile` image, and refresh them after an intended
+/// change with `UPDATE_SNAPSHOTS=1` (then look at every changed PNG in `tests/snapshots`).
+#[cfg(target_os = "linux")]
+mod snapshots {
+    use super::*;
+
+    fn window(dir: PathBuf, size: Vec2, setup: impl FnOnce(&Env)) -> Harness<'static, App> {
+        let env = Env::sandbox(dir);
+        setup(&env);
+        let mut h = Harness::builder()
+            .with_size(size)
+            .with_pixels_per_point(1.0)
+            .wgpu()
+            .build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
+        // Until every thumbnail has loaded.
+        for _ in 0..200 {
+            settle(&mut h);
+            if h.state().thumbs.len() == h.state().entries.len() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        h.remove_cursor();
+        settle(&mut h);
+        h
+    }
+
+    fn library(name: &str) -> Harness<'static, App> {
+        window(fixtures(name), SIZE, |_| {})
+    }
+
+    fn snapshot(h: &mut Harness<App>, name: &str) {
+        h.remove_cursor();
+        settle(h);
+        h.snapshot(name);
+    }
+
+    #[test]
+    fn library_on_the_left() {
+        snapshot(&mut library("snap-left"), "library_left");
+    }
+
+    #[test]
+    fn library_along_the_bottom() {
+        let mut h = window(fixtures("snap-bottom"), SIZE, |env| env.set_setting(Dock::SETTING, Dock::Bottom.to_setting()));
+        snapshot(&mut h, "library_bottom");
+    }
+
+    #[test]
+    fn narrow_window() {
+        let mut h = window(fixtures("snap-narrow"), Vec2::new(760.0, 600.0), |_| {});
+        snapshot(&mut h, "narrow");
+    }
+
+    #[test]
+    fn text_tool_and_text() {
+        let mut h = library("snap-text");
+        click(&mut h, "Text");
+        let canvas = h.state().editor.as_ref().unwrap().canvas;
+        let at = canvas.min + canvas.size() * Vec2::new(0.15, 0.3);
+        h.hover_at(at);
+        h.drag_at(at);
+        h.drop_at(at);
+        settle(&mut h);
+        h.event(egui::Event::Text("Hello RSnip".into()));
+        settle(&mut h);
+        snapshot(&mut h, "text_tool");
+    }
+
+    #[test]
+    fn selected_arrow() {
+        let mut h = library("snap-arrow");
+        click(&mut h, "Arrow");
+        drag_on_canvas(&mut h, (0.2, 0.7), (0.7, 0.25));
+        snapshot(&mut h, "selected_arrow");
+    }
+
+    #[test]
+    fn export_menu() {
+        let mut h = library("snap-export");
+        h.get_by_label_contains("Export").click();
+        snapshot(&mut h, "export_menu");
+    }
+
+    #[test]
+    fn colour_picker() {
+        let mut h = library("snap-colour");
+        click(&mut h, "Pick any colour");
+        snapshot(&mut h, "colour_picker");
+    }
+
+    #[test]
+    fn empty_library() {
+        let mut h = window(tests::sandbox_dir("snap-empty"), SIZE, |_| {});
+        snapshot(&mut h, "empty_library");
+    }
+
+    /// Renders the window to a PNG, to look at a UI change without opening it on a desktop or
+    /// touching real screenshots:
+    ///
+    /// ```sh
+    /// RSNIP_UI="size=1280x820 dock=bottom click=Text" RSNIP_UI_OUT=ui.png cargo test render_window -- --ignored
+    /// ```
+    ///
+    /// `RSNIP_UI` is space-separated: `size=WxH`, `dock=left|bottom`, `empty` (no screenshots), and
+    /// any number of `click=<label>` (a button's accessible name, e.g. a tool, `Undo`, `Export`, a
+    /// colour; use `_` for spaces), applied in order.
+    #[test]
+    #[ignore]
+    fn render_window() {
+        let spec = std::env::var("RSNIP_UI").unwrap_or_default();
+        let out = std::env::var("RSNIP_UI_OUT").unwrap_or_else(|_| "target/ui.png".into());
+        let mut size = SIZE;
+        let mut dock = Dock::Left;
+        let mut empty = false;
+        let mut clicks = Vec::new();
+        for item in spec.split_whitespace() {
+            match item.split_once('=') {
+                Some(("size", wh)) => {
+                    let (w, h) = wh.split_once('x').expect("size=WxH");
+                    size = Vec2::new(w.parse().unwrap(), h.parse().unwrap());
+                }
+                Some(("dock", "bottom")) => dock = Dock::Bottom,
+                Some(("dock", _)) => dock = Dock::Left,
+                Some(("click", label)) => clicks.push(label.replace('_', " ")),
+                None if item == "empty" => empty = true,
+                _ => panic!("unknown RSNIP_UI item {item}"),
+            }
+        }
+        let dir = if empty { tests::sandbox_dir("render-empty") } else { fixtures("render") };
+        let mut h = window(dir, size, |env| env.set_setting(Dock::SETTING, dock.to_setting()));
+        for label in &clicks {
+            h.get_by_label_contains(label).click();
+            settle(&mut h);
+        }
+        h.remove_cursor();
+        settle(&mut h);
+        h.render().expect("render").save(&out).unwrap();
+        println!("wrote {out}");
+    }
+}

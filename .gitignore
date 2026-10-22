@@ -1,1 +1,5 @@
 /target
+# Snapshot test output; only the plain .png files are references.
+*.new.png
+*.diff.png
+*.old.png

@@ -61,6 +61,24 @@ out, and capture/recording are Windows-only. Settings live in `~/.config/rsnip/s
 When a new version is out, the library's status bar links to it (checked with `curl` each time the
 library opens; set `"CheckUpdates": 0` in the settings file to turn that off).
 
+### Tests
+
+`cargo test` runs everything that works on your system, including tests that drive the whole library
+window headlessly through its accessibility tree. Pixel snapshots of the window
+(`tests/snapshots`) run on Linux, in the image CI uses:
+
+```
+docker build -t rsnip-test ci
+docker run --rm -v "$PWD:/work" -w /work -e CARGO_TARGET_DIR=/work/target/linux rsnip-test cargo test
+```
+
+After an intended UI change, add `-e UPDATE_SNAPSHOTS=1` and check every changed PNG. To look at the
+window without opening it, render it to a PNG:
+
+```
+docker run --rm -v "$PWD:/work" -w /work -e CARGO_TARGET_DIR=/work/target/linux   -e "RSNIP_UI=size=1280x820 dock=bottom click=Text" -e RSNIP_UI_OUT=target/ui.png   rsnip-test cargo test render_window -- --ignored
+```
+
 To publish a release, bump `version` in `Cargo.toml`, commit, then `git tag vX.Y.Z && git push --tags`.
 The release workflow runs the tests and attaches the Windows installer, exe and zip, and a Linux
 build, to a new GitHub Release. It then installs the previous release on a fresh machine and checks
