@@ -195,6 +195,11 @@ rsnip --update         check for a newer version and install it
 If Print Screen still opens the Windows Snipping Tool, turn off
 *Settings → Accessibility → Keyboard → "Use the Print screen key to open screen capture"*.
 
+## Contributing
+
+Contributions are welcome, including AI-assisted ones (every pull request is also reviewed with AI).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for building, the test suite and what a pull request needs.
+
 ## License
 
 MIT
