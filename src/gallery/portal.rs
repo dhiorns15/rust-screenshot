@@ -40,15 +40,9 @@ impl ScreenCast {
         let conn = Connection::session().map_err(|e| format!("Couldn't reach the desktop's session bus: {e}"))?;
         let cast = Proxy::new(&conn, PORTAL, PORTAL_PATH, SCREEN_CAST).map_err(portal_missing)?;
         let available: u32 = cast.get_property("AvailableSourceTypes").map_err(portal_missing)?;
-        // Monitor 1, window 2. Pointer: hidden 1, embedded in the video 2.
-        let wanted = match sources {
-            Sources::Screen => 1,
-            Sources::ScreenOrWindow => 3,
-        } & available;
         let cursor_modes: u32 = cast.get_property("AvailableCursorModes").unwrap_or(1);
-        let cursor = if cursor_modes & 2 != 0 { 2 } else { 1 };
 
-        let mut options = HashMap::from([("session_handle_token", Value::from("rsnip"))]);
+        let mut options = HashMap::from([("session_handle_token", Value::from(token()))]);
         let Response::Done(results) = request(&conn, &cast, "CreateSession", &mut options, |c, o| c.call_method("CreateSession", &(o,)))? else {
             return Ok(None);
         };
@@ -57,11 +51,7 @@ impl ScreenCast {
         let screen_cast = ScreenCast { conn, session, node: 0 };
         let path = ObjectPath::from(&screen_cast.session);
 
-        let mut options = HashMap::from([
-            ("types", Value::from(wanted.max(1))),
-            ("multiple", Value::from(false)),
-            ("cursor_mode", Value::from(cursor)),
-        ]);
+        let mut options = source_options(sources, available, cursor_modes);
         let selected = request(&screen_cast.conn, &cast, "SelectSources", &mut options, |c, o| c.call_method("SelectSources", &(&path, o)))?;
         if matches!(selected, Response::Cancelled) {
             return Ok(None);
@@ -97,6 +87,19 @@ impl Drop for ScreenCast {
     }
 }
 
+/// SelectSources' options: what to offer of what the desktop can (`available`), and the pointer
+/// drawn into the video where it can be (`cursor_modes`). The portal checks their types, which are
+/// all unsigned (`u`) but `multiple`.
+fn source_options(sources: Sources, available: u32, cursor_modes: u32) -> HashMap<&'static str, Value<'static>> {
+    // Monitor 1, window 2. Pointer: hidden 1, embedded in the video 2.
+    let wanted: u32 = match sources {
+        Sources::Screen => 1,
+        Sources::ScreenOrWindow => 3,
+    } & available;
+    let cursor: u32 = if cursor_modes & 2 != 0 { 2 } else { 1 };
+    HashMap::from([("types", Value::from(wanted.max(1))), ("multiple", Value::from(false)), ("cursor_mode", Value::from(cursor))])
+}
+
 fn portal_missing(e: zbus::Error) -> String {
     format!("This desktop has no screen-recording portal (xdg-desktop-portal), which recording needs ({e})")
 }
@@ -110,8 +113,7 @@ fn request(
     options: &mut HashMap<&str, Value>,
     call: impl FnOnce(&Proxy, &HashMap<&str, Value>) -> zbus::Result<zbus::message::Message>,
 ) -> Result<Response, String> {
-    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let token = format!("rsnip{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let token = token();
     let sender = conn.unique_name().map(|n| n.trim_start_matches(':').replace('.', "_")).unwrap_or_default();
     // Listen before calling, so the answer can't be missed.
     let path = format!("{PORTAL_PATH}/request/{sender}/{token}");
@@ -128,7 +130,35 @@ fn request(
     }
 }
 
+/// A name for a request or session, different each time (the portal makes it part of their paths).
+fn token() -> String {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    format!("rsnip{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
 /// One of a request's results.
 fn take<T: TryFrom<OwnedValue>>(mut results: HashMap<String, OwnedValue>, key: &str) -> Result<T, String> {
     results.remove(key).and_then(|v| T::try_from(v).ok()).ok_or_else(|| format!("The desktop's answer had no {key}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The types the screen-cast portal's documentation gives, which GNOME's checks.
+    #[test]
+    fn options_have_the_types_the_portal_expects() {
+        let options = source_options(Sources::ScreenOrWindow, 7, 7);
+        let types: Vec<(&str, String)> = ["types", "multiple", "cursor_mode"].map(|k| (k, options[k].value_signature().to_string())).into();
+        assert_eq!(types, [("types", "u".to_string()), ("multiple", "b".to_string()), ("cursor_mode", "u".to_string())]);
+    }
+
+    #[test]
+    fn offers_what_the_desktop_can() {
+        let get = |o: &HashMap<&str, Value>, k: &str| u32::try_from(&o[k]).unwrap();
+        let options = source_options(Sources::ScreenOrWindow, 1, 1);
+        assert_eq!((get(&options, "types"), get(&options, "cursor_mode")), (1, 1), "screens only, pointer hidden");
+        let options = source_options(Sources::Screen, 3, 7);
+        assert_eq!((get(&options, "types"), get(&options, "cursor_mode")), (1, 2), "a screen, pointer drawn in");
+    }
 }
