@@ -152,6 +152,7 @@ Changes apply straight away.
 | Recording | MP4 or GIF |
 | Library & editor | Library on the left or along the bottom; **Read text in screenshots for search**; border and drop shadow on exports |
 | Updates | **Check automatically** (on by default: shortly after RSnip starts, then daily, it asks GitHub for the latest release; nothing else is sent), **Install automatically** (off by default; installed copies only: installs a new version as soon as it's found, unless you're in the middle of something), *Check now* |
+| System info | What a bug report needs: RSnip's version and install, the OS, CPU, memory, graphics driver, display scale, your settings and where files are kept. *Copy* puts it on the clipboard; *Report a problem* copies it and opens a new GitHub issue to paste it into. It has no screenshots or file names, and your home folder shows as `~` |
 | About | Version and links |
 
 Giving an action Print Screen is how you choose what Print Screen does, e.g. PrtScn for all screens

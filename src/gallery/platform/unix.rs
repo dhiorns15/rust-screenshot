@@ -11,6 +11,8 @@ use std::time::SystemTime;
 
 use image::RgbaImage;
 
+use super::super::system_info::{self, Host};
+
 /// Pinning, OCR, copying as files and dragging files out are Windows-only.
 pub const EXTRAS: bool = false;
 const NOT_HERE: &str = "Not available on this system";
@@ -164,8 +166,13 @@ pub fn recycle(path: &Path) -> bool {
 /// A folder starting with a dot is already hidden.
 pub fn hide(_dir: &Path) {}
 
-/// The font for text annotations: the desktop's sans-serif, or a common one.
+/// The font for text annotations.
 pub fn font_bytes() -> Option<Vec<u8>> {
+    std::fs::read(font_path()?).ok()
+}
+
+/// The desktop's sans-serif, or a common one.
+fn font_path() -> Option<PathBuf> {
     let matched = Command::new("fc-match")
         .args(["-f", "%{file}", "sans-serif:semibold"])
         .output()
@@ -179,7 +186,46 @@ pub fn font_bytes() -> Option<Vec<u8>> {
         "/usr/share/fonts/noto/NotoSans-Regular.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     ];
-    matched.into_iter().chain(common.map(String::from)).find_map(|f| std::fs::read(f).ok())
+    matched.into_iter().chain(common.map(String::from)).map(PathBuf::from).find(|f| f.is_file())
+}
+
+/// The programs RSnip runs: opening files and links, finding Pictures and the annotation font, and
+/// checking for updates (curl or wget).
+const HELPERS: [&str; 5] = ["xdg-open", "xdg-user-dir", "fc-match", "curl", "wget"];
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
+
+/// What System info reports about this machine, from `/etc/os-release`, `/proc` and the session.
+pub fn host() -> Host {
+    let read = |path: &str| std::fs::read_to_string(path).ok();
+    let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let os = read("/etc/os-release").or_else(|| read("/usr/lib/os-release")).and_then(|t| system_info::os_release_name(&t));
+    let desktop = match (var("XDG_CURRENT_DESKTOP"), var("XDG_SESSION_TYPE")) {
+        (Some(d), Some(t)) => Some(format!("{d}, {t}")),
+        (d, t) => d.or(t),
+    };
+    let meminfo = read("/proc/meminfo").unwrap_or_default();
+    let home = home();
+    let program = std::env::current_exe().ok();
+    // installer/linux/install.sh copies it here.
+    let installed = program.as_deref().and_then(Path::parent) == Some(home.join(".local/bin").as_path());
+    Host {
+        os: os.unwrap_or_else(|| std::env::consts::OS.to_string()),
+        kernel: read("/proc/sys/kernel/osrelease").map(|k| k.trim().to_string()).filter(|k| !k.is_empty()),
+        desktop,
+        cpu: read("/proc/cpuinfo").and_then(|t| system_info::cpuinfo_model(&t)),
+        threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
+        memory: system_info::meminfo(&meminfo, "MemTotal"),
+        memory_available: system_info::meminfo(&meminfo, "MemAvailable"),
+        install: if installed { "install.sh" } else { "Standalone" }.into(),
+        program,
+        settings: system_info::tidy_path(&settings_path(), Some(&home)),
+        font: font_path(),
+        helpers: HELPERS.map(|h| (h, on_path(h))).to_vec(),
+        home: Some(home),
+    }
 }
 
 /// The local calendar date of `t` as (year, month, day).

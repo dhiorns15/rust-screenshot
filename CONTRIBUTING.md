@@ -34,7 +34,7 @@ Where things are:
 | `src/shortcuts.rs`, `options.rs` | the capture shortcuts and on/off options both the tray app and Settings use |
 | `src/capture.rs`, `overlay.rs`, `scroll.rs`, `stitch.rs`, `record.rs`, `encode.rs`, `ocr.rs`, `pin.rs` | capturing, scrolling capture, recording, OCR, pins |
 | `src/update.rs` | update checks and installing updates |
-| `src/gallery/` | the library window: `mod.rs` (window, toolbar), `library.rs`, `theme.rs`, `color.rs`, `env.rs`, `search.rs` (search by text, app and window); the Settings window: `settings_window.rs` |
+| `src/gallery/` | the library window: `mod.rs` (window, toolbar), `library.rs`, `theme.rs`, `color.rs`, `env.rs`, `search.rs` (search by text, app and window); the Settings window: `settings_window.rs`, and its System info report: `system_info.rs` |
 | `src/gallery/doc.rs` | a screenshot's annotations, undo history and rendering |
 | `src/gallery/editor/` | the annotation canvas and tools |
 | `src/gallery/platform/` | what differs between Windows and Linux |

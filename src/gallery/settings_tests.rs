@@ -61,9 +61,9 @@ fn requests(h: &Harness<SettingsApp>) -> Vec<TrayRequest> {
 #[test]
 fn shows_the_tray_app_sections_only_where_there_is_one() {
     let h = settings("settings-sections", |_| {});
-    assert_eq!(h.state().sections().len(), 7);
+    assert_eq!(h.state().sections().len(), 8);
     let h = settings("settings-sections-linux", |env| env.tray_app = false);
-    assert_eq!(h.state().sections(), [Section::General, Section::Library, Section::Updates, Section::About]);
+    assert_eq!(h.state().sections(), [Section::General, Section::Library, Section::Updates, Section::SystemInfo, Section::About]);
     assert!(h.query_by_label("Start with Windows").is_none(), "only the theme in General");
     assert!(h.query_by_label_contains("Shortcuts").is_none());
 }
@@ -165,6 +165,44 @@ fn checks_for_updates_and_offers_the_new_version() {
     assert!(h.query_by_label("Download").is_some(), "not installed, so it links to the download");
 }
 
+#[test]
+fn system_info_reports_the_machine_and_copies_it() {
+    let mut h = settings("settings-system-info", |env| {
+        std::fs::write(env.dir.join("a.png"), b"png").unwrap();
+        std::fs::write(env.dir.join("notes.txt"), b"not a screenshot").unwrap();
+        env.set_setting(Action::Record.setting(), shortcuts::PRINT_SCREEN);
+    });
+    open(&mut h, Section::SystemInfo);
+    for value in ["RSnip 1.2.3", "Example OS 1.0", "Example CPU @ 3.0GHz, 8 threads", "16.0 GB installed, 9.0 GB available", "xdg-open; missing: curl", "not reported"] {
+        assert!(h.query_by_label(value).is_some(), "{value}");
+    }
+    assert!(h.query_by_label_contains("(1 file)").is_some(), "counts only screenshots and recordings");
+    assert!(h.query_by_label_contains("record screen area").is_some(), "the shortcuts");
+
+    h.get_by_label_contains("Copy").click();
+    settle(&mut h);
+    let copied = h.state().env.sandboxed().copied.clone().expect("copied");
+    assert!(copied.starts_with("RSnip System Info\n"));
+    assert!(copied.contains("\nSystem\n  OS "), "{copied}");
+    assert!(copied.contains("~"), "the home folder is hidden: {copied}");
+    assert!(h.query_by_label("Copied to the clipboard.").is_some());
+
+    h.state().env.sandboxed().copied = None;
+    h.get_by_label_contains("Report a problem").click();
+    settle(&mut h);
+    assert!(h.state().env.sandboxed().copied.is_some(), "copied, ready to paste");
+    assert_eq!(h.state().env.sandboxed().opened, ["https://github.com/dhiorns15/rust-screenshot/issues/new"]);
+}
+
+#[test]
+fn system_info_leaves_out_the_tray_app_where_there_is_none() {
+    let mut h = settings("settings-system-info-linux", |env| env.tray_app = false);
+    open(&mut h, Section::SystemInfo);
+    assert!(h.query_by_label("Tray app").is_none());
+    assert!(h.query_by_label("Shortcuts").is_none());
+    assert!(h.query_by_label("Theme").is_some());
+}
+
 /// Pixel snapshots of the sections (Linux only, like the library's).
 #[cfg(target_os = "linux")]
 mod snapshots {
@@ -209,6 +247,7 @@ mod snapshots {
             (Section::Recording, "settings_recording"),
             (Section::Library, "settings_library"),
             (Section::Updates, "settings_updates"),
+            (Section::SystemInfo, "settings_system_info"),
             (Section::About, "settings_about"),
         ] {
             snapshot(&mut h, section, name);

@@ -8,12 +8,14 @@ use std::time::SystemTime;
 use image::RgbaImage;
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, FILETIME, SYSTEMTIME};
 use windows_sys::Win32::Storage::FileSystem::{GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, INVALID_FILE_ATTRIBUTES};
+use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
 use windows_sys::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW};
 use windows_sys::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, FindWindowW, PostMessageW, SetForegroundWindow, ShowWindow, ASFW_ANY, SW_RESTORE};
 
 use super::super::env::TrayRequest;
+use super::super::system_info::{self, Host};
 use crate::capture::Image;
 use crate::gallery::doc::flatten;
 use crate::util::{wide, wide_os};
@@ -172,8 +174,42 @@ pub fn hide(dir: &Path) {
 
 /// The font for text annotations.
 pub fn font_bytes() -> Option<Vec<u8>> {
+    std::fs::read(font_path()?).ok()
+}
+
+fn font_path() -> Option<PathBuf> {
     let fonts = std::env::var_os("WINDIR").map(|w| Path::new(&w).join("Fonts"))?;
-    ["seguisb.ttf", "segoeui.ttf", "arial.ttf"].iter().find_map(|name| std::fs::read(fonts.join(name)).ok())
+    ["seguisb.ttf", "segoeui.ttf", "arial.ttf"].iter().map(|name| fonts.join(name)).find(|f| f.is_file())
+}
+
+/// What System info reports about this machine, from the registry.
+pub fn host() -> Host {
+    const NT: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+    let text = |name: &str| crate::settings::read_machine_string(NT, name);
+    let os = system_info::windows_name(
+        text("ProductName").as_deref(),
+        text("DisplayVersion").as_deref(),
+        text("CurrentBuild").as_deref(),
+        crate::settings::read_machine_dword(NT, "UBR"),
+    );
+    let mut memory: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    memory.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    let memory = (unsafe { GlobalMemoryStatusEx(&mut memory) } != 0).then_some(memory);
+    Host {
+        os,
+        kernel: None,
+        desktop: None,
+        cpu: crate::settings::read_machine_string(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString"),
+        threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
+        memory: memory.map(|m| m.ullTotalPhys),
+        memory_available: memory.map(|m| m.ullAvailPhys),
+        install: if installed() { "Installer" } else { "Standalone" }.into(),
+        program: std::env::current_exe().ok(),
+        home: std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()).map(PathBuf::from),
+        settings: r"HKCU\Software\RSnip".into(),
+        font: font_path(),
+        helpers: Vec::new(),
+    }
 }
 
 /// The local calendar date of `t` as (year, month, day).

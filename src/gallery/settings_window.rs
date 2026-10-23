@@ -11,6 +11,7 @@ use std::time::Duration;
 use eframe::egui::{self, Align, Color32, Layout, RichText, Ui, Vec2};
 
 use super::env::{Env, TrayRequest};
+use super::system_info::{self, Gpu};
 use super::theme::{self, icon, Appearance};
 use super::{platform, Dock};
 use crate::options::{self, Flag};
@@ -44,12 +45,21 @@ pub enum Section {
     Recording,
     Library,
     Updates,
+    SystemInfo,
     About,
 }
 
 impl Section {
-    const ALL: [Section; 7] =
-        [Section::General, Section::Capture, Section::Shortcuts, Section::Recording, Section::Library, Section::Updates, Section::About];
+    const ALL: [Section; 8] = [
+        Section::General,
+        Section::Capture,
+        Section::Shortcuts,
+        Section::Recording,
+        Section::Library,
+        Section::Updates,
+        Section::SystemInfo,
+        Section::About,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -59,6 +69,7 @@ impl Section {
             Section::Recording => "Recording",
             Section::Library => "Library & editor",
             Section::Updates => "Updates",
+            Section::SystemInfo => "System info",
             Section::About => "About",
         }
     }
@@ -71,6 +82,7 @@ impl Section {
             Section::Recording => icon::VIDEO_CAMERA,
             Section::Library => icon::IMAGES,
             Section::Updates => icon::ARROWS_CLOCKWISE,
+            Section::SystemInfo => icon::DESKTOP_TOWER,
             Section::About => icon::INFO,
         }
     }
@@ -93,6 +105,10 @@ pub struct SettingsApp {
     update: UpdateCheck,
     /// A note under the section title, e.g. while a shortcut is being recorded.
     note: Option<String>,
+    /// The window's graphics driver, read on the first frame.
+    gpu: Option<Gpu>,
+    /// The System info report, taken when that section opens.
+    report: Option<Vec<system_info::Section>>,
 }
 
 impl SettingsApp {
@@ -102,7 +118,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -135,6 +151,7 @@ impl SettingsApp {
             if theme::nav_item(ui, section.icon(), section.title(), self.section == section).clicked() {
                 self.section = section;
                 self.note = None;
+                self.report = None;
             }
         }
     }
@@ -153,6 +170,7 @@ impl SettingsApp {
             Section::Recording => self.recording(ui),
             Section::Library => self.library(ui),
             Section::Updates => self.updates(ui),
+            Section::SystemInfo => self.system_info(ui),
             Section::About => self.about(ui),
         }
     }
@@ -359,6 +377,40 @@ impl SettingsApp {
         });
     }
 
+    fn system_info(&mut self, ui: &mut Ui) {
+        let report = self.report.get_or_insert_with(|| system_info::report(&self.env, &self.env.host(), self.gpu.as_ref(), ui.ctx()));
+        let text = system_info::text(report);
+        theme::card(ui, |ui| {
+            row(ui, "Include this when you report a problem", "It has no screenshots or file names, and your home folder shows as ~", |ui| {
+                if ui.button(theme::label(icon::WARNING, "Report a problem")).clicked() {
+                    self.note = Some(match self.env.copy_text(&text) {
+                        Ok(()) => "Copied; paste it into the issue.".into(),
+                        Err(e) => format!("Couldn't copy it: {e}"),
+                    });
+                    self.env.open_link(&format!("{REPO}/issues/new"));
+                }
+                if ui.button(theme::label(icon::COPY, "Copy")).clicked() {
+                    self.note = Some(match self.env.copy_text(&text) {
+                        Ok(()) => "Copied to the clipboard.".into(),
+                        Err(e) => format!("Couldn't copy it: {e}"),
+                    });
+                }
+            });
+        });
+        for (i, section) in report.iter().enumerate() {
+            theme::card(ui, |ui| {
+                ui.label(RichText::new(section.title).strong());
+                egui::Grid::new(("system-info", i)).num_columns(2).spacing([16.0, 4.0]).min_col_width(150.0).show(ui, |ui| {
+                    for (label, value) in &section.rows {
+                        ui.label(RichText::new(*label).color(theme::palette(ui).muted));
+                        ui.add(egui::Label::new(RichText::new(value).monospace()).wrap());
+                        ui.end_row();
+                    }
+                });
+            });
+        }
+    }
+
     fn about(&mut self, ui: &mut Ui) {
         theme::card(ui, |ui| {
             ui.label(RichText::new(format!("RSnip {}", self.env.version)).size(18.0).strong());
@@ -382,7 +434,10 @@ impl SettingsApp {
 }
 
 impl eframe::App for SettingsApp {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+        if self.gpu.is_none() {
+            self.gpu = system_info::gpu(frame);
+        }
         // Pick up changes made elsewhere, like a shortcut the tray app just recorded.
         ui.ctx().request_repaint_after(Duration::from_millis(500));
         theme::set_appearance(ui.ctx(), Appearance::from_setting(self.env.setting(Appearance::SETTING)));

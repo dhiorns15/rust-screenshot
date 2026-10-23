@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver};
 
 use super::platform;
+use super::system_info::Host;
 use crate::shortcuts::Action;
 use crate::update::{Release, Version};
 
@@ -58,6 +59,12 @@ pub struct Sandbox {
     pub latest: Option<Release>,
     /// The text "read" from each file name, for search.
     pub ocr_text: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
+    /// What System info reports about the machine.
+    pub host: Host,
+    /// The text last put on the clipboard.
+    pub copied: Option<String>,
+    /// Links opened in the browser.
+    pub opened: Vec<String>,
 }
 
 enum Store {
@@ -84,7 +91,7 @@ impl Env {
     /// A sandbox in `dir`, with settings kept in memory, no network access, and a running tray app.
     #[cfg(test)]
     pub fn sandbox(dir: PathBuf) -> Env {
-        let sandbox = Sandbox { tray_running: true, ..Default::default() };
+        let sandbox = Sandbox { tray_running: true, host: super::system_info::example_host(&dir), ..Default::default() };
         let texts = sandbox.ocr_text.clone();
         let ocr: Ocr = Arc::new(move |path| {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -195,6 +202,31 @@ impl Env {
             }
         }
         rx
+    }
+
+    /// The facts about this machine that System info reports.
+    pub fn host(&self) -> Host {
+        match &self.sandbox {
+            Some(s) => s.borrow().host.clone(),
+            None => platform::host(),
+        }
+    }
+
+    pub fn copy_text(&self, text: &str) -> Result<(), String> {
+        match &self.sandbox {
+            Some(s) => {
+                s.borrow_mut().copied = Some(text.to_owned());
+                Ok(())
+            }
+            None => platform::copy_text(text),
+        }
+    }
+
+    pub fn open_link(&self, url: &str) {
+        match &self.sandbox {
+            Some(s) => s.borrow_mut().opened.push(url.to_owned()),
+            None => platform::open(Path::new(url)),
+        }
     }
 
     /// This copy came from the installer, so it can update itself.

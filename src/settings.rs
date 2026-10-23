@@ -110,12 +110,36 @@ pub fn set_last_region(r: RECT) {
 }
 
 pub fn read_dword(subkey: &str, name: &str) -> Option<u32> {
+    dword(HKEY_CURRENT_USER, subkey, name)
+}
+
+/// A number under HKEY_LOCAL_MACHINE, e.g. about Windows itself.
+pub fn read_machine_dword(subkey: &str, name: &str) -> Option<u32> {
+    dword(HKEY_LOCAL_MACHINE, subkey, name)
+}
+
+/// A text value under HKEY_LOCAL_MACHINE, trimmed; None if it's missing or empty.
+pub fn read_machine_string(subkey: &str, name: &str) -> Option<String> {
+    let (subkey, name) = (wide(subkey), wide(name));
+    let mut buf = [0u16; 256];
+    let mut size = std::mem::size_of_val(&buf) as u32;
+    let status = unsafe {
+        RegGetValueW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, null_mut(), buf.as_mut_ptr() as *mut _, &mut size)
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]).trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn dword(root: HKEY, subkey: &str, name: &str) -> Option<u32> {
     let (subkey, name) = (wide(subkey), wide(name));
     let mut value = 0u32;
     let mut size = 4u32;
     let status = unsafe {
         RegGetValueW(
-            HKEY_CURRENT_USER,
+            root,
             subkey.as_ptr(),
             name.as_ptr(),
             RRF_RT_REG_DWORD,

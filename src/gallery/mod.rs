@@ -14,6 +14,7 @@ mod editor;
 mod env;
 mod search;
 mod settings_window;
+mod system_info;
 mod theme;
 
 pub use settings_window::run as run_settings;
@@ -62,6 +63,12 @@ pub fn run(file: Option<PathBuf>) {
         ..Default::default()
     };
     let _ = eframe::run_native(TITLE, options, Box::new(move |cc| Ok(Box::new(App::new(&cc.egui_ctx, Env::real(), file)))));
+}
+
+/// A screenshot or recording the library lists.
+fn is_library_file(path: &Path) -> bool {
+    let ext = path.extension().map(|x| x.to_ascii_lowercase());
+    matches!(ext.as_deref().and_then(|x| x.to_str()), Some("png" | "jpg" | "jpeg" | "gif" | "mp4"))
 }
 
 struct Entry {
@@ -223,10 +230,7 @@ impl App {
         let Ok(dir) = std::fs::read_dir(&self.env.dir) else { return };
         let mut entries: Vec<Entry> = dir
             .flatten()
-            .filter(|e| {
-                let ext = e.path().extension().map(|x| x.to_ascii_lowercase());
-                matches!(ext.as_deref().and_then(|x| x.to_str()), Some("png" | "jpg" | "jpeg" | "gif" | "mp4"))
-            })
+            .filter(|e| is_library_file(&e.path()))
             .filter_map(|e| {
                 let modified = e.metadata().ok()?.modified().ok()?;
                 let name = e.path().file_stem()?.to_string_lossy().into_owned();
