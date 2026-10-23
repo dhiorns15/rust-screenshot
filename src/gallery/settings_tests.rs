@@ -229,6 +229,16 @@ fn system_info_shows_the_last_crash_and_reports_it() {
 }
 
 #[test]
+fn system_info_values_line_up_across_sections() {
+    let mut h = settings("settings-system-info-columns", |_| {});
+    open(&mut h, Section::SystemInfo);
+    // A short label in the first section, and one beside the longest label, "Windows' Print Screen capture".
+    let x = |value: &str| h.get_by_label(value).rect().left();
+    assert!((x("RSnip 1.2.3") - x("MP4")).abs() < 0.5, "Version vs Record as");
+    assert!((x("RSnip 1.2.3") - x("Example OS 1.0")).abs() < 0.5);
+}
+
+#[test]
 fn system_info_leaves_out_the_tray_app_where_there_is_none() {
     let mut h = settings("settings-system-info-linux", |env| env.tray_app = false);
     open(&mut h, Section::SystemInfo);

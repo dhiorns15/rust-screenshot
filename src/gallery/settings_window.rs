@@ -437,10 +437,15 @@ impl SettingsApp {
                 }
             });
         });
+        // One label column for every section, so the values line up down the page.
+        let labels = self.report.iter().flatten().flat_map(|s| &s.rows).map(|(label, _)| {
+            egui::WidgetText::from(*label).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x
+        });
+        let label_width = labels.fold(150.0, f32::max);
         for (i, section) in self.report.iter().flatten().enumerate() {
             theme::card(ui, |ui| {
                 ui.label(RichText::new(section.title).strong());
-                egui::Grid::new(("system-info", i)).num_columns(2).spacing([16.0, 4.0]).min_col_width(150.0).show(ui, |ui| {
+                egui::Grid::new(("system-info", i)).num_columns(2).spacing([16.0, 4.0]).min_col_width(label_width).show(ui, |ui| {
                     for (label, value) in &section.rows {
                         ui.label(RichText::new(*label).color(theme::palette(ui).muted));
                         ui.add(egui::Label::new(RichText::new(value).monospace()).wrap());
