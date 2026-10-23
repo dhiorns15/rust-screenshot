@@ -147,6 +147,8 @@ struct App {
     read_rx: Option<Receiver<(PathBuf, Option<doc::FileStamp>, String)>>,
     /// How wide the toolbar's actions were last frame, to decide whether they fit beside the tools.
     actions_width: f32,
+    /// RSnip crashed since the user last heard about it (see `crash`): when.
+    crashed: Option<u64>,
 }
 
 impl App {
@@ -205,6 +207,7 @@ impl App {
             read_tx: None,
             read_rx: None,
             actions_width: 320.0,
+            crashed: crate::crash::unseen(&env.crash_dir, env.setting(crate::crash::SEEN_SETTING)).map(|c| c.time),
             env,
         };
         if let Some(ocr) = app.env.ocr.clone() {
@@ -741,6 +744,14 @@ impl App {
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if let Some(time) = self.crashed {
+                    let link = ui.link(RichText::new("RSnip closed unexpectedly. Report it").color(Color32::from_rgb(255, 196, 90)));
+                    if link.on_hover_text("Shows what happened in Settings → System info").clicked() {
+                        self.env.set_setting(crate::crash::SEEN_SETTING, time as u32);
+                        self.env.open_system_info();
+                        self.crashed = None;
+                    }
+                }
                 if let Some(release) = &self.newer {
                     let link = ui.link(format!("RSnip {} is available", release.version));
                     if link.on_hover_text(&release.page).clicked() {
@@ -887,6 +898,12 @@ fn window_icon() -> Arc<egui::IconData> {
     let bgra = crate::icon_art::render(size);
     let rgba = bgra.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
     Arc::new(egui::IconData { rgba, width: size as u32, height: size as u32 })
+}
+
+/// Opens Settings on System info, for the tray app's crash notification.
+#[cfg(windows)]
+pub fn open_system_info() {
+    platform::open_settings(true);
 }
 
 /// Saves RSnip's icon as a PNG, for the menu entry installer/linux/install.sh writes.

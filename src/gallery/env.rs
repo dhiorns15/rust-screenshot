@@ -29,6 +29,8 @@ pub struct Env {
     pub version: Version,
     /// Text recognition for search, where the system has it (Windows).
     pub ocr: Option<Ocr>,
+    /// Where crash reports are written (see `crash`).
+    pub crash_dir: PathBuf,
     settings: Store,
     #[cfg_attr(not(test), allow(dead_code))]
     sandbox: Option<RefCell<Sandbox>>,
@@ -53,6 +55,7 @@ pub struct Sandbox {
     pub requests: Vec<TrayRequest>,
     pub start_with_windows: bool,
     pub settings_opened: usize,
+    pub system_info_opened: usize,
     pub trays_started: usize,
     /// Windows' own "Use the Print screen key to open screen capture".
     pub snipping_key: bool,
@@ -63,8 +66,8 @@ pub struct Sandbox {
     pub host: Host,
     /// The text last put on the clipboard.
     pub copied: Option<String>,
-    /// Links opened in the browser.
-    pub opened: Vec<String>,
+    /// Files, folders and links opened in other apps.
+    pub opened: Vec<PathBuf>,
 }
 
 enum Store {
@@ -83,6 +86,7 @@ impl Env {
             tray_app: cfg!(windows),
             version: Version::current(),
             ocr: platform::ocr(),
+            crash_dir: crate::crash::dir(),
             settings: Store::Platform,
             sandbox: None,
         }
@@ -99,6 +103,7 @@ impl Env {
         });
         Env {
             request_file: dir.join("request.txt"),
+            crash_dir: dir.join("crashes"),
             dir,
             check_updates: false,
             tray_app: cfg!(windows),
@@ -173,7 +178,14 @@ impl Env {
     pub fn open_settings(&self) {
         match &self.sandbox {
             Some(s) => s.borrow_mut().settings_opened += 1,
-            None => platform::open_settings(),
+            None => platform::open_settings(false),
+        }
+    }
+
+    pub fn open_system_info(&self) {
+        match &self.sandbox {
+            Some(s) => s.borrow_mut().system_info_opened += 1,
+            None => platform::open_settings(true),
         }
     }
 
@@ -222,10 +234,11 @@ impl Env {
         }
     }
 
-    pub fn open_link(&self, url: &str) {
+    /// Opens a file or folder in its app, or a link in the browser.
+    pub fn open(&self, path: &Path) {
         match &self.sandbox {
-            Some(s) => s.borrow_mut().opened.push(url.to_owned()),
-            None => platform::open(Path::new(url)),
+            Some(s) => s.borrow_mut().opened.push(path.to_owned()),
+            None => platform::open(path),
         }
     }
 

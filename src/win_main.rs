@@ -161,11 +161,14 @@ thread_local! {
     static UPDATING: Cell<bool> = const { Cell::new(false) };
     /// The last notification was about an available update, so clicking it installs that.
     static UPDATE_BALLOON: Cell<bool> = const { Cell::new(false) };
+    /// The last notification was about a crash, so clicking it shows the report.
+    static CRASH_BALLOON: Cell<bool> = const { Cell::new(false) };
     /// The action whose shortcut the "press the new shortcut" prompt is recording.
     static RECORDING_SHORTCUT: Cell<shortcuts::Action> = const { Cell::new(shortcuts::Action::Region) };
 }
 
 fn main() {
+    crash::install();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--gallery") => return gallery::run(args.get(1).map(PathBuf::from)),
@@ -272,6 +275,11 @@ unsafe fn run_tray(mode: Option<Mode>, delay: Option<u32>, update_now: bool) {
     if !hook::install(hinstance) {
         notify(hwnd, "Keyboard hook failed", "Print Screen won't be captured; use the tray icon instead.");
     }
+    if let Some(crash) = crash::unseen(&crash::dir(), settings::get(crash::SEEN_SETTING)) {
+        settings::set(crash::SEEN_SETTING, crash.time as u32);
+        notify(hwnd, "RSnip closed unexpectedly", "Click here to see what happened and report it.");
+        CRASH_BALLOON.set(true);
+    }
 
     SetTimer(hwnd, TIMER_UPDATE, UPDATE_FIRST_CHECK_MS, None);
     match (delay, mode) {
@@ -313,6 +321,7 @@ unsafe fn cancel_countdown(hwnd: HWND) {
 
 unsafe fn notify(hwnd: HWND, title: &str, text: &str) {
     UPDATE_BALLOON.set(false);
+    CRASH_BALLOON.set(false);
     tray::notify(hwnd, ICON_LARGE.get(), title, text);
 }
 
@@ -360,6 +369,7 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 }
                 WM_CONTEXTMENU => on_menu(hwnd),
                 tray::NIN_BALLOONUSERCLICK if UPDATE_BALLOON.get() => start_update(hwnd),
+                tray::NIN_BALLOONUSERCLICK if CRASH_BALLOON.get() => gallery::open_system_info(),
                 tray::NIN_BALLOONUSERCLICK => {
                     let last = LAST_SAVED.with(|l| l.borrow().clone());
                     match last {

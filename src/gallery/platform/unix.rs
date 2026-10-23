@@ -51,9 +51,11 @@ pub fn tell_tray(_request: super::super::env::TrayRequest) {}
 
 pub fn start_tray() {}
 
-pub fn open_settings() {
+/// Opens the Settings window, on System info if `system_info`.
+pub fn open_settings(system_info: bool) {
     if let Ok(exe) = std::env::current_exe() {
-        let _ = Command::new(exe).arg("--settings").spawn();
+        let args: &[&str] = if system_info { &["--settings", "--system-info"] } else { &["--settings"] };
+        let _ = Command::new(exe).args(args).spawn();
     }
 }
 

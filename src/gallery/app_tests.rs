@@ -194,6 +194,30 @@ fn opening_the_picker_leaves_the_colour_alone() {
     assert_eq!(*h.state_mut().tools.color_mut(), before);
 }
 
+#[test]
+fn a_crash_since_last_time_is_mentioned_once() {
+    let dir = fixtures("library-crash");
+    let env = Env::sandbox(dir);
+    let panic = crate::crash::Panic { time: 500, part: "library", thread: "main".into(), message: "oops".into(), location: None, backtrace: String::new() };
+    crate::crash::save(&env.crash_dir, &panic, None).unwrap();
+    env.set_setting(crate::crash::SEEN_SETTING, 400);
+    let mut h = Harness::builder().with_size(SIZE).build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
+    settle(&mut h);
+    h.get_by_label("RSnip closed unexpectedly. Report it").click();
+    settle(&mut h);
+    assert_eq!(h.state().env.sandboxed().system_info_opened, 1);
+    assert_eq!(h.state().env.setting(crate::crash::SEEN_SETTING), Some(500));
+    assert!(h.query_by_label("RSnip closed unexpectedly. Report it").is_none());
+
+    // Seen already, so a new library window doesn't mention it.
+    let env = Env::sandbox(fixtures("library-crash-seen"));
+    crate::crash::save(&env.crash_dir, &panic, None).unwrap();
+    env.set_setting(crate::crash::SEEN_SETTING, 500);
+    let mut h = Harness::builder().with_size(SIZE).build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
+    settle(&mut h);
+    assert!(h.query_by_label("RSnip closed unexpectedly. Report it").is_none());
+}
+
 /// A library whose sandbox "reads" `text` in Screenshot b, once the reader has finished.
 fn library_with_text(name: &str, text: &str, setup: impl FnOnce(&Env) + 'static) -> (Harness<'static, App>, PathBuf) {
     let dir = fixtures(name);

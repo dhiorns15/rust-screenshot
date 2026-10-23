@@ -85,8 +85,9 @@ pub fn start_tray() {
     spawn_self(&[]);
 }
 
-pub fn open_settings() {
-    spawn_self(&["--settings"]);
+/// Opens the Settings window, on System info if `system_info`.
+pub fn open_settings(system_info: bool) {
+    spawn_self(if system_info { &["--settings", "--system-info"] } else { &["--settings"] });
 }
 
 /// Windows' own "Use the Print screen key to open screen capture" (Settings → Accessibility →

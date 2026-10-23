@@ -152,7 +152,7 @@ Changes apply straight away.
 | Recording | MP4 or GIF |
 | Library & editor | Library on the left or along the bottom; **Read text in screenshots for search**; border and drop shadow on exports |
 | Updates | **Check automatically** (on by default: shortly after RSnip starts, then daily, it asks GitHub for the latest release; nothing else is sent), **Install automatically** (off by default; installed copies only: installs a new version as soon as it's found, unless you're in the middle of something), *Check now* |
-| System info | What a bug report needs: RSnip's version and install, the OS, CPU, memory, graphics driver, display scale, your settings and where files are kept. *Copy* puts it on the clipboard; *Report a problem* copies it and opens a new GitHub issue to paste it into. It has no screenshots or file names, and your home folder shows as `~` |
+| System info | What a bug report needs: RSnip's version and install, the OS, CPU, memory, graphics driver, display scale, your settings, the last crash and where files are kept. *Copy* puts it on the clipboard; *Report a problem* copies it and opens a new GitHub issue to paste it into. It has no screenshots or file names, and your home folder shows as `~` |
 | About | Version and links |
 
 Giving an action Print Screen is how you choose what Print Screen does, e.g. PrtScn for all screens
@@ -160,6 +160,11 @@ and Shift+PrtScn to record. By default PrtScn captures a region and the other ac
 shortcut. While recording, any capture shortcut stops it.
 
 Settings are stored in `HKCU\Software\RSnip` (on Linux, `~/.config/rsnip/settings.json`).
+
+If RSnip crashes, it writes what happened to a crash report in `%LOCALAPPDATA%\RSnip\crashes` (on
+Linux, `~/.local/state/rsnip/crashes`; the last 10 are kept). Next time, the tray app or the library
+says so, and *Settings → System info → Report this crash* copies the report for a GitHub issue. A
+report says where in RSnip's code it crashed; it has no screenshots or file names.
 
 ### Editor
 

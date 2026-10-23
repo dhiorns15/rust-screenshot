@@ -5,6 +5,7 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod crash;
 mod gallery;
 mod icon_art;
 mod options;
@@ -16,6 +17,7 @@ include!("win_main.rs");
 
 #[cfg(not(windows))]
 fn main() {
+    crash::install();
     if std::env::args().any(|a| a == "--settings") {
         return gallery::run_settings();
     }

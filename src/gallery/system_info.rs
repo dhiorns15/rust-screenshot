@@ -76,7 +76,7 @@ impl Section {
 
 /// The whole report. `ctx` adds what only the window knows (its display and scale).
 pub fn report(env: &Env, host: &Host, gpu: Option<&Gpu>, ctx: &egui::Context) -> Vec<Section> {
-    vec![application(env, host), system(host), graphics(gpu, ctx), settings(env), files(env, host)]
+    vec![application(env, host), system(host), graphics(gpu, ctx), settings(env), crashes(env, host), files(env, host)]
 }
 
 /// The report as plain text: a title, then each section with its values in one column.
@@ -179,6 +179,19 @@ fn settings(env: &Env) -> Section {
         updates += &format!(", install automatically: {}", flag(options::AUTO_UPDATE));
     }
     s.row("Updates", updates);
+    s
+}
+
+fn crashes(env: &Env, host: &Host) -> Section {
+    let mut s = Section::new("Crashes");
+    let crashes = crate::crash::list(&env.crash_dir);
+    match crashes.first() {
+        Some(last) => {
+            s.row("Last crash", format!("{}, {}", crate::crash::utc(last.time), last.summary));
+            s.row("Crash reports", format!("{} in {}", crashes.len(), tidy_path(&env.crash_dir, host.home.as_deref())));
+        }
+        None => s.row("Last crash", "none"),
+    }
     s
 }
 

@@ -14,6 +14,7 @@ use super::env::{Env, TrayRequest};
 use super::system_info::{self, Gpu};
 use super::theme::{self, icon, Appearance};
 use super::{platform, Dock};
+use crate::crash::{self, Crash};
 use crate::options::{self, Flag};
 use crate::shortcuts::{self, Action};
 use crate::update::Release;
@@ -34,7 +35,19 @@ pub fn run() {
             .with_app_id(super::APP_ID),
         ..Default::default()
     };
-    let _ = eframe::run_native(TITLE, options, Box::new(|cc| Ok(Box::new(SettingsApp::new(&cc.egui_ctx, Env::real())))));
+    // `--system-info`: opened to report a crash.
+    let system_info = std::env::args().any(|a| a == "--system-info");
+    let _ = eframe::run_native(
+        TITLE,
+        options,
+        Box::new(move |cc| {
+            let mut app = SettingsApp::new(&cc.egui_ctx, Env::real());
+            if system_info {
+                app.section = Section::SystemInfo;
+            }
+            Ok(Box::new(app))
+        }),
+    );
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -109,6 +122,8 @@ pub struct SettingsApp {
     gpu: Option<Gpu>,
     /// The System info report, taken when that section opens.
     report: Option<Vec<system_info::Section>>,
+    /// The latest crash report, read with the System info report.
+    crash: Option<Crash>,
 }
 
 impl SettingsApp {
@@ -118,7 +133,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -377,27 +392,52 @@ impl SettingsApp {
         });
     }
 
+    /// Copies `text` and says whether it worked.
+    fn copy(&mut self, text: &str, done: &str) {
+        self.note = Some(match self.env.copy_text(text) {
+            Ok(()) => done.into(),
+            Err(e) => format!("Couldn't copy it: {e}"),
+        });
+    }
+
     fn system_info(&mut self, ui: &mut Ui) {
-        let report = self.report.get_or_insert_with(|| system_info::report(&self.env, &self.env.host(), self.gpu.as_ref(), ui.ctx()));
-        let text = system_info::text(report);
+        if self.report.is_none() {
+            self.report = Some(system_info::report(&self.env, &self.env.host(), self.gpu.as_ref(), ui.ctx()));
+            self.crash = crash::list(&self.env.crash_dir).into_iter().next();
+            // Seen here, so the library and tray app stop mentioning it.
+            if let Some(c) = crash::unseen(&self.env.crash_dir, self.env.setting(crash::SEEN_SETTING)) {
+                self.env.set_setting(crash::SEEN_SETTING, c.time as u32);
+            }
+        }
+        let text = system_info::text(self.report.as_deref().unwrap_or_default());
+        let new_issue = format!("{REPO}/issues/new");
+        if let Some(c) = self.crash.clone() {
+            warning(ui, &format!("RSnip closed unexpectedly ({}).", crash::utc(c.time)), |ui| {
+                ui.label(RichText::new(&c.summary).monospace().small());
+                ui.horizontal(|ui| {
+                    if ui.button(theme::label(icon::BUG, "Report this crash")).clicked() {
+                        let report = std::fs::read_to_string(&c.path).unwrap_or_default();
+                        self.copy(&format!("{report}\n{text}"), "Copied the crash report; paste it into the issue.");
+                        self.env.open(Path::new(&new_issue));
+                    }
+                    if ui.button(theme::label(icon::FOLDER_OPEN, "Open folder")).clicked() {
+                        self.env.open(&self.env.crash_dir);
+                    }
+                });
+            });
+        }
         theme::card(ui, |ui| {
             row(ui, "Include this when you report a problem", "It has no screenshots or file names, and your home folder shows as ~", |ui| {
                 if ui.button(theme::label(icon::WARNING, "Report a problem")).clicked() {
-                    self.note = Some(match self.env.copy_text(&text) {
-                        Ok(()) => "Copied; paste it into the issue.".into(),
-                        Err(e) => format!("Couldn't copy it: {e}"),
-                    });
-                    self.env.open_link(&format!("{REPO}/issues/new"));
+                    self.copy(&text, "Copied; paste it into the issue.");
+                    self.env.open(Path::new(&new_issue));
                 }
                 if ui.button(theme::label(icon::COPY, "Copy")).clicked() {
-                    self.note = Some(match self.env.copy_text(&text) {
-                        Ok(()) => "Copied to the clipboard.".into(),
-                        Err(e) => format!("Couldn't copy it: {e}"),
-                    });
+                    self.copy(&text, "Copied to the clipboard.");
                 }
             });
         });
-        for (i, section) in report.iter().enumerate() {
+        for (i, section) in self.report.iter().flatten().enumerate() {
             theme::card(ui, |ui| {
                 ui.label(RichText::new(section.title).strong());
                 egui::Grid::new(("system-info", i)).num_columns(2).spacing([16.0, 4.0]).min_col_width(150.0).show(ui, |ui| {

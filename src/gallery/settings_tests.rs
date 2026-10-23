@@ -1,6 +1,7 @@
 //! The Settings window driven headlessly (egui_kittest), with sandboxed settings and a pretend
 //! tray app, plus pixel snapshots of its sections on Linux.
 
+use std::path::Path;
 use std::time::Duration;
 
 use eframe::egui::Vec2;
@@ -11,6 +12,7 @@ use super::env::{Env, TrayRequest};
 use super::settings_window::{Section, SettingsApp};
 use super::theme::Appearance;
 use super::{tests, Dock};
+use crate::crash;
 use crate::options;
 use crate::shortcuts::{self, Action};
 
@@ -191,7 +193,39 @@ fn system_info_reports_the_machine_and_copies_it() {
     h.get_by_label_contains("Report a problem").click();
     settle(&mut h);
     assert!(h.state().env.sandboxed().copied.is_some(), "copied, ready to paste");
-    assert_eq!(h.state().env.sandboxed().opened, ["https://github.com/dhiorns15/rust-screenshot/issues/new"]);
+    assert_eq!(h.state().env.sandboxed().opened, [Path::new("https://github.com/dhiorns15/rust-screenshot/issues/new")]);
+    assert!(h.query_by_label("none").is_some(), "no crashes");
+    assert!(h.query_by_label_contains("Report this crash").is_none());
+}
+
+#[test]
+fn system_info_shows_the_last_crash_and_reports_it() {
+    let mut h = settings("settings-crash", |env| {
+        let panic = crash::Panic {
+            time: 1_792_764_312,
+            part: "library",
+            thread: "main".into(),
+            message: "attempt to divide by zero".into(),
+            location: Some("src/gallery/doc.rs:12:5".into()),
+            backtrace: String::new(),
+        };
+        crash::save(&env.crash_dir, &panic, None).unwrap();
+    });
+    open(&mut h, Section::SystemInfo);
+    assert!(h.query_by_label_contains("RSnip closed unexpectedly (2026-10-23 14:05 UTC)").is_some());
+    assert!(h.query_by_label("2026-10-23 14:05 UTC, library: attempt to divide by zero (src/gallery/doc.rs:12:5)").is_some());
+    assert_eq!(h.state().env.setting(crash::SEEN_SETTING), Some(1_792_764_312), "seen, so it isn't mentioned again");
+
+    h.get_by_label_contains("Report this crash").click();
+    settle(&mut h);
+    let copied = h.state().env.sandboxed().copied.clone().expect("copied");
+    assert!(copied.starts_with("RSnip crash report\n"), "the crash first: {copied}");
+    assert!(copied.contains("\nRSnip System Info\n"), "then the system");
+    assert_eq!(h.state().env.sandboxed().opened.len(), 1, "the new issue page");
+
+    h.get_by_label_contains("Open folder").click();
+    settle(&mut h);
+    assert_eq!(h.state().env.sandboxed().opened.last(), Some(&h.state().env.crash_dir));
 }
 
 #[test]
