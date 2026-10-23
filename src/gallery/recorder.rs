@@ -118,7 +118,10 @@ pub fn hevc_available() -> bool {
 
 /// The pipeline's source: the shared stream, as RGB.
 fn source(node: u32) -> String {
-    format!("pipewiresrc fd={PIPEWIRE_FD} path={node} do-timestamp=true keepalive-time=1000 resend-last=true ! videoconvert")
+    // Not keepalive-time or resend-last (which repeat the last frame while the screen is still, as
+    // GNOME's recorder has them): with either, Ctrl+C's end of stream never reaches the file, so a
+    // recording can't be finished.
+    format!("pipewiresrc fd={PIPEWIRE_FD} path={node} do-timestamp=true ! videoconvert")
 }
 
 /// `area` of a `frame_width` × `frame_height` frame, for `videocrop`.
