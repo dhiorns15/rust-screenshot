@@ -272,8 +272,14 @@ pub fn host() -> Host {
     let meminfo = read("/proc/meminfo").unwrap_or_default();
     let home = home();
     let program = std::env::current_exe().ok();
-    // installer/linux/install.sh copies it here.
-    let installed = program.as_deref().and_then(Path::parent) == Some(home.join(".local/bin").as_path());
+    let install = match program.as_deref() {
+        // installer/linux/install.sh copies it here.
+        Some(p) if p.parent() == Some(home.join(".local/bin").as_path()) => "install.sh",
+        // The .deb or .rpm (see installer/linux/build-packages.sh).
+        Some(p) if p == Path::new("/usr/bin/rsnip") && Path::new("/var/lib/dpkg/info/rsnip.list").exists() => ".deb package",
+        Some(p) if p == Path::new("/usr/bin/rsnip") => ".rpm package",
+        _ => "Standalone",
+    };
     Host {
         os: os.unwrap_or_else(|| std::env::consts::OS.to_string()),
         kernel: read("/proc/sys/kernel/osrelease").map(|k| k.trim().to_string()).filter(|k| !k.is_empty()),
@@ -282,7 +288,7 @@ pub fn host() -> Host {
         threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
         memory: system_info::meminfo(&meminfo, "MemTotal"),
         memory_available: system_info::meminfo(&meminfo, "MemAvailable"),
-        install: if installed { "install.sh" } else { "Standalone" }.into(),
+        install: install.into(),
         program,
         settings: system_info::tidy_path(&settings_path(), Some(&home)),
         font: font_path(),

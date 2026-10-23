@@ -1,0 +1,25 @@
+[Desktop Entry]
+Type=Application
+Name=RSnip Library
+GenericName=Screenshot library
+Comment=Browse, search and annotate your screenshots, and record the screen
+Exec=rsnip %f
+Icon=rsnip
+Terminal=false
+Categories=Graphics;
+Keywords=screenshot;screen;recording;record;annotate;ocr;
+MimeType=image/png;image/jpeg;
+StartupWMClass=rsnip
+Actions=record;record-screen;settings;
+
+[Desktop Action record]
+Name=Record an area
+Exec=rsnip --record
+
+[Desktop Action record-screen]
+Name=Record a screen or window
+Exec=rsnip --record-screen
+
+[Desktop Action settings]
+Name=Settings
+Exec=rsnip --settings

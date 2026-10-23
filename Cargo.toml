@@ -2,8 +2,9 @@
 name = "rsnip"
 version = "0.4.3"
 edition = "2021"
-description = "A Snagit-style screenshot tool for Windows, with a screenshot library and editor that also runs on Linux"
+description = "A Snagit-style screenshot tool: capture, a searchable screenshot library and editor, and screen recording"
 license = "MIT"
+repository = "https://github.com/dhiorns15/rust-screenshot"
 
 [features]
 # Lets tools see and drive the library window: run a build with this feature with EGUI_INSPECTION=1
@@ -83,3 +84,67 @@ codegen-units = 1
 # Keeps function names, so Linux crash reports have a backtrace (Windows keeps its symbols in a
 # .pdb file, which the release workflow builds and publishes separately).
 strip = "debuginfo"
+
+# The Linux packages, built by installer/linux/build-packages.sh from a release build: a .deb
+# (cargo-deb) and an .rpm (cargo-generate-rpm). The libraries RSnip loads as it starts are
+# required; what recording, reading text and opening folders use is recommended, so it's installed
+# too unless turned off. RPM names come as alternatives, for Fedora's and openSUSE's names.
+[package.metadata.deb]
+maintainer = "dhiorns15 <dhiorns15@users.noreply.github.com>"
+copyright = "RSnip contributors"
+license-file = ["LICENSE", "0"]
+section = "graphics"
+extended-description = """\
+RSnip keeps your screenshots in a searchable library and lets you annotate them, and records the \
+screen, a window or an area to MP4 or GIF."""
+depends = "$auto, libegl1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrender1"
+recommends = "xdg-utils, xdg-user-dirs, fontconfig, curl, tesseract-ocr, gstreamer1.0-tools, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly"
+suggests = "gstreamer1.0-plugins-bad, gnome-shell-extension-appindicator"
+maintainer-scripts = "installer/linux/package/debian/"
+assets = [
+    ["target/release/rsnip", "usr/bin/", "755"],
+    ["installer/linux/package/rsnip.desktop", "usr/share/applications/", "644"],
+    ["installer/linux/package/rsnip.metainfo.xml", "usr/share/metainfo/io.github.dhiorns15.RSnip.metainfo.xml", "644"],
+    ["target/linux-package/rsnip.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["README.md", "usr/share/doc/rsnip/", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Screenshot library and editor, with screen recording"
+pre_uninstall_script = "installer/linux/package/debian/prerm"
+assets = [
+    { source = "target/release/rsnip", dest = "/usr/bin/rsnip", mode = "755" },
+    { source = "installer/linux/package/rsnip.desktop", dest = "/usr/share/applications/rsnip.desktop", mode = "644" },
+    { source = "installer/linux/package/rsnip.metainfo.xml", dest = "/usr/share/metainfo/io.github.dhiorns15.RSnip.metainfo.xml", mode = "644" },
+    { source = "target/linux-package/rsnip.png", dest = "/usr/share/icons/hicolor/256x256/apps/rsnip.png", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/rsnip/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/rsnip/LICENSE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+"libEGL.so.1()(64bit)" = "*"
+"libxkbcommon.so.0()(64bit)" = "*"
+"libxkbcommon-x11.so.0()(64bit)" = "*"
+"libwayland-client.so.0()(64bit)" = "*"
+"libwayland-egl.so.1()(64bit)" = "*"
+"libX11.so.6()(64bit)" = "*"
+"libX11-xcb.so.1()(64bit)" = "*"
+"libXcursor.so.1()(64bit)" = "*"
+"libXi.so.6()(64bit)" = "*"
+"libXrender.so.1()(64bit)" = "*"
+
+[package.metadata.generate-rpm.recommends]
+xdg-utils = "*"
+xdg-user-dirs = "*"
+fontconfig = "*"
+curl = "*"
+"(tesseract or tesseract-ocr)" = ""
+"(tesseract-langpack-eng or tesseract-ocr-traineddata-english)" = ""
+"(gstreamer1 or gstreamer-utils)" = ""
+"(pipewire-gstreamer or gstreamer-plugin-pipewire)" = ""
+"(gstreamer1-plugins-good or gstreamer-plugins-good)" = ""
+# Fedora's OpenH264 (its Cisco repository is on by default), else x264 from RPM Fusion or Packman.
+"(gstreamer1-plugin-openh264 or gstreamer1-plugins-ugly or gstreamer-plugins-ugly)" = ""
+
+[package.metadata.generate-rpm.suggests]
+"(gstreamer1-plugins-bad-free or gstreamer-plugins-bad)" = ""

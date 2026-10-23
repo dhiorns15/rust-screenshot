@@ -1,0 +1,11 @@
+#!/bin/sh
+# Before RSnip is removed or upgraded: ask each user's RSnip in the background to quit, so nothing
+# runs the old program (the library starts the new one). It checks for this request file (see
+# src/gallery/background.rs), which must be the user's own so it can remove it. Shared by the .deb
+# (prerm) and the .rpm (%preun).
+for lock in /tmp/rsnip-tray-*.lock; do
+    [ -e "$lock" ] || continue
+    request="${lock%.lock}.request"
+    echo quit >"$request" && chown --reference="$lock" "$request"
+done 2>/dev/null
+exit 0

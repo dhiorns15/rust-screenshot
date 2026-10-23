@@ -226,7 +226,7 @@ Comment=Browse, search and annotate your screenshots
 Exec="$bin/rsnip" %f
 Icon=rsnip
 Terminal=false
-Categories=Graphics;Utility;
+Categories=Graphics;
 MimeType=image/png;image/jpeg;
 StartupWMClass=rsnip
 Actions=record;record-screen;settings;
@@ -246,6 +246,10 @@ EOF
 refresh
 
 echo "RSnip is installed: open \"RSnip Library\" from your app menu, or run rsnip."
+if [ -e /usr/bin/rsnip ]; then
+    echo "Note: RSnip is also installed from a .deb or .rpm package. Whichever comes first on your PATH runs;"
+    echo "      remove one of them (./install.sh --uninstall, or your package manager)."
+fi
 case ":$PATH:" in
 *":$bin:"*) ;;
 *) echo "Note: $bin isn't on your PATH yet; sign out and back in, or run $bin/rsnip." ;;

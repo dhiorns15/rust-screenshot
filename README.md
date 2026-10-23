@@ -82,9 +82,32 @@ General turns it off, or starts it when you sign in.
 
 #### Installing on Linux
 
-The download runs on any x86-64 distribution with glibc 2.39 or later (for example Ubuntu 24.04,
-Debian 13, Fedora 40, Arch, openSUSE Tumbleweed, or newer). It installs for your user only, no
-`sudo`:
+The downloads run on any x86-64 distribution with glibc 2.39 or later (for example Ubuntu 24.04,
+Debian 13, Fedora 40, openSUSE Tumbleweed, Arch, or newer).
+
+**Ubuntu, Debian and others that use `.deb`**: download `rsnip_X.Y.Z-1_amd64.deb` from the
+[latest release](https://github.com/dhiorns15/rust-screenshot/releases/latest) and open it (it opens
+in your software centre), or run:
+
+```
+sudo apt install ./rsnip_X.Y.Z-1_amd64.deb
+```
+
+**Fedora, openSUSE and others that use `.rpm`**: download `rsnip-X.Y.Z-1.x86_64.rpm` and open it,
+or run one of:
+
+```
+sudo dnf install ./rsnip-X.Y.Z-1.x86_64.rpm
+sudo zypper install --allow-unsigned-rpm ./rsnip-X.Y.Z-1.x86_64.rpm
+```
+
+The package brings what RSnip uses with it: GStreamer for recording (with an H.264 encoder on Ubuntu,
+Debian and Fedora; on openSUSE that comes from Packman) and Tesseract for reading text. It adds
+**RSnip Library** (with *Record* and *Settings* actions) to your app menu. Install a newer download
+the same way to upgrade, and remove it with `sudo apt remove rsnip` / `sudo dnf remove rsnip` (or
+from your software centre); your screenshots and settings are kept.
+
+**Elsewhere** (Arch, say), or to install for your user only without `sudo`, use the `.tar.gz`:
 
 ```
 tar -xzf rsnip-vX.Y.Z-linux-x64.tar.gz
@@ -95,9 +118,10 @@ cd rsnip
 This copies `rsnip` to `~/.local/bin` and adds **RSnip Library** (with its icon, and *Record* and
 *Settings* actions) to your app menu, so you can pin it to the dock. It then checks for what RSnip
 uses (the graphics and keyboard libraries for your session, X11 or Wayland, plus `xdg-open`,
-`fc-match`, `curl`/`wget`, Tesseract and GStreamer) and, if anything is missing, prints the command that installs it on your
-distribution (apt, dnf, pacman or zypper). It never installs system packages itself, and stops
-before copying anything if this build can't run on your system (e.g. an older glibc).
+`fc-match`, `curl`/`wget`, Tesseract and GStreamer) and, if anything is missing, prints the command
+that installs it on your distribution (apt, dnf, pacman or zypper). It never installs system
+packages itself, and stops before copying anything if this build can't run on your system (e.g. an
+older glibc).
 
 - `./install.sh --check` only runs that check.
 - Run `./install.sh` from a newer download to upgrade.

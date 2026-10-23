@@ -25,6 +25,10 @@ RSnip pins its Rust version in `rust-toolchain.toml`; `rustup` picks it up autom
 - **Linux** (library and editor only): `cargo build`, or use the same environment CI uses:
   `docker build -t rsnip-test ci`.
 - **Installer**: Inno Setup 6, then `powershell -File installer\build.ps1`.
+- **Linux packages**: `cargo install cargo-deb cargo-generate-rpm`, `cargo build --release`, then
+  `installer/linux/build-packages.sh` writes the `.deb` and `.rpm` (what goes in them, and what they
+  depend on, is in `Cargo.toml`). `ci/test-packages.sh` installs them on Ubuntu, Fedora and openSUSE
+  in Docker.
 
 Where things are:
 
@@ -39,7 +43,7 @@ Where things are:
 | `src/gallery/doc.rs` | a screenshot's annotations, undo history and rendering |
 | `src/gallery/editor/` | the annotation canvas and tools; `copy_text.rs` is the Copy text tool |
 | `src/gallery/platform/` | what differs between Windows and Linux |
-| `installer/` | the Inno Setup script and its CI tests |
+| `installer/` | the Inno Setup script and its CI tests; `installer/linux/` has `install.sh` and the `.deb`/`.rpm` files |
 
 ## Tests
 

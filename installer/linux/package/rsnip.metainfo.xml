@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- What software centres (GNOME Software, Discover) show for the .deb and .rpm packages. -->
+<component type="desktop-application">
+  <id>io.github.dhiorns15.RSnip</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>RSnip</name>
+  <summary>Screenshot library and editor, with screen recording</summary>
+  <description>
+    <p>
+      RSnip keeps your screenshots in a searchable library and lets you annotate them: arrows,
+      boxes, text, numbered steps, highlights, blur, pixelation, redaction and cropping, all
+      editable after saving. It reads the text in screenshots, so you can search by it and copy it.
+    </p>
+    <p>
+      It records the screen, a window or an area to MP4 (H.264 or H.265) or GIF, from its icon in
+      the top bar or a keyboard shortcut.
+    </p>
+  </description>
+  <launchable type="desktop-id">rsnip.desktop</launchable>
+  <url type="homepage">https://github.com/dhiorns15/rust-screenshot</url>
+  <url type="bugtracker">https://github.com/dhiorns15/rust-screenshot/issues</url>
+  <developer id="io.github.dhiorns15">
+    <name>dhiorns15</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>rsnip</binary>
+  </provides>
+</component>

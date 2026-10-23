@@ -52,3 +52,18 @@ jobs:
             tests/snapshots/*.new.png
             tests/snapshots/*.diff.png
           if-no-files-found: ignore
+
+  # The .deb and .rpm build, install with what they depend on and recommend on Ubuntu, Fedora and
+  # openSUSE, and run (installer/linux/build-packages.sh, ci/test-packages.sh).
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+      - run: cargo build --release
+      - run: installer/linux/build-packages.sh
+      - run: ci/test-packages.sh
