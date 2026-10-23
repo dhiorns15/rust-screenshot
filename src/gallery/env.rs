@@ -66,6 +66,8 @@ pub struct Sandbox {
     pub trays_started: usize,
     /// Windows' own "Use the Print screen key to open screen capture".
     pub snipping_key: bool,
+    /// There's an H.265 encoder for recordings.
+    pub hevc: bool,
     pub latest: Option<Release>,
     /// The text "read" from each file name, for search.
     pub ocr_text: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
@@ -207,6 +209,14 @@ impl Env {
         match &self.sandbox {
             Some(s) => s.borrow().snipping_key,
             None => platform::snipping_key(),
+        }
+    }
+
+    /// Recordings can be H.265 here (see `encode::hevc_available`).
+    pub fn hevc_available(&self) -> bool {
+        match &self.sandbox {
+            Some(s) => s.borrow().hevc,
+            None => platform::hevc_available(),
         }
     }
 

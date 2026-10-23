@@ -25,6 +25,25 @@ pub const OPEN_EDITOR: Flag = Flag { name: "OpenEditor", default: false };
 pub const SHOW_MAGNIFIER: Flag = Flag { name: "ShowMagnifier", default: true };
 pub const OPEN_LIBRARY_ON_LAUNCH: Flag = Flag { name: "OpenLibraryOnLaunch", default: false };
 pub const RECORD_GIF: Flag = Flag { name: "RecordGif", default: false };
+/// Record MP4s as H.265 (HEVC) rather than H.264.
+pub const RECORD_HEVC: Flag = Flag { name: "RecordHevc", default: false };
+/// Frames per second for MP4 recordings.
+pub const RECORD_FPS: Choice = Choice { name: "RecordFps", default: 30, values: &[15, 24, 30, 60] };
+
+/// A setting that holds one of a few numbers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Choice {
+    pub name: &'static str,
+    pub default: u32,
+    pub values: &'static [u32],
+}
+
+impl Choice {
+    /// Its value among `get`'s settings: the default when unset or not one of `values`.
+    pub fn read(self, get: impl Fn(&str) -> Option<u32>) -> u32 {
+        get(self.name).filter(|v| self.values.contains(v)).unwrap_or(self.default)
+    }
+}
 pub const CHECK_UPDATES: Flag = Flag { name: "CheckUpdates", default: true };
 pub const AUTO_UPDATE: Flag = Flag { name: "AutoUpdate", default: false };
 
@@ -39,5 +58,12 @@ mod tests {
         assert!(OPEN_EDITOR.read(|_| Some(7)));
         assert!(!NOTIFY.read(|_| Some(0)));
         assert!(SHOW_MAGNIFIER.read(|_| None), "the magnifier shows unless turned off");
+    }
+
+    #[test]
+    fn a_choice_falls_back_to_its_default() {
+        assert_eq!(RECORD_FPS.read(|_| None), 30);
+        assert_eq!(RECORD_FPS.read(|_| Some(60)), 60);
+        assert_eq!(RECORD_FPS.read(|_| Some(1000)), 30, "not one of the choices");
     }
 }

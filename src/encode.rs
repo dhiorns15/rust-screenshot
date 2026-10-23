@@ -1,5 +1,5 @@
-//! Video encoders for screen recordings: MP4 (H.264 via Media Foundation, built into Windows) and
-//! animated GIF. Frames are BGRA with the time since the recording started.
+//! Video encoders for screen recordings: MP4 (H.264, or H.265 where the PC has an encoder for it,
+//! via Media Foundation, built into Windows) and animated GIF. Frames are BGRA with the time since the recording started.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -36,12 +36,32 @@ fn ticks(d: Duration) -> i64 {
     (d.as_nanos() / 100) as i64
 }
 
+/// Whether this PC has an H.265 encoder: Windows has none of its own, but most graphics drivers
+/// add one, and so do the HEVC Video Extensions from the Microsoft Store.
+pub fn hevc_available() -> bool {
+    let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_HEVC };
+    let flags = MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_ASYNCMFT | MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER;
+    let mut found = std::ptr::null_mut();
+    let mut count = 0;
+    unsafe {
+        if MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, flags, None, Some(&output), &mut found, &mut count).is_err() || found.is_null() {
+            return false;
+        }
+        // Release each one, then the list.
+        for i in 0..count as usize {
+            std::ptr::drop_in_place(found.add(i));
+        }
+        windows::Win32::System::Com::CoTaskMemFree(Some(found as *const _));
+    }
+    count > 0
+}
+
 impl Mp4 {
-    pub fn new(path: &Path, width: i32, height: i32, fps: u32) -> Result<Mp4, String> {
-        unsafe { Mp4::create(path, width, height, fps) }.map_err(|e| format!("Couldn't start the video encoder: {}", e.message()))
+    pub fn new(path: &Path, width: i32, height: i32, fps: u32, hevc: bool) -> Result<Mp4, String> {
+        unsafe { Mp4::create(path, width, height, fps, hevc) }.map_err(|e| format!("Couldn't start the video encoder: {}", e.message()))
     }
 
-    unsafe fn create(path: &Path, width: i32, height: i32, fps: u32) -> windows::core::Result<Mp4> {
+    unsafe fn create(path: &Path, width: i32, height: i32, fps: u32, hevc: bool) -> windows::core::Result<Mp4> {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         MFStartup(MF_VERSION, MFSTARTUP_FULL)?;
         let mut attrs = None;
@@ -63,9 +83,11 @@ impl Mp4 {
         };
         let output = MFCreateMediaType()?;
         common(&output)?;
-        output.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
-        // About 0.1 bit per pixel per frame looks clean for screen content.
-        let bitrate = (width as u64 * height as u64 * fps as u64 / 10).clamp(1_000_000, 20_000_000);
+        output.SetGUID(&MF_MT_SUBTYPE, if hevc { &MFVideoFormat_HEVC } else { &MFVideoFormat_H264 })?;
+        // About 0.1 bit per pixel per frame looks clean for screen content in H.264; H.265 needs
+        // about two thirds of that for the same quality.
+        let bits = width as u64 * height as u64 * fps as u64 / 10;
+        let bitrate = if hevc { bits * 2 / 3 } else { bits }.clamp(1_000_000, 20_000_000);
         output.SetUINT32(&MF_MT_AVG_BITRATE, bitrate as u32)?;
         let stream = writer.AddStream(&output)?;
 
@@ -200,21 +222,34 @@ mod tests {
         assert_eq!(delays, [7, 23, 7], "each frame lasts until the next; the last gets one frame time");
     }
 
-    #[test]
-    fn mp4_writes_a_playable_file() {
-        let path = std::env::temp_dir().join(format!("rsnip-test-{}.mp4", std::process::id()));
-        let mut mp4: Box<dyn Encoder> = match Mp4::new(&path, 64, 48, 30) {
+    fn writes_a_playable_mp4(hevc: bool, fps: u32) {
+        let path = std::env::temp_dir().join(format!("rsnip-test-{}-{hevc}-{fps}.mp4", std::process::id()));
+        let mut mp4: Box<dyn Encoder> = match Mp4::new(&path, 64, 48, fps, hevc) {
             Ok(mp4) => Box::new(mp4),
             // Server installs (like CI's) may not include Media Foundation.
             Err(e) => return eprintln!("skipped: {e}"),
         };
         for (i, img) in frames(15, 64, 48).iter().enumerate() {
-            mp4.frame(img, Duration::from_millis(i as u64 * 33)).unwrap();
+            mp4.frame(img, Duration::from_millis(i as u64 * 1000 / fps as u64)).unwrap();
         }
         mp4.finish().unwrap();
         let bytes = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(&bytes[4..8], b"ftyp", "an MP4 container");
         assert!(bytes.len() > 1000);
+    }
+
+    #[test]
+    fn mp4_writes_a_playable_file() {
+        writes_a_playable_mp4(false, 30);
+        writes_a_playable_mp4(false, 60);
+    }
+
+    #[test]
+    fn hevc_writes_a_playable_file_where_theres_an_encoder() {
+        if !hevc_available() {
+            return eprintln!("skipped: no H.265 encoder");
+        }
+        writes_a_playable_mp4(true, 30);
     }
 }

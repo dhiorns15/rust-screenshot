@@ -154,6 +154,22 @@ fn recording_format_and_library_position() {
 }
 
 #[test]
+fn frame_rate_and_codec_are_for_mp4s_and_h265_needs_an_encoder() {
+    let mut h = settings("settings-video", |_| {});
+    open(&mut h, Section::Recording);
+    click(&mut h, "60");
+    assert_eq!(h.state().env.setting(options::RECORD_FPS.name), Some(60));
+    assert!(h.get_by_label("H.265").accesskit_node().is_disabled(), "no encoder in the sandbox");
+
+    let mut h = settings("settings-video-hevc", |env| env.sandboxed().hevc = true);
+    open(&mut h, Section::Recording);
+    click(&mut h, "H.265");
+    assert_eq!(h.state().env.setting(options::RECORD_HEVC.name), Some(1));
+    click(&mut h, "GIF");
+    assert!(h.get_by_label("60").accesskit_node().is_disabled(), "GIFs have their own frame rate");
+}
+
+#[test]
 fn checks_for_updates_and_offers_the_new_version() {
     let mut h = settings("settings-updates", |_| {});
     open(&mut h, Section::Updates);
@@ -234,7 +250,7 @@ fn system_info_values_line_up_across_sections() {
     open(&mut h, Section::SystemInfo);
     // A short label in the first section, and one beside the longest label, "Windows' Print Screen capture".
     let x = |value: &str| h.get_by_label(value).rect().left();
-    assert!((x("RSnip 1.2.3") - x("MP4")).abs() < 0.5, "Version vs Record as");
+    assert!((x("RSnip 1.2.3") - x("MP4, H.264, 30 fps")).abs() < 0.5, "Version vs Record as");
     assert!((x("RSnip 1.2.3") - x("Example OS 1.0")).abs() < 0.5);
 }
 

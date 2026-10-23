@@ -24,6 +24,8 @@ pub struct Settings {
     pub show_magnifier: bool,
     pub open_library_on_launch: bool,
     pub record_gif: bool,
+    pub record_hevc: bool,
+    pub record_fps: u32,
     pub check_updates: bool,
     /// Install updates without asking (installed copies only).
     pub auto_update: bool,
@@ -40,6 +42,8 @@ impl Default for Settings {
             show_magnifier: options::SHOW_MAGNIFIER.default,
             open_library_on_launch: options::OPEN_LIBRARY_ON_LAUNCH.default,
             record_gif: options::RECORD_GIF.default,
+            record_hevc: options::RECORD_HEVC.default,
+            record_fps: options::RECORD_FPS.default,
             check_updates: options::CHECK_UPDATES.default,
             auto_update: options::AUTO_UPDATE.default,
         }
@@ -58,6 +62,8 @@ impl Settings {
             show_magnifier: flag(options::SHOW_MAGNIFIER),
             open_library_on_launch: flag(options::OPEN_LIBRARY_ON_LAUNCH),
             record_gif: flag(options::RECORD_GIF),
+            record_hevc: flag(options::RECORD_HEVC),
+            record_fps: options::RECORD_FPS.read(|name| read_dword(KEY, name)),
             check_updates: flag(options::CHECK_UPDATES),
             auto_update: flag(options::AUTO_UPDATE),
         }
@@ -75,12 +81,14 @@ impl Settings {
             (options::SHOW_MAGNIFIER, self.show_magnifier),
             (options::OPEN_LIBRARY_ON_LAUNCH, self.open_library_on_launch),
             (options::RECORD_GIF, self.record_gif),
+            (options::RECORD_HEVC, self.record_hevc),
             (options::CHECK_UPDATES, self.check_updates),
             (options::AUTO_UPDATE, self.auto_update),
         ];
         for (flag, on) in flags {
             write_dword(flag.name, on as u32);
         }
+        write_dword(options::RECORD_FPS.name, self.record_fps);
     }
 }
 

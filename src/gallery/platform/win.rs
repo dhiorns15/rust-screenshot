@@ -236,6 +236,11 @@ pub fn pin_file(path: &Path) {
     crate::pin::spawn(path);
 }
 
+/// Whether recordings can be H.265 (see `encode::hevc_available`).
+pub fn hevc_available() -> bool {
+    crate::encode::hevc_available()
+}
+
 /// What reads the text in screenshots, for Settings.
 pub const TEXT_RECOGNITION: &str = "Windows' built-in text recognition";
 

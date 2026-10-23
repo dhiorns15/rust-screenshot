@@ -33,30 +33,48 @@ const MAX_LENGTH: Duration = Duration::from_secs(30 * 60);
 
 pub struct Recording {
     stop: Arc<AtomicBool>,
-    thread: JoinHandle<Result<PathBuf, String>>,
+    thread: JoinHandle<Result<Recorded, String>>,
     windows: [HWND; 2],
 }
 
-/// Frames per second: GIFs are bigger and slower to encode per frame.
-fn fps(gif: bool) -> u32 {
-    if gif {
-        12
-    } else {
-        30
+/// What recordings are saved as (see Settings → Recording).
+#[derive(Clone, Copy, Debug)]
+pub struct Format {
+    pub gif: bool,
+    /// H.265 rather than H.264, for MP4s.
+    pub hevc: bool,
+    /// Frames per second, for MP4s.
+    pub fps: u32,
+}
+
+impl Format {
+    /// GIFs are bigger and slower to encode per frame, so they keep to 12.
+    fn fps(self) -> u32 {
+        if self.gif {
+            12
+        } else {
+            self.fps.clamp(1, 60)
+        }
     }
+}
+
+/// A finished recording, and anything worth saying about how it was made.
+pub struct Recorded {
+    pub path: PathBuf,
+    pub note: Option<String>,
 }
 
 /// Starts recording `area` (screen coordinates). `main` gets `WM_APP_STOP_RECORDING` when the
 /// Stop button is clicked.
-pub fn start(main: HWND, area: RECT, gif: bool) -> Result<Recording, String> {
+pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String> {
     let area = rect(area.left, area.top, area.left + even(area.right - area.left), area.top + even(area.bottom - area.top));
     let (w, h) = (area.right - area.left, area.bottom - area.top);
     if w < 16 || h < 16 {
         return Err("The area is too small to record".into());
     }
-    let (kind, ext) = if gif { ("Recording", "gif") } else { ("Recording", "mp4") };
-    let path = crate::output::new_path(kind, ext)?;
-    let fps = fps(gif);
+    let ext = if format.gif { "gif" } else { "mp4" };
+    let path = crate::output::new_path("Recording", ext)?;
+    let fps = format.fps();
     let stop = Arc::new(AtomicBool::new(false));
     let started = Instant::now();
     // The encoder lives on the recording thread (Media Foundation objects stay on the thread that
@@ -65,10 +83,23 @@ pub fn start(main: HWND, area: RECT, gif: bool) -> Result<Recording, String> {
     let thread = {
         let stop = stop.clone();
         std::thread::spawn(move || {
-            let encoder: Result<Box<dyn Encoder>, String> =
-                if gif { Gif::new(&path, w, h, fps).map(|e| Box::new(e) as _) } else { Mp4::new(&path, w, h, fps).map(|e| Box::new(e) as _) };
+            let mut note = None;
+            let encoder: Result<Box<dyn Encoder>, String> = if format.gif {
+                Gif::new(&path, w, h, fps).map(|e| Box::new(e) as _)
+            } else {
+                Mp4::new(&path, w, h, fps, format.hevc)
+                    .or_else(|e| {
+                        // Not every PC has an H.265 encoder; H.264 is always there.
+                        if !format.hevc {
+                            return Err(e);
+                        }
+                        note = Some("This PC has no H.265 encoder, so it was recorded as H.264.".to_string());
+                        Mp4::new(&path, w, h, fps, false)
+                    })
+                    .map(|e| Box::new(e) as _)
+            };
             let _ = ready_tx.send(encoder.as_ref().map(|_| ()).map_err(Clone::clone));
-            run(encoder?, area, fps, started, &stop).map(|()| path)
+            run(encoder?, area, fps, started, &stop).map(|()| Recorded { path, note })
         })
     };
     ready_rx.recv().map_err(|_| "The recording didn't start".to_string())??;
@@ -78,7 +109,7 @@ pub fn start(main: HWND, area: RECT, gif: bool) -> Result<Recording, String> {
 
 impl Recording {
     /// Stops and returns the thread finishing the file.
-    pub fn stop(self) -> JoinHandle<Result<PathBuf, String>> {
+    pub fn stop(self) -> JoinHandle<Result<Recorded, String>> {
         self.stop.store(true, Ordering::Relaxed);
         for hwnd in self.windows {
             unsafe { DestroyWindow(hwnd) };
@@ -254,7 +285,7 @@ mod tests {
     #[test]
     fn records_the_screen() {
         let path = std::env::temp_dir().join(format!("rsnip-rec-{}.mp4", std::process::id()));
-        let encoder = match Mp4::new(&path, 64, 48, 30) {
+        let encoder = match Mp4::new(&path, 64, 48, 30, false) {
             Ok(mp4) => Box::new(mp4),
             Err(e) => return eprintln!("skipped: {e}"),
         };

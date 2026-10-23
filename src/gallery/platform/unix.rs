@@ -244,6 +244,11 @@ pub fn pin(_img: &RgbaImage) -> Result<(), String> {
 
 pub fn pin_file(_path: &Path) {}
 
+/// Whether recordings can be H.265. (Not recording here yet.)
+pub fn hevc_available() -> bool {
+    false
+}
+
 /// What reads the text in screenshots, for Settings.
 pub const TEXT_RECOGNITION: &str = "Tesseract";
 

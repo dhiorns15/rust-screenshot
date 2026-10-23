@@ -124,6 +124,8 @@ pub struct SettingsApp {
     report: Option<Vec<system_info::Section>>,
     /// The latest crash report, read with the System info report.
     crash: Option<Crash>,
+    /// Whether there's an H.265 encoder, found when the Recording section first opens.
+    hevc: Option<bool>,
 }
 
 impl SettingsApp {
@@ -133,7 +135,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -297,8 +299,9 @@ impl SettingsApp {
     }
 
     fn recording(&mut self, ui: &mut Ui) {
+        let hevc_available = *self.hevc.get_or_insert_with(|| self.env.hevc_available());
+        let gif = self.get(options::RECORD_GIF);
         theme::card(ui, |ui| {
-            let gif = self.get(options::RECORD_GIF);
             row(ui, "Format", "MP4 files are small and smooth; GIFs play almost anywhere, even where videos can't go", |ui| {
                 theme::group(ui, |ui| {
                     for (label, value) in [("GIF", true), ("MP4", false)] {
@@ -307,6 +310,39 @@ impl SettingsApp {
                         }
                     }
                 })
+            });
+        });
+        let mp4_only = |detail: &'static str| if gif { "For MP4s; GIFs are 12 frames a second" } else { detail };
+        theme::card(ui, |ui| {
+            ui.add_enabled_ui(!gif, |ui| {
+                let fps = options::RECORD_FPS.read(|name| self.env.setting(name));
+                row(ui, "Frame rate", mp4_only("Frames a second: 60 is smoothest for scrolling and animation, 30 suits most recordings"), |ui| {
+                    theme::group(ui, |ui| {
+                        for &value in options::RECORD_FPS.values.iter().rev() {
+                            if ui.add(egui::Button::selectable(fps == value, value.to_string())).clicked() && fps != value {
+                                self.set(options::RECORD_FPS.name, value);
+                            }
+                        }
+                    })
+                });
+                ui.separator();
+                let hevc = self.get(options::RECORD_HEVC);
+                let detail = if hevc_available {
+                    "H.265 files are about a third smaller, but some older devices and websites can't play them"
+                } else {
+                    "H.265 needs an encoder this PC doesn't have; the HEVC Video Extensions from the Microsoft Store add one"
+                };
+                row(ui, "Video codec", mp4_only(detail), |ui| {
+                    theme::group(ui, |ui| {
+                        let h265 = ui.add_enabled(hevc_available || hevc, egui::Button::selectable(hevc, "H.265"));
+                        if h265.clicked() && !hevc {
+                            self.set(options::RECORD_HEVC.name, 1);
+                        }
+                        if ui.add(egui::Button::selectable(!hevc, "H.264")).clicked() && hevc {
+                            self.set(options::RECORD_HEVC.name, 0);
+                        }
+                    })
+                });
             });
         });
         ui.label(RichText::new("Recordings stop after 30 minutes.").color(theme::palette(ui).muted));

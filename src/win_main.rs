@@ -397,7 +397,7 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             0
         }
         WM_APP_RECORDED => {
-            on_recorded(hwnd, *Box::from_raw(lparam as *mut Result<PathBuf, String>));
+            on_recorded(hwnd, *Box::from_raw(lparam as *mut Result<record::Recorded, String>));
             0
         }
         WM_APP_OCR => {
@@ -682,11 +682,12 @@ fn pick_area() -> Option<RECT> {
 }
 
 unsafe fn start_recording(hwnd: HWND, area: RECT) {
-    match record::start(hwnd, area, SETTINGS.get().record_gif) {
+    let s = SETTINGS.get();
+    let format = record::Format { gif: s.record_gif, hevc: s.record_hevc, fps: s.record_fps };
+    match record::start(hwnd, area, format) {
         Ok(recording) => {
             RECORDING.with(|r| *r.borrow_mut() = Some(recording));
             // Any capture shortcut stops it (see `capture`).
-            let s = SETTINGS.get();
             let key = shortcuts::get(&s.shortcuts, shortcuts::Action::Record);
             let key = Some(key).filter(|&k| k != 0).map(|k| Hotkey::unpack(k).name()).or(main_shortcut(&s).map(|m| m.1));
             let how = key.map_or("Click Stop".into(), |k| format!("Press {k} or Stop"));
@@ -711,9 +712,9 @@ unsafe fn stop_recording(hwnd: HWND) {
     });
 }
 
-unsafe fn on_recorded(hwnd: HWND, result: Result<PathBuf, String>) {
-    let path = match result {
-        Ok(path) => path,
+unsafe fn on_recorded(hwnd: HWND, result: Result<record::Recorded, String>) {
+    let record::Recorded { path, note } = match result {
+        Ok(recorded) => recorded,
         Err(e) => return notify(hwnd, "Couldn't save the recording", &e),
     };
     // Copied as a file, so it pastes straight into a chat or email.
@@ -721,7 +722,8 @@ unsafe fn on_recorded(hwnd: HWND, result: Result<PathBuf, String>) {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     LAST_SAVED.with(|l| *l.borrow_mut() = Some(path));
     let detail = if copied { "copied as a file" } else { "saved" };
-    notify(hwnd, "Recording saved", &format!("{name} — {detail}. Click to play it."));
+    let note = note.map_or(String::new(), |n| format!(" {n}"));
+    notify(hwnd, "Recording saved", &format!("{name} — {detail}. Click to play it.{note}"));
 }
 
 fn is_video(path: &Path) -> bool {
