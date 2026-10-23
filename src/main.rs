@@ -22,7 +22,16 @@ fn main() {
         return gallery::run_settings();
     }
     if std::env::args().any(|a| a == "--tray") {
-        return gallery::run_background();
+        return gallery::run_background(None);
+    }
+    if std::env::args().any(|a| a == "--record") {
+        return gallery::record(true);
+    }
+    if std::env::args().any(|a| a == "--record-screen") {
+        return gallery::record(false);
+    }
+    if let Some(frame) = std::env::args().skip_while(|a| a != "--pick-area").nth(1) {
+        return gallery::pick_area(std::path::Path::new(&frame));
     }
     if std::env::args().any(|a| a == "--tray-quit") {
         return gallery::quit_background();

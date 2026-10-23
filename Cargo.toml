@@ -19,6 +19,7 @@ ab_glyph = "0.2"
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow"] }
 egui = { version = "0.36", default-features = false, features = ["serde"] }
 egui-phosphor = "0.14"
+gif = "0.13"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -26,7 +27,6 @@ tiny-skia = "0.11"
 
 # Capture, tray, OCR, pinning and recording: Windows only.
 [target.'cfg(windows)'.dependencies]
-gif = "0.13"
 png = "0.17"
 sha2 = "0.10"
 windows = { version = "0.58", features = ["Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Foundation", "Foundation_Collections", "implement", "Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_Media_MediaFoundation"] }
@@ -62,6 +62,8 @@ features = [
 [target.'cfg(not(windows))'.dependencies]
 # The tray icon (StatusNotifierItem), without pulling in tokio.
 ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+# The screen-cast portal and notifications, on the same D-Bus library as the tray icon.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
 eframe = { version = "0.36", default-features = false, features = ["x11", "wayland"] }
 libc = "0.2"

@@ -4,6 +4,12 @@
 mod app_tests;
 #[cfg(not(windows))]
 mod background;
+#[cfg(not(windows))]
+mod pick_area;
+#[cfg(not(windows))]
+mod portal;
+#[cfg(not(windows))]
+mod recorder;
 #[cfg(test)]
 mod settings_tests;
 mod color;
@@ -22,7 +28,15 @@ pub(crate) mod words;
 
 pub use settings_window::run as run_settings;
 #[cfg(not(windows))]
-pub use background::{quit as quit_background, run as run_background};
+pub use background::{quit as quit_background, record, run as run_background};
+
+/// `rsnip --pick-area <frame>`: prints the area picked on the frame (see `pick_area`).
+#[cfg(not(windows))]
+pub fn pick_area(frame: &Path) {
+    if let Some(a) = pick_area::run(frame) {
+        println!("{} {} {} {}", a.x, a.y, a.width, a.height);
+    }
+}
 #[cfg(windows)]
 pub use settings_window::TITLE as SETTINGS_TITLE;
 
@@ -506,11 +520,17 @@ impl App {
         }
         if let Ok(request) = std::fs::read_to_string(&self.env.request_file) {
             let _ = std::fs::remove_file(&self.env.request_file);
-            ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(ViewportCommand::Focus);
-            self.rescan();
-            if !request.trim().is_empty() {
-                self.request_open(PathBuf::from(request.trim()));
+            match request.trim() {
+                // Out of the way of a recording, on Linux (see `background`).
+                "--hide" => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
+                request => {
+                    ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(ViewportCommand::Focus);
+                    self.rescan();
+                    if !request.is_empty() && request != "--show" {
+                        self.request_open(PathBuf::from(request));
+                    }
+                }
             }
         }
         ctx.request_repaint_after(Duration::from_millis(500));

@@ -142,6 +142,21 @@ fn export_menu_offers_what_this_system_supports() {
 }
 
 #[test]
+fn hide_and_show_requests_are_not_files_to_open() {
+    let mut h = harness("kittest-hide-show");
+    let open = |h: &Harness<App>| h.state().editor.as_ref().unwrap().doc.path.clone();
+    let before = open(&h);
+    for request in ["--hide", "--show"] {
+        std::fs::write(&h.state().env.request_file, request).unwrap();
+        h.state_mut().last_scan = std::time::Instant::now() - RESCAN_EVERY;
+        settle(&mut h);
+        assert!(!h.state().env.request_file.exists(), "{request} was read");
+        assert_eq!(open(&h), before, "{request}");
+        assert!(h.state().status.is_none(), "{request}: {:?}", h.state().status);
+    }
+}
+
+#[test]
 fn library_moves_to_the_bottom_and_back() {
     let mut h = harness("kittest-dock");
     let (a, b) = (rect_of(&h, "Screenshot a"), rect_of(&h, "Screenshot b"));

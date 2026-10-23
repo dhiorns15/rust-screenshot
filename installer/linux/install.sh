@@ -72,6 +72,18 @@ package() {
     *:fc-match) echo fontconfig ;;
     apt:tesseract | zypper:tesseract) echo tesseract-ocr ;;
     pacman:tesseract) echo tesseract tesseract-data-eng ;;
+    apt:gst-launch-1.0) echo gstreamer1.0-tools ;;
+    dnf:gst-launch-1.0) echo gstreamer1 ;;
+    pacman:gst-launch-1.0) echo gstreamer ;;
+    zypper:gst-launch-1.0) echo gstreamer-utils ;;
+    apt:pipewiresrc) echo gstreamer1.0-pipewire ;;
+    dnf:pipewiresrc) echo pipewire-gstreamer ;;
+    pacman:pipewiresrc) echo gst-plugin-pipewire ;;
+    zypper:pipewiresrc) echo gstreamer-plugin-pipewire ;;
+    apt:x264enc) echo gstreamer1.0-plugins-ugly ;;
+    dnf:x264enc) echo gstreamer1-plugins-ugly ;;
+    pacman:x264enc) echo gst-plugins-ugly ;;
+    zypper:x264enc) echo gstreamer-plugins-ugly ;;
     *) echo "$2" ;;
     esac
 }
@@ -111,6 +123,13 @@ check() {
     for program in xdg-open xdg-user-dir fc-match tesseract; do
         command -v "$program" >/dev/null 2>&1 || recommended="$recommended $(package "$pm" "$program")"
     done
+    # Recording the screen: GStreamer, its PipeWire source, and an H.264 encoder (else it's WebM).
+    if command -v gst-inspect-1.0 >/dev/null 2>&1; then
+        gst-inspect-1.0 --exists pipewiresrc || recommended="$recommended $(package "$pm" pipewiresrc)"
+        gst-inspect-1.0 --exists x264enc || gst-inspect-1.0 --exists openh264enc || recommended="$recommended $(package "$pm" x264enc)"
+    else
+        recommended="$recommended $(package "$pm" gst-launch-1.0) $(package "$pm" pipewiresrc) $(package "$pm" x264enc)"
+    fi
     # Checking for updates.
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
         recommended="$recommended curl"
@@ -131,7 +150,7 @@ check() {
         echo "    $install $required"
     fi
     if [ -n "$recommended" ]; then
-        echo "Recommended, for opening folders, the Pictures folder, fonts, copying text and update checks:"
+        echo "Recommended, for opening folders, the Pictures folder, fonts, copying text, recording and update checks:"
         echo "    $install $recommended"
     fi
     if [ -z "$required$recommended" ]; then
@@ -210,7 +229,15 @@ Terminal=false
 Categories=Graphics;Utility;
 MimeType=image/png;image/jpeg;
 StartupWMClass=rsnip
-Actions=settings;
+Actions=record;record-screen;settings;
+
+[Desktop Action record]
+Name=Record an area
+Exec="$bin/rsnip" --record
+
+[Desktop Action record-screen]
+Name=Record a screen or window
+Exec="$bin/rsnip" --record-screen
 
 [Desktop Action settings]
 Name=Settings

@@ -238,6 +238,14 @@ pub fn pin_file(path: &Path) {
     crate::pin::spawn(path);
 }
 
+/// Why H.265 can't be chosen.
+pub const HEVC_MISSING: &str = "H.265 needs an encoder this PC doesn't have; the HEVC Video Extensions from the Microsoft Store add one";
+
+/// What's missing for recording, if anything: nothing, Windows has it all.
+pub fn recording_problem(_hevc: bool) -> Option<String> {
+    None
+}
+
 /// Whether recordings can be H.265 (see `encode::hevc_available`).
 pub fn hevc_available() -> bool {
     crate::encode::hevc_available()

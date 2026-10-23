@@ -47,15 +47,35 @@ The installer is written to `target\installer`.
 
 ### Linux
 
-The library and editor also run on Linux (X11 or Wayland). Capturing is left to your desktop's
-screenshot tool (or Flameshot, `grim`/`slurp`, …): RSnip browses `~/Pictures/Screenshots` and
-annotates what's there. Reading the text in screenshots (to copy it, or to search by it) uses
-[Tesseract](https://github.com/tesseract-ocr/tesseract) when it's installed (`tesseract-ocr` on
-Debian and Ubuntu; the installer's check recommends it). Pinning, copying as files, dragging files
-out, and capture/recording are Windows-only.
+The library and editor also run on Linux (X11 or Wayland), and record the screen. Screenshots are
+left to your desktop's screenshot tool (or Flameshot, `grim`/`slurp`, …): RSnip browses
+`~/Pictures/Screenshots` and annotates what's there. Reading the text in screenshots (to copy it, or
+to search by it) uses [Tesseract](https://github.com/tesseract-ocr/tesseract) when it's installed
+(`tesseract-ocr` on Debian and Ubuntu; the installer's check recommends it). Pinning, copying as
+files and dragging files out are Windows-only.
 
-Closing the library leaves RSnip's icon in the top bar or panel, for opening the library, Settings
-or the screenshots folder again; *Quit RSnip* in its menu stops it. Ubuntu, KDE and most panels show
+**Recording on Linux**: from RSnip's icon in the top bar or panel, choose *Record an area…* or
+*Record screen or window…* (or the same from RSnip's app-menu entry, or run `rsnip --record` /
+`rsnip --record-screen`, which you can give a keyboard shortcut in your desktop's settings).
+Your desktop asks which screen or window to share, as it does for screen sharing in a browser; for
+an area, RSnip then shows that screen to drag over. The icon gets a red dot while recording: click
+it (or *Stop recording*, or run the command again) to finish. The recording is saved to the
+screenshots folder as set in Settings → Recording, and a notification says so. Recordings use
+[GStreamer](https://gstreamer.freedesktop.org/) with its PipeWire plugin, as the desktop's own
+recorder does:
+
+| | Debian, Ubuntu | Fedora | Arch | openSUSE |
+| --- | --- | --- | --- | --- |
+| Recording | `gstreamer1.0-tools gstreamer1.0-pipewire` | `gstreamer1 pipewire-gstreamer` | `gstreamer gst-plugin-pipewire` | `gstreamer-utils gstreamer-plugin-pipewire` |
+| H.264 | `gstreamer1.0-plugins-ugly` | `gstreamer1-plugins-ugly` (RPM Fusion) | `gst-plugins-ugly` | `gstreamer-plugins-ugly` (Packman) |
+| H.265 | `gstreamer1.0-plugins-bad` | `gstreamer1-plugins-bad-freeworld` (RPM Fusion) | `gst-plugins-bad` | `gstreamer-plugins-bad` (Packman) |
+
+Without an H.264 or H.265 encoder, recordings are WebM (VP8), which every GStreamer install can
+write; the graphics card's encoder (VA-API) is used when it's there and the others aren't.
+Settings → Recording says what's missing.
+
+Closing the library leaves RSnip's icon in the top bar or panel, for recording and opening the
+library, Settings or the screenshots folder again; *Quit RSnip* in its menu stops it. Ubuntu, KDE and most panels show
 it; on plain GNOME (e.g. Fedora) it needs the
 [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/). Settings →
 General turns it off, or starts it when you sign in.
@@ -72,10 +92,10 @@ cd rsnip
 ./install.sh
 ```
 
-This copies `rsnip` to `~/.local/bin` and adds **RSnip Library** (with its icon, and a *Settings*
-action) to your app menu, so you can pin it to the dock. It then checks for what RSnip uses (the
-graphics and keyboard libraries for your session, X11 or Wayland, plus `xdg-open`, `fc-match` and
-`curl`/`wget`) and, if anything is missing, prints the command that installs it on your
+This copies `rsnip` to `~/.local/bin` and adds **RSnip Library** (with its icon, and *Record* and
+*Settings* actions) to your app menu, so you can pin it to the dock. It then checks for what RSnip
+uses (the graphics and keyboard libraries for your session, X11 or Wayland, plus `xdg-open`,
+`fc-match`, `curl`/`wget`, Tesseract and GStreamer) and, if anything is missing, prints the command that installs it on your
 distribution (apt, dnf, pacman or zypper). It never installs system packages itself, and stops
 before copying anything if this build can't run on your system (e.g. an older glibc).
 
@@ -158,7 +178,7 @@ Changes apply straight away.
 | General | **Theme**: System (follows Windows' light or dark mode), Light or Dark. **Start with Windows**, **Open the library when RSnip starts** (otherwise it starts quietly in the tray), **Show notifications**. On Linux: **Keep RSnip in the background** (an icon in the top bar or panel once the library closes) and **Start when you sign in** |
 | Capture | **Save screenshots to the folder** (when off, captures go to the clipboard only), **Open the editor after capture** (this saves the capture even if saving is off), **Show the magnifier** (or press M while selecting), **Hide RSnip while capturing** (on by default: the library and Settings windows step aside during a capture or recording and come back after). Every capture is copied to the clipboard |
 | Shortcuts | A shortcut for each action (region, all screens, last region, scrolling, record, text). *Change* asks you to press the new combination (Esc cancels); giving it a key another action has moves it. **Also take over Win+Shift+S** for a region capture. It warns if Windows' own Print Screen setting is on or two actions share a key |
-| Recording | MP4 or GIF; for MP4s, the frame rate (15, 24, 30 or 60) and codec (H.264 or H.265) |
+| Recording | MP4 or GIF; for MP4s, the frame rate (15, 24, 30 or 60) and codec (H.264 or H.265). On Linux: **Hide the library while recording**, and what's missing for recording |
 | Library & editor | Library on the left or along the bottom; **Read text in screenshots for search**; border and drop shadow on exports |
 | Updates | **Check automatically** (on by default: shortly after RSnip starts, then daily, it asks GitHub for the latest release; nothing else is sent), **Install automatically** (off by default; installed copies only: installs a new version as soon as it's found, unless you're in the middle of something), *Check now* |
 | System info | What a bug report needs: RSnip's version and install, the OS, CPU, memory, graphics driver, display scale, your settings, the last crash and where files are kept. *Copy* puts it on the clipboard; *Report a problem* copies it and opens a new GitHub issue to paste it into. It has no screenshots or file names, and your home folder shows as `~` |
@@ -254,6 +274,8 @@ On Linux:
 ```
 rsnip [file]           open the library, optionally with a file selected
 rsnip --settings       open the Settings window
+rsnip --record         pick an area and record it (run again to stop)
+rsnip --record-screen  pick a screen or window and record it (run again to stop)
 rsnip --tray           put RSnip's icon in the top bar or panel (the library does this itself)
 rsnip --tray-quit      remove it again
 ```

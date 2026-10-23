@@ -65,7 +65,7 @@ fn shows_the_tray_app_sections_only_where_there_is_one() {
     let h = settings("settings-sections", |_| {});
     assert_eq!(h.state().sections().len(), 8);
     let h = settings("settings-sections-linux", |env| env.tray_app = false);
-    assert_eq!(h.state().sections(), [Section::General, Section::Library, Section::Updates, Section::SystemInfo, Section::About]);
+    assert_eq!(h.state().sections(), [Section::General, Section::Recording, Section::Library, Section::Updates, Section::SystemInfo, Section::About]);
     assert!(h.query_by_label("Start with Windows").is_none(), "only the theme in General");
     assert!(h.query_by_label_contains("Shortcuts").is_none());
 }
@@ -190,6 +190,21 @@ fn frame_rate_and_codec_are_for_mp4s_and_h265_needs_an_encoder() {
     assert_eq!(h.state().env.setting(options::RECORD_HEVC.name), Some(1));
     click(&mut h, "GIF");
     assert!(h.get_by_label("60").accesskit_node().is_disabled(), "GIFs have their own frame rate");
+}
+
+#[test]
+fn linux_recording_says_whats_missing_and_offers_hiding_the_library() {
+    let mut h = settings("settings-recording-linux", |env| env.tray_app = false);
+    open(&mut h, Section::Recording);
+    assert!(h.query_by_label_contains("rsnip --record").is_some(), "how to start a recording");
+    toggle(&mut h, "Hide the library while recording");
+    assert_eq!(h.state().env.setting(options::HIDE_WHILE_CAPTURING.name), Some(0));
+    assert!(h.query_by_label_contains("Recording needs").is_none(), "nothing missing in the sandbox");
+
+    let problem = "Recording needs GStreamer's tools".to_string();
+    let mut h = settings("settings-recording-linux-missing", |env| env.sandboxed().recording_problem = Some(problem));
+    open(&mut h, Section::Recording);
+    assert!(h.query_by_label_contains("Recording needs GStreamer's tools").is_some());
 }
 
 #[test]

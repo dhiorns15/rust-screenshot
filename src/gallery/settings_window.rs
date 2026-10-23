@@ -102,7 +102,7 @@ impl Section {
 
     /// Only for the tray app (Windows).
     fn needs_tray_app(self) -> bool {
-        matches!(self, Section::Capture | Section::Shortcuts | Section::Recording)
+        matches!(self, Section::Capture | Section::Shortcuts)
     }
 }
 
@@ -126,6 +126,8 @@ pub struct SettingsApp {
     crash: Option<Crash>,
     /// Whether there's an H.265 encoder, found when the Recording section first opens.
     hevc: Option<bool>,
+    /// What's missing for recording as H.264 and as H.265, found then too.
+    recording_problems: Option<[Option<String>; 2]>,
 }
 
 impl SettingsApp {
@@ -135,7 +137,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -230,7 +232,7 @@ impl SettingsApp {
         let mut on = self.get(options::RUN_IN_BACKGROUND);
         theme::card(ui, |ui| {
             let title = "Keep RSnip in the background";
-            let detail = "An icon in the top bar or panel stays when the library closes, to open it again";
+            let detail = "An icon in the top bar or panel stays when the library closes, for recording and opening it again";
             if row(ui, title, detail, |ui| theme::switch(ui, &mut on, title)).changed() {
                 self.env.set_setting(options::RUN_IN_BACKGROUND.name, on as u32);
                 if on {
@@ -335,6 +337,11 @@ impl SettingsApp {
 
     fn recording(&mut self, ui: &mut Ui) {
         let hevc_available = *self.hevc.get_or_insert_with(|| self.env.hevc_available());
+        let hevc = self.get(options::RECORD_HEVC);
+        let problems = self.recording_problems.get_or_insert_with(|| [false, true].map(|hevc| self.env.recording_problem(hevc)));
+        if let Some(problem) = problems[hevc as usize].clone() {
+            warning(ui, &problem, |_| {});
+        }
         let gif = self.get(options::RECORD_GIF);
         theme::card(ui, |ui| {
             row(ui, "Format", "MP4 files are small and smooth; GIFs play almost anywhere, even where videos can't go", |ui| {
@@ -365,7 +372,7 @@ impl SettingsApp {
                 let detail = if hevc_available {
                     "H.265 files are about a third smaller, but some older devices and websites can't play them"
                 } else {
-                    "H.265 needs an encoder this PC doesn't have; the HEVC Video Extensions from the Microsoft Store add one"
+                    platform::HEVC_MISSING
                 };
                 row(ui, "Video codec", mp4_only(detail), |ui| {
                     theme::group(ui, |ui| {
@@ -380,6 +387,15 @@ impl SettingsApp {
                 });
             });
         });
+        if !self.env.tray_app {
+            theme::card(ui, |ui| {
+                self.flag_row(ui, options::HIDE_WHILE_CAPTURING, "Hide the library while recording", "It steps aside while you pick what to record, and comes back after");
+            });
+            let how = "Record from RSnip's icon in the top bar or panel. For a keyboard shortcut, add a custom one in your \
+                       desktop's keyboard settings that runs \"rsnip --record\" (an area) or \"rsnip --record-screen\" \
+                       (a screen or window); it stops the recording too.";
+            ui.label(RichText::new(how).color(theme::palette(ui).muted));
+        }
         ui.label(RichText::new("Recordings stop after 30 minutes.").color(theme::palette(ui).muted));
     }
 

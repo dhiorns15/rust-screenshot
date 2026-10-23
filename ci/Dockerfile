@@ -4,9 +4,11 @@
 #   docker run --rm -v "$PWD:/work" -w /work -e CARGO_TARGET_DIR=/work/target/linux rsnip-test cargo test
 #
 # Mesa's lavapipe is a software GPU for the snapshot tests, and DejaVu is the annotation font, so
-# rendered snapshots come out the same on every machine. Tesseract is for the text-recognition test.
+# rendered snapshots come out the same on every machine. Tesseract and GStreamer are for
+# the text-recognition and recording tests.
 FROM rust:1.97.1
 RUN apt-get update \
     && apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 fonts-dejavu-core fontconfig tesseract-ocr \
+       gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-pipewire \
     && rm -rf /var/lib/apt/lists/* \
     && rustup component add clippy

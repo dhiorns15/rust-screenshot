@@ -70,6 +70,8 @@ pub struct Sandbox {
     pub snipping_key: bool,
     /// There's an H.265 encoder for recordings.
     pub hevc: bool,
+    /// What's missing for recording (Linux's GStreamer, say).
+    pub recording_problem: Option<String>,
     pub latest: Option<Release>,
     /// The text "read" from each file name, for search.
     pub ocr_text: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
@@ -219,6 +221,14 @@ impl Env {
         match &self.sandbox {
             Some(s) => s.borrow().hevc,
             None => platform::hevc_available(),
+        }
+    }
+
+    /// What's missing for recording as `hevc` (H.265, else H.264) would have it, if anything.
+    pub fn recording_problem(&self, hevc: bool) -> Option<String> {
+        match &self.sandbox {
+            Some(s) => s.borrow().recording_problem.clone(),
+            None => platform::recording_problem(hevc),
         }
     }
 

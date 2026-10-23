@@ -176,15 +176,16 @@ fn settings(env: &Env) -> Section {
         s.row("Take over Win+Shift+S", flag(options::WIN_SHIFT_S));
         s.row("Windows' Print Screen capture", on_off(env.snipping_key()));
         s.row("Save to the folder", flag(options::SAVE_TO_FOLDER));
-        let get = |name: &str| env.setting(name);
-        let record = if options::RECORD_GIF.read(get) {
-            "GIF".to_string()
-        } else {
-            let codec = if options::RECORD_HEVC.read(get) { "H.265" } else { "H.264" };
-            format!("MP4, {codec}, {} fps", options::RECORD_FPS.read(get))
-        };
-        s.row("Record as", record);
     }
+    let get = |name: &str| env.setting(name);
+    let record = if options::RECORD_GIF.read(get) {
+        "GIF".to_string()
+    } else {
+        let codec = if options::RECORD_HEVC.read(get) { "H.265" } else { "H.264" };
+        format!("MP4, {codec}, {} fps", options::RECORD_FPS.read(get))
+    };
+    s.row("Record as", record);
+    s.row("Hide while capturing", flag(options::HIDE_WHILE_CAPTURING));
     let ocr = match &env.ocr {
         Some(_) => format!("available, read for search: {}", on_off(env.setting(super::search::SETTING) != Some(0))),
         None => "not available".into(),

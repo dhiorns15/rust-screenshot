@@ -24,9 +24,7 @@ fn home() -> PathBuf {
 /// True if this is the only window of its kind (held with a lock file until the process exits).
 pub fn claim_single_instance(name: &str, _title: &str) -> bool {
     static LOCK: OnceLock<File> = OnceLock::new();
-    let user = std::env::var("USER").unwrap_or_default();
-    let path = std::env::temp_dir().join(format!("rsnip-{}-{user}.lock", name.to_lowercase()));
-    let Ok(file) = File::options().create(true).truncate(false).write(true).open(&path) else { return true };
+    let Ok(file) = File::options().create(true).truncate(false).write(true).open(lock_path(name)) else { return true };
     if file.try_lock().is_err() {
         return false;
     }
@@ -76,9 +74,17 @@ fn desktop_quote(arg: &str) -> String {
 
 /// The background icon is running (it holds its lock; see `background::run`).
 pub fn tray_running() -> bool {
+    instance_running("Tray")
+}
+
+/// Another process holds `claim_single_instance(name)`.
+pub fn instance_running(name: &str) -> bool {
+    File::options().write(true).open(lock_path(name)).is_ok_and(|f| f.try_lock().is_err())
+}
+
+fn lock_path(name: &str) -> PathBuf {
     let user = std::env::var("USER").unwrap_or_default();
-    let path = std::env::temp_dir().join(format!("rsnip-tray-{user}.lock"));
-    File::options().write(true).open(path).is_ok_and(|f| f.try_lock().is_err())
+    std::env::temp_dir().join(format!("rsnip-{}-{user}.lock", name.to_lowercase()))
 }
 
 pub fn tell_tray(request: super::super::env::TrayRequest) {
@@ -248,7 +254,7 @@ fn font_path() -> Option<PathBuf> {
 
 /// The programs RSnip runs: opening files and links, finding Pictures and the annotation font, and
 /// checking for updates (curl or wget).
-const HELPERS: [&str; 6] = ["xdg-open", "xdg-user-dir", "fc-match", "curl", "wget", "tesseract"];
+const HELPERS: [&str; 7] = ["xdg-open", "xdg-user-dir", "fc-match", "curl", "wget", "tesseract", "gst-launch-1.0"];
 
 fn on_path(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
@@ -285,6 +291,22 @@ pub fn host() -> Host {
     }
 }
 
+/// A new file in `dir` named like Windows' captures: "Recording 2026-10-23 181500.mp4", with
+/// " (2)" and so on if that's taken.
+pub fn new_path(dir: &Path, kind: &str, ext: &str) -> PathBuf {
+    let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs() as libc::time_t);
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&secs, &mut tm) };
+    let base = format!("{kind} {:04}-{:02}-{:02} {:02}{:02}{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    let mut path = dir.join(format!("{base}.{ext}"));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{base} ({n}).{ext}"));
+        n += 1;
+    }
+    path
+}
+
 /// The local calendar date of `t` as (year, month, day).
 pub fn local_date(t: SystemTime) -> (i32, u32, u32) {
     let secs = t.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs() as libc::time_t);
@@ -299,9 +321,17 @@ pub fn pin(_img: &RgbaImage) -> Result<(), String> {
 
 pub fn pin_file(_path: &Path) {}
 
-/// Whether recordings can be H.265. (Not recording here yet.)
+/// Why H.265 can't be chosen.
+pub const HEVC_MISSING: &str = "H.265 needs GStreamer's x265 encoder (gstreamer1.0-plugins-bad on Debian and Ubuntu, gst-plugins-bad on Arch)";
+
+/// What's missing for recording, if anything (see `recorder::problem`).
+pub fn recording_problem(hevc: bool) -> Option<String> {
+    super::super::recorder::problem(hevc)
+}
+
+/// Whether recordings can be H.265 (an encoder for it is installed in GStreamer).
 pub fn hevc_available() -> bool {
-    false
+    super::super::recorder::hevc_available()
 }
 
 /// What reads the text in screenshots, for Settings.
