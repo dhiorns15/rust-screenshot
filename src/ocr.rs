@@ -1,30 +1,59 @@
 //! Reading text out of an image with the OCR engine built into Windows (no download needed).
 //!
-//! `recognize` blocks while the engine runs, so call it off the UI thread.
+//! `recognize` and `recognize_words` block while the engine runs, so call it off the UI thread.
 
+use eframe::egui;
 use windows::Graphics::Imaging::{BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap};
-use windows::Media::Ocr::OcrEngine;
+use windows::Media::Ocr::{OcrEngine, OcrResult};
 use windows::Storage::Streams::DataWriter;
 
 use crate::capture::Image;
+use crate::gallery::words::Word;
 
 /// The recognised lines of text in `img`, joined with newlines.
 pub fn recognize(img: &Image) -> Result<String, String> {
-    let engine = OcrEngine::TryCreateFromUserProfileLanguages().map_err(|_| {
-        "No text-recognition language is installed. Add one under Settings → Time & language → Language & region.".to_string()
-    })?;
+    let engine = engine()?;
     let max = OcrEngine::MaxImageDimension().unwrap_or(2600) as i32;
     let img = fit_for_ocr(img, max);
     run(&engine, &img).map_err(|e| format!("Text recognition failed: {}", e.message()))
 }
 
-fn run(engine: &OcrEngine, img: &Image) -> windows::core::Result<String> {
+/// The recognised words in `img`, with where each one is (in `img`'s pixels).
+pub fn recognize_words(img: &Image) -> Result<Vec<Word>, String> {
+    let engine = engine()?;
+    let max = OcrEngine::MaxImageDimension().unwrap_or(2600) as i32;
+    let fitted = fit_for_ocr(img, max);
+    let scale = img.width as f32 / fitted.width as f32;
+    let words = || -> windows::core::Result<Vec<Word>> {
+        let mut words = Vec::new();
+        for (line, l) in read(&engine, &fitted)?.Lines()?.into_iter().enumerate() {
+            for word in l.Words()? {
+                let r = word.BoundingRect()?;
+                let rect = egui::Rect::from_min_size(egui::pos2(r.X * scale, r.Y * scale), egui::vec2(r.Width * scale, r.Height * scale));
+                words.push(Word { text: word.Text()?.to_string_lossy(), rect, line });
+            }
+        }
+        Ok(words)
+    };
+    words().map_err(|e| format!("Text recognition failed: {}", e.message()))
+}
+
+fn engine() -> Result<OcrEngine, String> {
+    OcrEngine::TryCreateFromUserProfileLanguages().map_err(|_| {
+        "No text-recognition language is installed. Add one under Settings → Time & language → Language & region.".to_string()
+    })
+}
+
+fn read(engine: &OcrEngine, img: &Image) -> windows::core::Result<OcrResult> {
     let writer = DataWriter::new()?;
     writer.WriteBytes(&img.data)?;
     let buffer = writer.DetachBuffer()?;
     let bitmap = SoftwareBitmap::CreateCopyWithAlphaFromBuffer(&buffer, BitmapPixelFormat::Bgra8, img.width, img.height, BitmapAlphaMode::Ignore)?;
-    let result = engine.RecognizeAsync(&bitmap)?.get()?;
-    let lines: Vec<String> = result.Lines()?.into_iter().map(|line| line.Text().map(|t| t.to_string_lossy())).collect::<Result<_, _>>()?;
+    engine.RecognizeAsync(&bitmap)?.get()
+}
+
+fn run(engine: &OcrEngine, img: &Image) -> windows::core::Result<String> {
+    let lines: Vec<String> = read(engine, img)?.Lines()?.into_iter().map(|line| line.Text().map(|t| t.to_string_lossy())).collect::<Result<_, _>>()?;
     Ok(lines.join("\n"))
 }
 

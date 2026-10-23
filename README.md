@@ -49,8 +49,10 @@ The installer is written to `target\installer`.
 
 The library and editor also run on Linux (X11 or Wayland). Capturing is left to your desktop's
 screenshot tool (or Flameshot, `grim`/`slurp`, …): RSnip browses `~/Pictures/Screenshots` and
-annotates what's there. Pinning, OCR, copying as files, dragging files out, and capture/recording
-are Windows-only.
+annotates what's there. Reading the text in screenshots (to copy it, or to search by it) uses
+[Tesseract](https://github.com/tesseract-ocr/tesseract) when it's installed (`tesseract-ocr` on
+Debian and Ubuntu; the installer's check recommends it). Pinning, copying as files, dragging files
+out, and capture/recording are Windows-only.
 
 #### Installing on Linux
 
@@ -126,7 +128,7 @@ Run `rsnip.exe`. It sits in the notification area.
 | Select | Drag a rectangle, or click to capture the highlighted window. If other windows overlap it, it is brought to the front and captured cleanly |
 | One screen | Press Enter or F in the selection overlay to capture the monitor under the mouse |
 | All screens | Press A in the selection overlay, or use *Capture all screens* in the tray menu |
-| Copy text (OCR) | Tray menu → *Capture text (OCR)*: select an area and its text is copied to the clipboard. In the editor, *Export → Copy text (OCR)* reads the whole image. Uses the OCR built into Windows |
+| Copy text (OCR) | Tray menu → *Capture text (OCR)*: select an area and its text is copied to the clipboard. In the editor, the *Copy text* tool picks out the text in a screenshot to select and copy, and *Export → Copy text (OCR)* copies all of it. Uses the OCR built into Windows |
 | Pin to screen | Press P in the selection overlay to pin the highlighted area, or use *Export → Pin to screen* in the editor or a thumbnail's right-click menu. The pin floats above other windows: drag to move, mouse wheel to fade, Ctrl+wheel to zoom, right-click to copy or save, double-click or Esc to close |
 | Fine-tune | A magnifier next to the cursor shows the pixels under it with their position and colour (M hides or shows it; Settings → Capture sets whether it starts shown). Arrow keys move the mouse 1 px, Shift+arrows 10 px, including while dragging. C copies the colour under the cursor as #RRGGBB |
 | Cancel | Esc or right-click |
@@ -169,9 +171,10 @@ RSnip's own code, such as in a graphics driver, are reported too.
 
 ### Editor
 
-The toolbar has the tools as icons on the left, grouped as selecting, drawing, text and marking up,
-hiding, and cropping (hover one for its name, key and how to use it), and undo/redo, *Copy*, *Save* and
-the *Export* menu on the right. The row below shows only the options for the current tool or selected
+The toolbar has the tools in the middle, each named under its icon, grouped as selecting, drawing,
+text and marking up, hiding, and cropping (hover one for its key and how to use it). Undo and redo
+are on the left, and *Copy*, *Save* and the *Export* menu on the right. In a narrow window the names
+are left out, and the actions move to a row of their own. The row below shows only the options for the current tool or selected
 annotation (colour, size, shadow, delete) and a hint on how to use it.
 
 The library sits on the left, or along the bottom as a filmstrip so the editor gets the full width:
@@ -180,6 +183,7 @@ switch with the two layout buttons next to *Library*. RSnip remembers the choice
 | Tool | Key | |
 | --- | --- | --- |
 | Select | V | click an annotation to select it; drag to move it, drag its handles to resize it (arrows: drag either end) |
+| Copy text | O | reads the text in the screenshot and picks it out. Drag across words to select them (double-click selects a line, Ctrl+A everything), then Ctrl+C or *Copy selection*; *Copy all text* copies the lot. Blurred, pixelated and redacted text stays hidden |
 | Arrow | A | drag; hold Shift to snap to 45° |
 | Line | L | drag; hold Shift to snap to 45° |
 | Box | B | drag |
@@ -204,17 +208,17 @@ image plus your annotations are kept in a hidden `.rsnip` folder beside it, so r
 screenshot lets you keep editing. If the PNG is changed by another program, it opens as a plain image. Editing data for screenshots
 deleted outside RSnip is cleaned up automatically.
 
-Ctrl+Z / Ctrl+Y undo/redo, Ctrl+C copies the edited image, Ctrl+S overwrites the file,
+Ctrl+Z / Ctrl+Y undo/redo, Ctrl+C copies the edited image (or the selected text, with *Copy text*), Ctrl+S overwrites the file,
 Ctrl+Shift+S saves a copy, Ctrl+scroll zooms, Ctrl+0 fits to the window.
 The *Export* menu saves a copy (PNG or JPG), copies the image *as a file* so it pastes as an
-attachment into a folder, chat or email, copies the text in it (OCR), or pins it to the screen. Its
+attachment into a folder, chat or email, copies all the text in it (OCR), or pins it to the screen. Its
 *Border* and *Drop shadow* options are added to every copy, save and export (the annotations stay
 editable without them).
 Search finds screenshots by the words in them, the app and window they were captured from, and their name
 (every word must match something, in any order). RSnip reads the text with Windows' built-in text
-recognition, in the background, and keeps it beside the screenshots in the hidden `.rsnip` folder; nothing
-leaves your PC. Hover a result to see where it came from and the line that matched. On Linux, search uses
-names only.
+recognition (Tesseract on Linux), in the background, and keeps it beside the screenshots in the hidden
+`.rsnip` folder; nothing leaves your computer. Hover a result to see where it came from and the line that
+matched. On Linux without Tesseract, search uses names only.
 The library groups screenshots by date (Today, Yesterday, This week, …). Ctrl+click and Shift+click
 select several, to copy them as files, delete them, pin them or drag them out together.
 Recordings appear with an MP4/GIF badge and open in your video player.

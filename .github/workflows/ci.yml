@@ -32,10 +32,10 @@ jobs:
     container: rust:1.97.1
     steps:
       - uses: actions/checkout@v4
-      - name: Install the software GPU and fonts (as in ci/Dockerfile)
+      - name: Install the software GPU, fonts and Tesseract (as in ci/Dockerfile)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 fonts-dejavu-core fontconfig
+          apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 fonts-dejavu-core fontconfig tesseract-ocr
           rustup component add clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings

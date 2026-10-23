@@ -63,6 +63,8 @@ package() {
     *:xdg-open) echo xdg-utils ;;
     *:xdg-user-dir) echo xdg-user-dirs ;;
     *:fc-match) echo fontconfig ;;
+    apt:tesseract | zypper:tesseract) echo tesseract-ocr ;;
+    pacman:tesseract) echo tesseract tesseract-data-eng ;;
     *) echo "$2" ;;
     esac
 }
@@ -97,8 +99,9 @@ check() {
     for lib in $libraries; do
         has_library "$lib" || required="$required $(package "$pm" "$lib")"
     done
-    # Opening folders and files, finding the Pictures folder, and the font for text annotations.
-    for program in xdg-open xdg-user-dir fc-match; do
+    # Opening folders and files, finding the Pictures folder, the font for text annotations, and
+    # reading the text in screenshots (to copy it, and to search by it).
+    for program in xdg-open xdg-user-dir fc-match tesseract; do
         command -v "$program" >/dev/null 2>&1 || recommended="$recommended $(package "$pm" "$program")"
     done
     # Checking for updates.
@@ -121,7 +124,7 @@ check() {
         echo "    $install $required"
     fi
     if [ -n "$recommended" ]; then
-        echo "Recommended, for opening folders, the Pictures folder, fonts and update checks:"
+        echo "Recommended, for opening folders, the Pictures folder, fonts, copying text and update checks:"
         echo "    $install $recommended"
     fi
     if [ -z "$required$recommended" ]; then

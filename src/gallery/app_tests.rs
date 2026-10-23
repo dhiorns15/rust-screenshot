@@ -28,8 +28,13 @@ fn fixtures(name: &str) -> PathBuf {
 }
 
 fn harness(name: &str) -> Harness<'static, App> {
+    harness_at(name, 0.25)
+}
+
+/// With `step_dt` seconds per frame (kittest's default is 0.25 s, too slow for a double click).
+fn harness_at(name: &str, step_dt: f32) -> Harness<'static, App> {
     let dir = fixtures(name);
-    let mut h = Harness::builder().with_size(SIZE).build_eframe(move |cc| App::new(&cc.egui_ctx, Env::sandbox(dir), None));
+    let mut h = Harness::builder().with_size(SIZE).with_step_dt(step_dt).build_eframe(move |cc| App::new(&cc.egui_ctx, Env::sandbox(dir), None));
     settle(&mut h);
     h
 }
@@ -130,9 +135,10 @@ fn export_menu_offers_what_this_system_supports() {
     settle(&mut h);
     assert!(h.query_by_label_contains("Save copy…").is_some());
     assert!(h.query_by_label_contains("Save copy as JPG").is_some());
-    for windows_only in ["Copy as file", "Copy text (OCR)", "Pin to screen"] {
+    for windows_only in ["Copy as file", "Pin to screen"] {
         assert_eq!(h.query_by_label_contains(windows_only).is_some(), cfg!(windows), "{windows_only}");
     }
+    assert!(h.query_by_label_contains("Copy text (OCR)").is_some(), "wherever text can be read");
 }
 
 #[test]
@@ -219,6 +225,85 @@ fn a_crash_since_last_time_is_mentioned_once() {
 }
 
 /// A library whose sandbox "reads" `text` in Screenshot b, once the reader has finished.
+/// Opens the Copy text tool on screenshot a, with `lines` of text "read" from it, and waits for it.
+fn copy_text(name: &str, lines: &[&str]) -> Harness<'static, App> {
+    let mut h = harness_at(name, 1.0 / 60.0);
+    *h.state().env.sandboxed().words.lock().unwrap() = super::words::example(lines);
+    click(&mut h, "Copy text");
+    for _ in 0..100 {
+        settle(&mut h);
+        if h.state().editor.as_ref().unwrap().text_status() != TextStatus::Reading {
+            break;
+        }
+    }
+    h
+}
+
+/// Clicks at `pos` `times` times in a row.
+fn click_at(h: &mut Harness<App>, pos: Pos2, times: usize) {
+    h.hover_at(pos);
+    for _ in 0..times {
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        }
+        h.step();
+    }
+}
+
+/// Where a point given in screenshot pixels is drawn on the canvas, as fractions of the image.
+fn at_pixel(x: f32, y: f32) -> (f32, f32) {
+    (x / 320.0, y / 200.0)
+}
+
+#[test]
+fn copy_text_copies_the_words_dragged_across() {
+    let mut h = copy_text("kittest-copy-text", &["Hello there", "second line here"]);
+    assert_eq!(h.state().editor.as_ref().unwrap().text_status(), TextStatus::Found { words: 5, selected: 0 });
+    assert!(disabled(&h, &label(icon::COPY, "Copy selection")), "nothing selected yet");
+
+    // From "Hello" to "line", on the next line.
+    drag_on_canvas(&mut h, at_pixel(15.0, 20.0), at_pixel(100.0, 50.0));
+    h.event(egui::Event::Copy);
+    settle(&mut h);
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some("Hello there\nsecond line"));
+
+    click(&mut h, "Copy all text");
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some("Hello there\nsecond line here"));
+}
+
+#[test]
+fn copy_text_selects_a_word_or_a_line_and_ctrl_a_selects_everything() {
+    let mut h = copy_text("kittest-copy-text-clicks", &["Hello there", "second line here"]);
+    let canvas = h.state().editor.as_ref().unwrap().canvas;
+    let at = |(x, y): (f32, f32)| Pos2::new(canvas.min.x + canvas.width() * x, canvas.min.y + canvas.height() * y);
+    let selected = |h: &Harness<App>| h.state().editor.as_ref().unwrap().selected_text();
+
+    click_at(&mut h, at(at_pixel(90.0, 20.0)), 1);
+    settle(&mut h);
+    assert_eq!(selected(&h).as_deref(), Some("there"));
+
+    click_at(&mut h, at(at_pixel(150.0, 50.0)), 2);
+    settle(&mut h);
+    assert_eq!(selected(&h).as_deref(), Some("second line here"), "double-clicking selects the line");
+
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    settle(&mut h);
+    assert_eq!(selected(&h).as_deref(), Some("Hello there\nsecond line here"));
+
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert_eq!(selected(&h), None);
+    h.event(egui::Event::Copy);
+    settle(&mut h);
+    assert_eq!(h.state().env.sandboxed().copied, None, "with nothing selected, Ctrl+C copies the image");
+}
+
+#[test]
+fn copy_text_says_when_theres_none() {
+    let h = copy_text("kittest-copy-no-text", &[]);
+    assert!(shows(&h, "No text found in this image"));
+}
+
 fn library_with_text(name: &str, text: &str, setup: impl FnOnce(&Env) + 'static) -> (Harness<'static, App>, PathBuf) {
     let dir = fixtures(name);
     let env = Env::sandbox(dir.clone());
@@ -360,6 +445,17 @@ mod snapshots {
         click(&mut h, "Arrow");
         drag_on_canvas(&mut h, (0.2, 0.7), (0.7, 0.25));
         snapshot(&mut h, "selected_arrow");
+    }
+
+    #[test]
+    fn copy_text_tool() {
+        let _gpu = super::super::tests::gpu();
+        let words = super::super::words::example(&["Hello there", "second line here", "and a third"]);
+        let mut h = window(fixtures("snap-copy-text"), SIZE, move |env| *env.sandboxed().words.lock().unwrap() = words);
+        click(&mut h, "Copy text");
+        settle(&mut h);
+        drag_on_canvas(&mut h, at_pixel(80.0, 20.0), at_pixel(100.0, 50.0));
+        snapshot(&mut h, "copy_text_tool");
     }
 
     #[test]

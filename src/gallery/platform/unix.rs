@@ -13,7 +13,7 @@ use image::RgbaImage;
 
 use super::super::system_info::{self, Host};
 
-/// Pinning, OCR, copying as files and dragging files out are Windows-only.
+/// Pinning, copying as files and dragging files out are Windows-only.
 pub const EXTRAS: bool = false;
 const NOT_HERE: &str = "Not available on this system";
 
@@ -193,7 +193,7 @@ fn font_path() -> Option<PathBuf> {
 
 /// The programs RSnip runs: opening files and links, finding Pictures and the annotation font, and
 /// checking for updates (curl or wget).
-const HELPERS: [&str; 5] = ["xdg-open", "xdg-user-dir", "fc-match", "curl", "wget"];
+const HELPERS: [&str; 6] = ["xdg-open", "xdg-user-dir", "fc-match", "curl", "wget", "tesseract"];
 
 fn on_path(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
@@ -244,13 +244,55 @@ pub fn pin(_img: &RgbaImage) -> Result<(), String> {
 
 pub fn pin_file(_path: &Path) {}
 
-/// No text recognition here, so search uses names only.
+/// What reads the text in screenshots, for Settings.
+pub const TEXT_RECOGNITION: &str = "Tesseract";
+
+/// Tesseract's text recognition on an image file, for search, if it's installed.
 pub fn ocr() -> Option<super::super::env::Ocr> {
-    None
+    let read = read_words()?;
+    Some(std::sync::Arc::new(move |path: &Path| {
+        let img = image::open(path).map_err(|e| e.to_string())?.to_rgba8();
+        read(&img).map(|words| super::super::words::text(&words))
+    }))
 }
 
-pub fn read_text(_img: &RgbaImage) -> Result<String, String> {
-    Err(NOT_HERE.into())
+/// Tesseract's text recognition word by word, for copying text out of an image, if it's installed
+/// (the `tesseract-ocr` package, or `tesseract` on some distributions).
+pub fn read_words() -> Option<super::super::env::ReadWords> {
+    on_path("tesseract").then(|| std::sync::Arc::new(tesseract) as super::super::env::ReadWords)
+}
+
+fn tesseract(img: &RgbaImage) -> Result<Vec<super::super::words::Word>, String> {
+    // It reads small UI text far better enlarged; the boxes are scaled back afterwards.
+    let scale = if img.width().max(img.height()) <= 2000 { 2 } else { 1 };
+    let big;
+    let img = if scale == 1 {
+        img
+    } else {
+        big = image::imageops::resize(img, img.width() * scale, img.height() * scale, image::imageops::FilterType::CatmullRom);
+        &big
+    };
+    let mut png = Vec::new();
+    let rgb = image::DynamicImage::ImageRgba8(img.clone()).to_rgb8();
+    rgb.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    let out = Command::new("tesseract")
+        .args(["stdin", "-", "tsv"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            // It reads the whole image before writing anything, so this can't block on its output.
+            child.stdin.take().expect("piped").write_all(&png)?;
+            child.wait_with_output()
+        });
+    let out = out.map_err(|e| format!("Couldn't run Tesseract: {e}"))?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("Tesseract couldn't read the text: {}", why.lines().last().unwrap_or("").trim()));
+    }
+    Ok(super::super::words::from_tesseract_tsv(&String::from_utf8_lossy(&out.stdout), 1.0 / scale as f32))
 }
 
 pub fn drag_files(_paths: &[PathBuf]) -> Result<(), String> {

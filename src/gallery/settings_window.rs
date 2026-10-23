@@ -329,8 +329,8 @@ impl SettingsApp {
             theme::card(ui, |ui| {
                 let mut on = self.env.setting(super::search::SETTING) != Some(0);
                 let title = "Read text in screenshots for search";
-                let detail = "Uses Windows' built-in text recognition; the text stays on this PC";
-                if row(ui, title, detail, |ui| theme::switch(ui, &mut on, title)).changed() {
+                let detail = format!("Uses {}; the text stays on this computer", platform::TEXT_RECOGNITION);
+                if row(ui, title, &detail, |ui| theme::switch(ui, &mut on, title)).changed() {
                     self.set(super::search::SETTING, on as u32);
                 }
             });

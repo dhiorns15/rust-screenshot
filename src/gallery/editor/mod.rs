@@ -1,5 +1,6 @@
 //! The annotation canvas: tools, mouse handling and live previews.
 
+mod copy_text;
 mod crop;
 mod handles;
 mod preview;
@@ -13,6 +14,8 @@ use ab_glyph::FontVec;
 use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Ui, Vec2};
 
 use super::doc::{render, Doc, Shape};
+use super::env::ReadWords;
+pub use copy_text::TextStatus;
 use crop::{crop_grab, CropDrag, CropSelection};
 use preview::{preview, shape_from_drag, snap_45};
 use select::{Grab, Manip, Selection, PICK_SLACK};
@@ -43,6 +46,11 @@ pub struct Editor {
     last_tool: Tool,
     crop: Option<CropSelection>,
     crop_drag: Option<CropDrag>,
+    /// Reads the image's text for the Copy text tool, where the system can.
+    pub reader: Option<ReadWords>,
+    recognised: Option<copy_text::Recognised>,
+    /// Text is being selected by dragging across it.
+    text_drag: bool,
 }
 
 impl Editor {
@@ -61,6 +69,9 @@ impl Editor {
             last_tool: Tool::Select,
             crop: None,
             crop_drag: None,
+            reader: None,
+            recognised: None,
+            text_drag: false,
         }
     }
 
@@ -101,6 +112,9 @@ impl Editor {
     pub fn ui(&mut self, ui: &mut Ui, tools: &mut ToolState, font: Option<&FontVec>) {
         self.sync_selection(tools);
         self.update_texture(ui.ctx(), font);
+        if tools.tool == Tool::CopyText {
+            self.read_text(ui.ctx(), font);
+        }
         let size = self.doc.size();
         let avail = ui.available_size();
         let fit = ((avail.x - 16.0) / size.x).min((avail.y - 16.0) / size.y).clamp(0.02, 1.0);
@@ -144,11 +158,18 @@ impl Editor {
             if response.hovered() {
                 let cursor = match (tools.tool, crop_hover) {
                     (Tool::Text, _) => egui::CursorIcon::Text,
+                    (Tool::CopyText, _) => egui::CursorIcon::Default,
                     (_, Some(edges)) => edges.cursor(),
                     (Tool::Select, _) => egui::CursorIcon::Default,
                     _ => egui::CursorIcon::Crosshair,
                 };
                 ui.ctx().set_cursor_icon(cursor);
+            }
+
+            if tools.tool == Tool::CopyText {
+                self.text_selection_input(ui, &response, to_img, scale);
+                self.paint_text_selection(&painter, rect, to_screen);
+                return;
             }
 
             if response.drag_started() {

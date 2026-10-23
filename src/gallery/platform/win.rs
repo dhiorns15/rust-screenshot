@@ -236,17 +236,20 @@ pub fn pin_file(path: &Path) {
     crate::pin::spawn(path);
 }
 
-/// Reads the text in `img`; blocks, so call it off the UI thread.
+/// What reads the text in screenshots, for Settings.
+pub const TEXT_RECOGNITION: &str = "Windows' built-in text recognition";
+
 /// Windows' text recognition on an image file, for search.
 pub fn ocr() -> Option<super::super::env::Ocr> {
     Some(std::sync::Arc::new(|path: &Path| {
         let img = image::open(path).map_err(|e| e.to_string())?.to_rgba8();
-        read_text(&img)
+        crate::ocr::recognize(&to_bgra(&img))
     }))
 }
 
-pub fn read_text(img: &RgbaImage) -> Result<String, String> {
-    crate::ocr::recognize(&to_bgra(img))
+/// Windows' text recognition word by word, for copying text out of an image.
+pub fn read_words() -> Option<super::super::env::ReadWords> {
+    Some(std::sync::Arc::new(|img: &RgbaImage| crate::ocr::recognize_words(&to_bgra(img))))
 }
 
 pub fn drag_files(paths: &[PathBuf]) -> Result<(), String> {

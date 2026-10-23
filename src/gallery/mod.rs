@@ -16,6 +16,7 @@ mod search;
 mod settings_window;
 mod system_info;
 mod theme;
+pub(crate) mod words;
 
 pub use settings_window::run as run_settings;
 
@@ -33,7 +34,7 @@ use eframe::egui::{
 
 use crate::update;
 use doc::{apply_effects, flatten, render, Doc, Effects};
-use editor::{Editor, Tool, ToolState, GROUP_STARTS, PALETTE, PALETTE_NAMES, TEXT_SIZES, TOOLS};
+use editor::{Editor, TextStatus, Tool, ToolState, GROUP_STARTS, PALETTE, PALETTE_NAMES, TEXT_SIZES, TOOLS};
 use env::Env;
 use theme::{icon, Appearance, IconButton};
 
@@ -147,6 +148,8 @@ struct App {
     read_rx: Option<Receiver<(PathBuf, Option<doc::FileStamp>, String)>>,
     /// How wide the toolbar's actions were last frame, to decide whether they fit beside the tools.
     actions_width: f32,
+    /// How much room the tool groups took last frame besides their buttons.
+    tools_spacing: f32,
     /// RSnip crashed since the user last heard about it (see `crash`): when.
     crashed: Option<u64>,
 }
@@ -207,6 +210,7 @@ impl App {
             read_tx: None,
             read_rx: None,
             actions_width: 320.0,
+            tools_spacing: 72.0,
             crashed: crate::crash::unseen(&env.crash_dir, env.setting(crate::crash::SEEN_SETTING)).map(|c| c.time),
             env,
         };
@@ -301,7 +305,11 @@ impl App {
 
     fn open(&mut self, path: &Path) {
         match Doc::open(path) {
-            Ok(doc) => self.editor = Some(Editor::new(doc)),
+            Ok(doc) => {
+                let mut editor = Editor::new(doc);
+                editor.reader = self.env.read_words.clone();
+                self.editor = Some(editor);
+            }
             Err(e) => self.set_status(e),
         }
     }
@@ -399,13 +407,23 @@ impl App {
 
     /// Starts reading the text in the edited image; `poll` copies it when done.
     fn copy_text(&mut self) {
+        let Some(read) = self.env.read_words.clone() else { return };
         let Some(img) = self.rendered() else { return };
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let _ = tx.send(platform::read_text(&img));
+            let _ = tx.send(read(&img).map(|w| words::text(&w)));
         });
         self.ocr = Some(rx);
         self.set_status("Reading text…");
+    }
+
+    /// Puts text read from the image on the clipboard.
+    fn copy_words(&mut self, text: &str) {
+        match self.env.copy_text(text) {
+            Ok(()) if text.lines().count() == 1 => self.set_status("Copied 1 line of text"),
+            Ok(()) => self.set_status(format!("Copied {} lines of text", text.lines().count())),
+            Err(e) => self.set_status(e),
+        }
     }
 
     /// Moves screenshots to the Recycle Bin, with their editing data.
@@ -457,11 +475,10 @@ impl App {
                     if text.trim().is_empty() {
                         return Err("No text found in this image".into());
                     }
-                    platform::copy_text(&text).map(|()| text.lines().count())
+                    Ok(text)
                 });
                 match copied {
-                    Ok(1) => self.set_status("Copied 1 line of text"),
-                    Ok(n) => self.set_status(format!("Copied {n} lines of text")),
+                    Ok(text) => self.copy_words(&text),
                     Err(e) => self.set_status(e),
                 }
             }
@@ -505,8 +522,16 @@ impl App {
         } else if shortcut(Modifiers::COMMAND, Key::S) {
             self.save(false);
         }
+        let copying_text = self.tools.tool == Tool::CopyText;
+        if copying_text && shortcut(Modifiers::COMMAND, Key::A) {
+            self.editor.as_mut().unwrap().select_all_text();
+        }
         if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
-            self.copy();
+            // With the Copy text tool, the selected text; otherwise the image.
+            match self.editor.as_ref().unwrap().selected_text().filter(|_| copying_text) {
+                Some(text) => self.copy_words(&text),
+                None => self.copy(),
+            }
         }
         if shortcut(Modifiers::COMMAND, Key::Num0) {
             self.editor.as_mut().unwrap().zoom = None;
@@ -520,14 +545,27 @@ impl App {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let enabled = self.editor.is_some();
-        // Tools on the left and actions on the right, or the actions on a row of their own when the
-        // window is too narrow for both. (A row around the right-to-left layout keeps it from
-        // taking the panel's whole height.)
-        let mut fits = true;
-        ui.horizontal(|ui| {
+        let width = ui.available_width();
+        // Undo and redo on the left, the tools centred on the window, and the actions on the
+        // right. The tools are named under their icons when there's room, and move off centre
+        // when that's the only way to fit the actions beside them; when it isn't, the actions go
+        // on a row of their own. (A row around the right-to-left layout keeps it from taking the
+        // panel's whole height.)
+        let history = 2.0 * (IconButton::new(icon::ARROW_CLOCKWISE, "Redo").size(ui).x + 8.0);
+        let captioned = history + self.tools_spacing + tool_buttons_width(ui, true) <= width;
+        let tools = self.tools_spacing + tool_buttons_width(ui, captioned);
+        let room = width - tools - ACTIONS_GAP - self.actions_width;
+        let fits = room >= history;
+        let centred = (width - tools) / 2.0;
+        let indent = if fits { centred.min(room) } else { centred };
+        // All of the row's height from the start, so everything is centred on the same line.
+        let row = Vec2::new(width, if captioned { 48.0 } else { 32.0 });
+        ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            ui.add_enabled_ui(enabled, |ui| self.tool_buttons(ui));
-            fits = actions_fit(ui.available_width(), self.actions_width);
+            self.history(ui);
+            ui.add_space((indent - history).max(0.0));
+            let drawn = ui.add_enabled_ui(enabled, |ui| self.tool_buttons(ui, captioned)).response.rect.width();
+            self.tools_spacing = drawn - tool_buttons_width(ui, captioned);
             if fits {
                 self.actions_row(ui, enabled);
             }
@@ -537,12 +575,26 @@ impl App {
         }
     }
 
+    fn history(&mut self, ui: &mut egui::Ui) {
+        let (can_undo, can_redo) = self.editor.as_ref().map_or((false, false), |e| (e.doc.can_undo(), e.doc.can_redo()));
+        if ui.add_enabled(can_undo, IconButton::new(icon::ARROW_COUNTER_CLOCKWISE, "Undo")).on_hover_text("Undo (Ctrl+Z)").clicked() {
+            let editor = self.editor.as_mut().unwrap();
+            editor.finish_text(&self.tools);
+            editor.doc.undo();
+        }
+        if ui.add_enabled(can_redo, IconButton::new(icon::ARROW_CLOCKWISE, "Redo")).on_hover_text("Redo (Ctrl+Y)").clicked() {
+            let editor = self.editor.as_mut().unwrap();
+            editor.finish_text(&self.tools);
+            editor.doc.redo();
+        }
+    }
+
     /// The tools as icon buttons, one rounded group per kind of tool.
-    fn tool_buttons(&mut self, ui: &mut egui::Ui) {
+    fn tool_buttons(&mut self, ui: &mut egui::Ui, captioned: bool) {
         for group in tool_groups() {
-            theme::group(ui, |ui| {
+            theme::group_top(ui, |ui| {
                 for (tool, label, _, help) in group {
-                    let button = IconButton::new(theme::tool_icon(tool), label).selected(self.tools.tool == tool);
+                    let button = IconButton::new(theme::tool_icon(tool), label).selected(self.tools.tool == tool).captioned(captioned);
                     let response = ui.add(button).on_hover_ui(|ui| {
                         ui.label(RichText::new(label).strong());
                         ui.label(help);
@@ -568,7 +620,7 @@ impl App {
         self.actions_width = width.inner;
     }
 
-    /// Undo/redo, Copy, Save and the Export menu, added right to left.
+    /// Copy, Save and the Export menu, added right to left.
     fn actions(&mut self, ui: &mut egui::Ui, enabled: bool) {
         ui.add_enabled_ui(enabled, |ui| {
             ui.menu_button(format!("{}  Export  {}", icon::EXPORT, icon::CARET_DOWN), |ui| self.export_menu(ui))
@@ -580,18 +632,6 @@ impl App {
         let copy = egui::Button::new(theme::label(icon::COPY, "Copy"));
         if ui.add_enabled(enabled, copy).on_hover_text("Copy to clipboard (Ctrl+C)").clicked() {
             self.copy();
-        }
-        ui.add_space(6.0);
-        let (can_undo, can_redo) = self.editor.as_ref().map_or((false, false), |e| (e.doc.can_undo(), e.doc.can_redo()));
-        if ui.add_enabled(can_redo, IconButton::new(icon::ARROW_CLOCKWISE, "Redo")).on_hover_text("Redo (Ctrl+Y)").clicked() {
-            let editor = self.editor.as_mut().unwrap();
-            editor.finish_text(&self.tools);
-            editor.doc.redo();
-        }
-        if ui.add_enabled(can_undo, IconButton::new(icon::ARROW_COUNTER_CLOCKWISE, "Undo")).on_hover_text("Undo (Ctrl+Z)").clicked() {
-            let editor = self.editor.as_mut().unwrap();
-            editor.finish_text(&self.tools);
-            editor.doc.undo();
         }
     }
 
@@ -635,6 +675,8 @@ impl App {
             } else if self.tools.uses_width() {
                 ui.label(RichText::new("Size").color(theme::palette(ui).muted));
                 ui.add(egui::Slider::new(self.tools.width_mut(), 1.0..=24.0).step_by(1.0).fixed_decimals(0));
+            } else if self.tools.tool == Tool::CopyText {
+                self.copy_text_options(ui);
             }
             let selected = self.tools.selection.is_some();
             if selected {
@@ -655,6 +697,46 @@ impl App {
                 ui.add(egui::Label::new(RichText::new(hint).color(theme::palette(ui).muted)).truncate());
             });
         });
+    }
+
+    /// The Copy text tool's buttons, or why there's nothing to copy.
+    fn copy_text_options(&mut self, ui: &mut egui::Ui) {
+        let Some(editor) = &mut self.editor else { return };
+        let muted = theme::palette(ui).muted;
+        let (selected, any) = match editor.text_status() {
+            TextStatus::Found { words, selected } if words > 0 => (selected > 0, true),
+            TextStatus::Found { .. } => {
+                ui.label(RichText::new("No text found in this image").color(muted));
+                return;
+            }
+            TextStatus::Reading => {
+                ui.spinner();
+                ui.label(RichText::new("Reading text…").color(muted));
+                return;
+            }
+            TextStatus::Failed(e) => {
+                ui.label(RichText::new(e).color(muted));
+                return;
+            }
+            TextStatus::Unavailable => {
+                ui.label(RichText::new("Copying text needs Tesseract: install the tesseract-ocr package, then reopen RSnip").color(muted));
+                return;
+            }
+        };
+        let copy = egui::Button::new(theme::label(icon::COPY, "Copy selection"));
+        if ui.add_enabled(selected, copy).on_hover_text("Copy the selected text (Ctrl+C)").clicked() {
+            let text = editor.selected_text().unwrap_or_default();
+            self.copy_words(&text);
+            return;
+        }
+        if ui.add_enabled(any, egui::Button::new("Copy all text")).clicked() {
+            let text = editor.all_text().unwrap_or_default();
+            self.copy_words(&text);
+            return;
+        }
+        if ui.add_enabled(any, egui::Button::new("Select all")).on_hover_text("Ctrl+A").clicked() {
+            editor.select_all_text();
+        }
     }
 
     /// A rainbow ring that opens a full colour picker; it shows the colour when it isn't a swatch.
@@ -698,13 +780,19 @@ impl App {
                 self.copy_as_file();
                 ui.close();
             }
+        }
+        if platform::EXTRAS || self.env.read_words.is_some() {
             ui.separator();
+        }
+        if self.env.read_words.is_some() {
             let reading = self.ocr.is_some();
-            let copy_text = ui.add_enabled(!reading, egui::Button::new(theme::label(icon::TEXT_AA, "Copy text (OCR)")));
-            if copy_text.on_hover_text("Recognise the text in the image and copy it").clicked() {
+            let copy_text = ui.add_enabled(!reading, egui::Button::new(theme::label(icon::TEXTBOX, "Copy text (OCR)")));
+            if copy_text.on_hover_text("Recognise all the text in the image and copy it. To copy some of it, use the Copy text tool").clicked() {
                 self.copy_text();
                 ui.close();
             }
+        }
+        if platform::EXTRAS {
             let pin = ui.button(theme::label(icon::PUSH_PIN, "Pin to screen"));
             if pin.on_hover_text("Keep the image on top of other windows for reference").clicked() {
                 self.pin();
@@ -926,9 +1014,12 @@ fn tool_groups() -> Vec<Vec<(Tool, &'static str, Key, &'static str)>> {
     groups
 }
 
-/// Whether the toolbar's actions fit beside the tools, with a gap, or need a row of their own.
-fn actions_fit(available: f32, actions_width: f32) -> bool {
-    available >= actions_width + 12.0
+/// The least room between the tools and the actions.
+const ACTIONS_GAP: f32 = 16.0;
+
+/// How wide the tool buttons are, without the space around and between them.
+fn tool_buttons_width(ui: &egui::Ui, captioned: bool) -> f32 {
+    TOOLS.iter().map(|t| IconButton::new(theme::tool_icon(t.0), t.1).captioned(captioned).size(ui).x).sum()
 }
 
 /// Looks for a newer release in the background (see `Env::check_updates`: on Windows the tray app
@@ -1009,14 +1100,7 @@ mod tests {
         assert_eq!(flat, TOOLS.map(|t| t.0), "every tool once, in toolbar order");
         let starts: Vec<Tool> = groups.iter().skip(1).map(|g| g[0].0).collect();
         assert_eq!(starts, GROUP_STARTS);
-        assert_eq!(groups[0].iter().map(|t| t.0).collect::<Vec<_>>(), [Tool::Select]);
-    }
-
-    #[test]
-    fn actions_move_to_their_own_row_when_they_dont_fit() {
-        assert!(actions_fit(600.0, 320.0));
-        assert!(actions_fit(332.0, 320.0));
-        assert!(!actions_fit(331.0, 320.0), "needs a gap beside the tools");
+        assert_eq!(groups[0].iter().map(|t| t.0).collect::<Vec<_>>(), [Tool::Select, Tool::CopyText]);
     }
 
     #[test]
@@ -1079,9 +1163,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg(windows)]
     fn reads_rendered_text_back() {
         use super::doc::{load_font, render, Shape, Snapshot};
+        let Some(read) = super::platform::read_words() else {
+            eprintln!("skipped: no text recognition here");
+            return;
+        };
         let base = image::RgbaImage::from_pixel(420, 80, image::Rgba([255, 255, 255, 255]));
         let text = Shape::Text {
             pos: egui::Pos2::new(12.0, 14.0),
@@ -1091,8 +1178,15 @@ mod tests {
             shadow: false,
         };
         let img = render(&Snapshot { base: std::sync::Arc::new(base), shapes: vec![text] }, load_font().as_ref());
-        match super::platform::read_text(&img) {
-            Ok(read) => assert!(read.to_lowercase().contains("hello rsnip 123"), "read {read:?}"),
+        match read(&img) {
+            Ok(words) => {
+                let read = super::words::text(&words);
+                assert!(read.to_lowercase().contains("hello rsnip 123"), "read {read:?}");
+                // Each word is where it was drawn.
+                let hello = &words[0].rect;
+                assert!(hello.left() >= 8.0 && hello.left() < 30.0 && hello.top() >= 10.0 && hello.bottom() <= 70.0, "{hello:?}");
+                assert!(words[1].rect.left() > hello.right(), "{words:?}");
+            }
             // Server images (like CI's) may not have an OCR language installed.
             Err(e) if e.starts_with("No text-recognition language") => eprintln!("skipped: {e}"),
             Err(e) => panic!("{e}"),

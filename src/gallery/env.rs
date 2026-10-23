@@ -9,13 +9,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver};
 
+use image::RgbaImage;
+
 use super::platform;
 use super::system_info::Host;
+use super::words::Word;
 use crate::shortcuts::Action;
 use crate::update::{Release, Version};
 
 /// Reads the text in an image file (for search).
 pub type Ocr = Arc<dyn Fn(&Path) -> Result<String, String> + Send + Sync>;
+/// Reads the text in an image word by word, with where each word is (for the Copy text tool).
+pub type ReadWords = Arc<dyn Fn(&RgbaImage) -> Result<Vec<Word>, String> + Send + Sync>;
 
 pub struct Env {
     pub dir: PathBuf,
@@ -27,8 +32,10 @@ pub struct Env {
     pub tray_app: bool,
     /// This build's version (a fixed one in the sandbox, so snapshots survive version bumps).
     pub version: Version,
-    /// Text recognition for search, where the system has it (Windows).
+    /// Text recognition for search, where the system has it (Windows, or Tesseract elsewhere).
     pub ocr: Option<Ocr>,
+    /// The same, word by word, for copying text out of an image.
+    pub read_words: Option<ReadWords>,
     /// Where crash reports are written (see `crash`).
     pub crash_dir: PathBuf,
     settings: Store,
@@ -62,6 +69,8 @@ pub struct Sandbox {
     pub latest: Option<Release>,
     /// The text "read" from each file name, for search.
     pub ocr_text: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
+    /// The words "read" from any image, for the Copy text tool.
+    pub words: Arc<std::sync::Mutex<Vec<Word>>>,
     /// What System info reports about the machine.
     pub host: Host,
     /// The text last put on the clipboard.
@@ -86,6 +95,7 @@ impl Env {
             tray_app: cfg!(windows),
             version: Version::current(),
             ocr: platform::ocr(),
+            read_words: platform::read_words(),
             crash_dir: crate::crash::dir(),
             settings: Store::Platform,
             sandbox: None,
@@ -96,6 +106,8 @@ impl Env {
     #[cfg(test)]
     pub fn sandbox(dir: PathBuf) -> Env {
         let sandbox = Sandbox { tray_running: true, host: super::system_info::example_host(&dir), ..Default::default() };
+        let words = sandbox.words.clone();
+        let read_words: ReadWords = Arc::new(move |_| Ok(words.lock().unwrap().clone()));
         let texts = sandbox.ocr_text.clone();
         let ocr: Ocr = Arc::new(move |path| {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -109,6 +121,7 @@ impl Env {
             tray_app: cfg!(windows),
             version: Version(1, 2, 3),
             ocr: Some(ocr),
+            read_words: Some(read_words),
             settings: Store::Memory(RefCell::default()),
             sandbox: Some(RefCell::new(sandbox)),
         }

@@ -20,11 +20,13 @@ pub enum Tool {
     Spotlight,
     Pixelate,
     Crop,
+    CopyText,
 }
 
 /// The toolbar's tools, in order: (tool, label, shortcut key, tooltip).
-pub const TOOLS: [(Tool, &str, Key, &str); 14] = [
+pub const TOOLS: [(Tool, &str, Key, &str); 15] = [
     (Tool::Select, "Select", Key::V, "Click an annotation to select it, then move, resize, restyle or delete it (V)"),
+    (Tool::CopyText, "Copy text", Key::O, "Drag across text in the image to select it, then copy it with Ctrl+C. Double-click selects a line (O)"),
     (Tool::Arrow, "Arrow", Key::A, "Drag to draw an arrow; hold Shift to snap to 45° (A)"),
     (Tool::Line, "Line", Key::L, "Drag to draw a line; hold Shift to snap to 45° (L)"),
     (Tool::Box, "Box", Key::B, "Drag to draw a box (B)"),
@@ -40,7 +42,8 @@ pub const TOOLS: [(Tool, &str, Key, &str); 14] = [
     (Tool::Crop, "Crop", Key::C, "Drag to select an area to crop, then confirm (C)"),
 ];
 
-/// The first tool of each toolbar group after the first (drawing, marking up, hiding, cropping).
+/// The first tool of each toolbar group after the first (selecting, drawing, marking up, hiding,
+/// cropping).
 pub const GROUP_STARTS: [Tool; 4] = [Tool::Arrow, Tool::Text, Tool::Blur, Tool::Crop];
 
 /// egui font family holding the renderer's font, so the text preview matches the saved result.
@@ -204,7 +207,7 @@ impl ToolState {
     }
 
     pub fn uses_color(&self) -> bool {
-        !matches!(self.style_tool(), Tool::Select | Tool::Blur | Tool::Pixelate | Tool::Spotlight | Tool::Crop)
+        !matches!(self.style_tool(), Tool::Select | Tool::CopyText | Tool::Blur | Tool::Pixelate | Tool::Spotlight | Tool::Crop)
     }
 
     /// Whether the Size slider means a line width (or step size).

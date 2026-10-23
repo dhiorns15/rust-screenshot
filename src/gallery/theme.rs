@@ -192,32 +192,50 @@ pub fn tool_icon(tool: Tool) -> &'static str {
         Tool::Pixelate => icon::CHECKERBOARD,
         Tool::Redact => icon::EYE_SLASH,
         Tool::Crop => icon::CROP,
+        Tool::CopyText => icon::TEXTBOX,
     }
 }
 
 /// A square icon button; `selected` fills it with the accent colour. `label` names it for screen
-/// readers and tests.
+/// readers and tests, and `captioned` also writes it under the icon.
 pub struct IconButton {
     icon: &'static str,
     label: &'static str,
     selected: bool,
-    size: Vec2,
+    captioned: bool,
 }
+
+/// The size of the name under a captioned button's icon.
+const CAPTION: f32 = 11.0;
 
 impl IconButton {
     pub fn new(icon: &'static str, label: &'static str) -> Self {
-        IconButton { icon, label, selected: false, size: Vec2::new(30.0, 28.0) }
+        IconButton { icon, label, selected: false, captioned: false }
     }
 
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
         self
     }
+
+    pub fn captioned(mut self, captioned: bool) -> Self {
+        self.captioned = captioned;
+        self
+    }
+
+    /// How big it is.
+    pub fn size(&self, ui: &Ui) -> Vec2 {
+        if !self.captioned {
+            return Vec2::new(30.0, 28.0);
+        }
+        let caption = ui.painter().layout_no_wrap(self.label.to_owned(), egui::FontId::proportional(CAPTION), Color32::WHITE);
+        Vec2::new((caption.size().x + 10.0).max(40.0).ceil(), 44.0)
+    }
 }
 
 impl Widget for IconButton {
     fn ui(self, ui: &mut Ui) -> Response {
-        let (rect, response) = ui.allocate_exact_size(self.size, Sense::click());
+        let (rect, response) = ui.allocate_exact_size(self.size(ui), Sense::click());
         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), self.selected, self.label));
         if ui.is_rect_visible(rect) {
             let p = palette(ui);
@@ -237,7 +255,15 @@ impl Widget for IconButton {
                 (false, true) => p.text,
                 (false, false) => p.faint,
             };
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, self.icon, egui::FontId::proportional(18.0), color);
+            let icon = egui::FontId::proportional(18.0);
+            if self.captioned {
+                let top = rect.center_top();
+                ui.painter().text(top + Vec2::new(0.0, 15.0), egui::Align2::CENTER_CENTER, self.icon, icon, color);
+                let caption = egui::FontId::proportional(CAPTION);
+                ui.painter().text(top + Vec2::new(0.0, 34.0), egui::Align2::CENTER_CENTER, self.label, caption, color);
+            } else {
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, self.icon, icon, color);
+            }
         }
         response
     }
@@ -250,15 +276,25 @@ pub fn primary_button(text: impl Into<String>) -> egui::Button<'static> {
 
 /// A rounded container that groups related controls, like a segmented control.
 pub fn group<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
-    egui::Frame::NONE
-        .fill(palette(ui).raised)
-        .corner_radius(8)
-        .inner_margin(Margin::same(2))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            ui.horizontal(add).inner
-        })
-        .inner
+    group_frame(ui).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.horizontal(add).inner
+    })
+    .inner
+}
+
+/// A `group` of controls of the same height, lined up along their tops (centring them in the row
+/// would offset any taller than a line of text).
+pub fn group_top<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    group_frame(ui).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.horizontal_top(add).inner
+    })
+    .inner
+}
+
+fn group_frame(ui: &Ui) -> egui::Frame {
+    egui::Frame::NONE.fill(palette(ui).raised).corner_radius(8).inner_margin(Margin::same(2))
 }
 
 /// "Icon Label" for buttons and menu items.
