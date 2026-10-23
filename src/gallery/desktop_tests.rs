@@ -137,14 +137,16 @@ fn service(program: &str, args: &[&str], runtime: &Path, log: &str) -> Child {
 }
 
 /// Runs PipeWire and WirePlumber, and shares a new test picture for each request, until the tests
-/// end.
+/// end. Each picture has a viewer of its own as long as it's shared: RSnip connects to it more than
+/// once (a frame first, then the recording), and GStreamer's PipeWire output, unlike GNOME's, stops
+/// when its last viewer leaves.
 fn run_services(runtime: &Path, requests: Receiver<Sender<u32>>) {
     let mut running = vec![service("pipewire", &[], runtime, "pipewire.log")];
     wait_for(|| runtime.join("pipewire-0").exists(), "PipeWire's socket");
     running.push(service("wireplumber", &[], runtime, "wireplumber.log"));
-    let mut screen: Option<Child> = None;
+    let mut screen: Vec<Child> = Vec::new();
     for (n, reply) in requests.into_iter().enumerate() {
-        if let Some(mut old) = screen.take() {
+        for mut old in screen.drain(..) {
             let _ = old.kill();
             let _ = old.wait();
         }
@@ -153,16 +155,22 @@ fn run_services(runtime: &Path, requests: Receiver<Sender<u32>>) {
         let name = format!("rsnip-test-screen-{n}");
         let props = format!("stream-properties=props,media.class=Video/Source,node.name={name}");
         let source = ["-q", "videotestsrc", "is-live=true", "pattern=ball", "!", &caps, "!", "pipewiresink", "mode=provide", &props];
-        screen = Some(service("gst-launch-1.0", &source, runtime, &format!("{name}.log")));
+        screen.push(service("gst-launch-1.0", &source, runtime, &format!("{name}.log")));
         let mut node = None;
         wait_for(
             || {
-                node = test_screen_node(runtime, &name);
+                node = test_screen_node(runtime, &name).map(|n| n.0);
                 node.is_some()
             },
             "the test picture in PipeWire",
         );
-        let _ = reply.send(node.unwrap());
+        let node = node.unwrap();
+        // Through videoconvert, so it asks for video (PipeWire won't link a stream of unknown type).
+        let path = format!("path={node}");
+        let viewer = ["-q", "pipewiresrc", &path, "!", "videoconvert", "!", "fakesink", "sync=false"];
+        screen.push(service("gst-launch-1.0", &viewer, runtime, &format!("{name}-viewer.log")));
+        wait_for(|| test_screen_node(runtime, &name).is_some_and(|n| n.1 == "running"), "the test picture to be viewed");
+        let _ = reply.send(node);
     }
     for mut child in running.into_iter().chain(screen) {
         let _ = child.kill();
@@ -170,11 +178,12 @@ fn run_services(runtime: &Path, requests: Receiver<Sender<u32>>) {
     }
 }
 
-/// The test picture's PipeWire node, from `pw-dump`.
-fn test_screen_node(runtime: &Path, name: &str) -> Option<u32> {
+/// The test picture's PipeWire node and its state ("running" while it's viewed), from `pw-dump`.
+fn test_screen_node(runtime: &Path, name: &str) -> Option<(u32, String)> {
     let out = Command::new("pw-dump").env("XDG_RUNTIME_DIR", runtime).stderr(Stdio::null()).output().ok()?;
     let objects: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).ok()?;
-    objects.iter().find(|o| o["info"]["props"]["node.name"] == name).and_then(|o| o["id"].as_u64()).map(|id| id as u32)
+    let node = objects.iter().find(|o| o["info"]["props"]["node.name"] == name)?;
+    Some((node["id"].as_u64()? as u32, node["info"]["state"].as_str().unwrap_or_default().to_string()))
 }
 
 /// xdg-desktop-portal, told about the stand-in picker the way a desktop's portal settings do.
