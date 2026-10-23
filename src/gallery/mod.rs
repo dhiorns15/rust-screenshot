@@ -19,6 +19,8 @@ mod theme;
 pub(crate) mod words;
 
 pub use settings_window::run as run_settings;
+#[cfg(windows)]
+pub use settings_window::TITLE as SETTINGS_TITLE;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

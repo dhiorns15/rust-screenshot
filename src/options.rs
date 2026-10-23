@@ -23,6 +23,8 @@ pub const WIN_SHIFT_S: Flag = Flag { name: "WinShiftS", default: true };
 pub const OPEN_EDITOR: Flag = Flag { name: "OpenEditor", default: false };
 /// Whether the capture overlay starts with its magnifier showing (M toggles it).
 pub const SHOW_MAGNIFIER: Flag = Flag { name: "ShowMagnifier", default: true };
+/// Hide the library and Settings windows during a capture or recording.
+pub const HIDE_WHILE_CAPTURING: Flag = Flag { name: "HideWhileCapturing", default: true };
 pub const OPEN_LIBRARY_ON_LAUNCH: Flag = Flag { name: "OpenLibraryOnLaunch", default: false };
 pub const RECORD_GIF: Flag = Flag { name: "RecordGif", default: false };
 /// Record MP4s as H.265 (HEVC) rather than H.264.

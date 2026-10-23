@@ -237,6 +237,8 @@ impl SettingsApp {
             self.flag_row(ui, options::OPEN_EDITOR, "Open the editor after capture", "Every capture opens straight in the editor");
             ui.separator();
             self.flag_row(ui, options::SHOW_MAGNIFIER, "Show the magnifier", "Zoomed pixels, position and colour by the cursor. Press M while selecting to show or hide it");
+            ui.separator();
+            self.flag_row(ui, options::HIDE_WHILE_CAPTURING, "Hide RSnip while capturing", "The library and Settings step aside during a capture or recording, and come back after");
         });
         ui.label(RichText::new("Every capture is also copied to the clipboard.").color(theme::palette(ui).muted));
     }

@@ -88,6 +88,9 @@ fn switches_save_the_option_and_tell_the_tray_app() {
     assert!(is_on(&h, "Show the magnifier"), "on by default");
     toggle(&mut h, "Show the magnifier");
     assert_eq!(h.state().env.setting(options::SHOW_MAGNIFIER.name), Some(0));
+    assert!(is_on(&h, "Hide RSnip while capturing"), "on by default");
+    toggle(&mut h, "Hide RSnip while capturing");
+    assert_eq!(h.state().env.setting(options::HIDE_WHILE_CAPTURING.name), Some(0));
 }
 
 #[test]

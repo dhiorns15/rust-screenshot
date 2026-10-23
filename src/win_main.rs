@@ -155,6 +155,8 @@ thread_local! {
     /// Seconds left before a delayed capture.
     static COUNTDOWN: Cell<u32> = const { Cell::new(0) };
     static RECORDING: RefCell<Option<record::Recording>> = const { RefCell::new(None) };
+    /// RSnip's own windows hidden for the capture or recording under way (see `hide_rsnip`).
+    static HIDDEN: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) };
     /// A newer release, once a check has found one.
     static AVAILABLE: RefCell<Option<update::Release>> = const { RefCell::new(None) };
     /// An update is downloading.
@@ -651,16 +653,20 @@ unsafe fn capture(hwnd: HWND, mode: Mode) {
     if CAPTURING.replace(true) {
         return;
     }
+    hide_rsnip();
     if mode == Mode::Record {
         let area = pick_area();
         CAPTURING.set(false);
-        if let Some(area) = area {
-            start_recording(hwnd, area);
+        match area {
+            // They come back when it stops (see `stop_recording`).
+            Some(area) => start_recording(hwnd, area),
+            None => show_rsnip(),
         }
         return;
     }
     let image = take(mode);
     CAPTURING.set(false);
+    show_rsnip();
     match (image, mode) {
         (Some((image, true, _)), _) => {
             // Saving a big capture takes a moment; keep the hook's thread responsive.
@@ -669,6 +675,37 @@ unsafe fn capture(hwnd: HWND, mode: Mode) {
         (Some((image, false, _)), Mode::Text) => read_text(hwnd, image),
         (Some((image, false, source)), _) => deliver(hwnd, image, source),
         (None, _) => {}
+    }
+}
+
+/// Hides the library and Settings windows, if they're showing and Settings says to, so they stay
+/// out of the capture.
+unsafe fn hide_rsnip() {
+    if !SETTINGS.get().hide_while_capturing {
+        return;
+    }
+    let mut hidden = Vec::new();
+    for title in [gallery::TITLE, gallery::SETTINGS_TITLE] {
+        let window = FindWindowW(null(), wide(title).as_ptr());
+        if !window.is_null() && IsWindowVisible(window) != 0 && IsIconic(window) == 0 {
+            ShowWindow(window, SW_HIDE);
+            hidden.push(window);
+        }
+    }
+    if !hidden.is_empty() {
+        // Windows fades them out; wait until they're gone from the screen.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        windows_sys::Win32::Graphics::Dwm::DwmFlush();
+    }
+    HIDDEN.with(|h| h.borrow_mut().extend(hidden));
+}
+
+/// Brings back the windows `hide_rsnip` hid, without taking the focus.
+unsafe fn show_rsnip() {
+    for window in HIDDEN.with(|h| std::mem::take(&mut *h.borrow_mut())) {
+        if IsWindow(window) != 0 {
+            ShowWindow(window, SW_SHOWNA);
+        }
     }
 }
 
@@ -693,7 +730,10 @@ unsafe fn start_recording(hwnd: HWND, area: RECT) {
             let how = key.map_or("Click Stop".into(), |k| format!("Press {k} or Stop"));
             tray::set_tip(hwnd, &format!("{APP_NAME} — recording. {how} to finish"));
         }
-        Err(e) => notify(hwnd, "Couldn't start recording", &e),
+        Err(e) => {
+            show_rsnip();
+            notify(hwnd, "Couldn't start recording", &e);
+        }
     }
 }
 
@@ -701,6 +741,7 @@ unsafe fn start_recording(hwnd: HWND, area: RECT) {
 unsafe fn stop_recording(hwnd: HWND) {
     let Some(recording) = RECORDING.with(|r| r.borrow_mut().take()) else { return };
     tray::set_tip(hwnd, &tip(&SETTINGS.get()));
+    show_rsnip();
     let finishing = recording.stop();
     let target = hwnd as isize;
     std::thread::spawn(move || {
