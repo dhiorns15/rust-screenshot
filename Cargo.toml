@@ -1,6 +1,6 @@
 [package]
 name = "rsnip"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2021"
 description = "A Snagit-style screenshot tool for Windows, with a screenshot library and editor that also runs on Linux"
 license = "MIT"
