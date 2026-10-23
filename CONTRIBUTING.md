@@ -72,6 +72,13 @@ runs both on Windows and Linux and must pass. The suite has several layers:
 
   After an intended UI change, add `-e UPDATE_SNAPSHOTS=1`, then look at every changed PNG before
   committing it. When a snapshot fails in CI, the run's artifacts include `.new.png` and `.diff.png`.
+- **Desktop tests** (`src/gallery/desktop_tests.rs`): Linux recording and the background icon
+  against real desktop services: xdg-desktop-portal (which checks everything RSnip asks of the
+  desktop), PipeWire with WirePlumber, and GStreamer. Only the desktop's own pieces are stand-ins:
+  GNOME's screen-cast picker (it shares a test picture through PipeWire), the panel the icon goes in,
+  and notifications. `ci/desktop-test.sh` runs them in a session bus and home folder of their own
+  (CI's Linux job, or the Docker image); plain `cargo test` skips them. Anything RSnip sends the
+  desktop belongs here, not only in a unit test.
 - **Panic hunt**: random clicks, drags, keys and undo/redo against the editor. A short run is part of
   `cargo test`; CI's Linux job runs a longer one and prints its seed. Replay a failure with
   `RSNIP_HUNT_SEED=<seed> RSNIP_HUNT_STEPS=<n> cargo test panic_hunt_long -- --ignored`.

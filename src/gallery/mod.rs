@@ -4,6 +4,8 @@
 mod app_tests;
 #[cfg(not(windows))]
 mod background;
+#[cfg(all(test, target_os = "linux"))]
+mod desktop_tests;
 #[cfg(not(windows))]
 mod pick_area;
 #[cfg(not(windows))]
