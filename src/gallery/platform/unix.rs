@@ -35,21 +35,70 @@ pub fn claim_single_instance(name: &str, _title: &str) -> bool {
 }
 
 // There's no tray app here: no startup entry, global shortcuts or installer.
+/// The autostart entry that starts RSnip's background icon when you sign in (freedesktop's
+/// autostart, which GNOME, KDE and the rest follow).
+fn autostart_file() -> PathBuf {
+    let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config"));
+    config.join("autostart").join("rsnip.desktop")
+}
+
+/// RSnip starts in the background when you sign in.
 pub fn start_with_windows() -> bool {
-    false
+    autostart_file().is_file()
 }
 
-pub fn set_start_with_windows(_on: bool) -> bool {
-    false
+/// False if it couldn't be changed.
+pub fn set_start_with_windows(on: bool) -> bool {
+    let file = autostart_file();
+    if !on {
+        return std::fs::remove_file(&file).is_ok() || !file.exists();
+    }
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let entry = format!(
+        "[Desktop Entry]\nType=Application\nName=RSnip\nComment=RSnip in the background, for screenshots and recordings\nExec={} --tray\nIcon=rsnip\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n",
+        desktop_quote(&exe.to_string_lossy())
+    );
+    file.parent().is_some_and(|dir| std::fs::create_dir_all(dir).is_ok()) && std::fs::write(&file, entry).is_ok()
 }
 
+/// `arg` quoted for a desktop entry's `Exec` line.
+fn desktop_quote(arg: &str) -> String {
+    let mut out = String::from('"');
+    for c in arg.chars() {
+        if matches!(c, '"' | '`' | '$' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
+/// The background icon is running (it holds its lock; see `background::run`).
 pub fn tray_running() -> bool {
-    false
+    let user = std::env::var("USER").unwrap_or_default();
+    let path = std::env::temp_dir().join(format!("rsnip-tray-{user}.lock"));
+    File::options().write(true).open(path).is_ok_and(|f| f.try_lock().is_err())
 }
 
-pub fn tell_tray(_request: super::super::env::TrayRequest) {}
+pub fn tell_tray(request: super::super::env::TrayRequest) {
+    if request == super::super::env::TrayRequest::Quit {
+        super::super::background::quit();
+    }
+}
 
-pub fn start_tray() {}
+/// Starts the background icon, unless it's running already.
+pub fn start_tray() {
+    spawn_self(&["--tray"]);
+}
+
+/// Runs RSnip again with `args`, on its own, so it outlives this process and the terminal.
+pub fn spawn_self(args: &[&str]) {
+    use std::os::unix::process::CommandExt;
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe).args(args).process_group(0).spawn();
+    }
+}
 
 /// Opens the Settings window, on System info if `system_info`.
 pub fn open_settings(system_info: bool) {
@@ -101,6 +150,12 @@ fn parse_settings(bytes: &[u8]) -> BTreeMap<String, u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quotes_paths_for_the_autostart_entry() {
+        assert_eq!(desktop_quote("/home/a b/.local/bin/rsnip"), r#""/home/a b/.local/bin/rsnip""#);
+        assert_eq!(desktop_quote(r#"/x/$y"z\w"#), r#""/x/\$y\"z\\w""#);
+    }
 
     #[test]
     fn damaged_settings_mean_defaults() {

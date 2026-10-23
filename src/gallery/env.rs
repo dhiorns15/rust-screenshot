@@ -52,6 +52,8 @@ pub enum TrayRequest {
     RecordShortcut(Action),
     /// Check for an update and install it.
     InstallUpdate,
+    /// Stop running in the background (Linux's icon).
+    Quit,
 }
 
 /// The outside world, as far as tests are concerned.

@@ -15,6 +15,13 @@ bin="$HOME/.local/bin"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
 desktop="$data/applications/rsnip.desktop"
 icon="$data/icons/hicolor/256x256/apps/rsnip.png"
+autostart="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/rsnip.desktop"
+
+# Asks RSnip's background icon to quit, if it's running (it checks for this file; a stale one is
+# cleared when it next starts). Not `rsnip --tray-quit`, which older versions don't know.
+quit_background() {
+    echo quit >"${TMPDIR:-/tmp}/rsnip-tray-${USER:-}.request" 2>/dev/null || true
+}
 
 # The package manager, from /etc/os-release: apt, dnf, pacman, zypper, or "" if unknown.
 manager() {
@@ -140,7 +147,9 @@ refresh() {
 
 case "${1:-}" in
 --uninstall)
-    rm -f "$bin/rsnip" "$desktop" "$icon"
+    # Stop the icon running in the background, and its start at sign-in.
+    quit_background
+    rm -f "$bin/rsnip" "$desktop" "$icon" "$autostart"
     refresh
     echo "RSnip is removed. Your screenshots and settings (~/.config/rsnip) are kept."
     exit 0
@@ -182,6 +191,8 @@ rm -rf "$probe"
 
 mkdir -p "$bin" "$(dirname "$desktop")" "$(dirname "$icon")"
 # Copy then rename, so upgrading works while RSnip is running.
+# An earlier version running in the background stops; opening the library starts this one.
+quit_background
 cp "$here/rsnip" "$bin/rsnip.new"
 chmod 755 "$bin/rsnip.new"
 mv -f "$bin/rsnip.new" "$bin/rsnip"

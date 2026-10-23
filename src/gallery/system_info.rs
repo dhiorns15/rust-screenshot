@@ -154,6 +154,15 @@ fn settings(env: &Env) -> Section {
     let flag = |f: options::Flag| on_off(f.read(|name| env.setting(name)));
     s.row("Theme", Appearance::from_setting(env.setting(Appearance::SETTING)).label());
     s.row("Library position", if Dock::from_setting(env.setting(Dock::SETTING)) == Dock::Bottom { "Bottom" } else { "Left" });
+    if !env.tray_app {
+        let icon = match (options::RUN_IN_BACKGROUND.read(|name| env.setting(name)), env.tray_running()) {
+            (_, true) => "showing",
+            (true, false) => "not showing (no tray on this desktop?)",
+            (false, false) => "off",
+        };
+        s.row("Background icon", icon);
+        s.row("Start when you sign in", on_off(env.start_with_windows()));
+    }
     if env.tray_app {
         s.row("Tray app", if env.tray_running() { "running" } else { "not running" });
         s.row("Start with Windows", on_off(env.start_with_windows()));

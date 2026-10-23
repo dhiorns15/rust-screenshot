@@ -21,6 +21,12 @@ fn main() {
     if std::env::args().any(|a| a == "--settings") {
         return gallery::run_settings();
     }
+    if std::env::args().any(|a| a == "--tray") {
+        return gallery::run_background();
+    }
+    if std::env::args().any(|a| a == "--tray-quit") {
+        return gallery::quit_background();
+    }
     if let Some(path) = std::env::args().skip_while(|a| a != "--write-icon").nth(1) {
         if let Err(e) = gallery::write_icon(std::path::Path::new(&path)) {
             eprintln!("Couldn't write the icon: {e}");

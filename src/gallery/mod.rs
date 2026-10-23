@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 mod app_tests;
+#[cfg(not(windows))]
+mod background;
 #[cfg(test)]
 mod settings_tests;
 mod color;
@@ -19,6 +21,8 @@ mod theme;
 pub(crate) mod words;
 
 pub use settings_window::run as run_settings;
+#[cfg(not(windows))]
+pub use background::{quit as quit_background, run as run_background};
 #[cfg(windows)]
 pub use settings_window::TITLE as SETTINGS_TITLE;
 
@@ -55,6 +59,11 @@ pub fn run(file: Option<PathBuf>) {
         return;
     }
     let _ = std::fs::remove_file(env::request_file());
+    // Closing the library leaves RSnip in the background, where there's a tray icon for it.
+    #[cfg(not(windows))]
+    if crate::options::RUN_IN_BACKGROUND.read(platform::setting) {
+        platform::start_tray();
+    }
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

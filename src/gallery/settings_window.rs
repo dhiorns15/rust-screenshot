@@ -208,7 +208,7 @@ impl SettingsApp {
             });
         });
         if !self.env.tray_app {
-            return;
+            return self.background(ui);
         }
         theme::card(ui, |ui| {
             let mut on = self.env.start_with_windows();
@@ -223,6 +223,39 @@ impl SettingsApp {
             ui.separator();
             self.flag_row(ui, options::NOTIFY, "Show notifications", "After each capture, and about updates");
         });
+    }
+
+    /// Linux's background icon (see `background`).
+    fn background(&mut self, ui: &mut Ui) {
+        let mut on = self.get(options::RUN_IN_BACKGROUND);
+        theme::card(ui, |ui| {
+            let title = "Keep RSnip in the background";
+            let detail = "An icon in the top bar or panel stays when the library closes, to open it again";
+            if row(ui, title, detail, |ui| theme::switch(ui, &mut on, title)).changed() {
+                self.env.set_setting(options::RUN_IN_BACKGROUND.name, on as u32);
+                if on {
+                    self.env.start_tray();
+                } else {
+                    self.env.tell_tray(TrayRequest::Quit);
+                }
+            }
+            ui.separator();
+            ui.add_enabled_ui(on, |ui| {
+                let mut start = self.env.start_with_windows();
+                let title = "Start when you sign in";
+                if row(ui, title, "Put the icon there when you sign in, without opening the library", |ui| theme::switch(ui, &mut start, title)).changed()
+                    && !self.env.set_start_with_windows(start)
+                {
+                    self.note = Some("Couldn't change that: writing the autostart entry failed.".into());
+                }
+            });
+        });
+        if on && !self.env.tray_running() {
+            let text = "The icon isn't showing: this desktop may not show app icons. On GNOME, the AppIndicator extension adds them.";
+            ui.label(RichText::new(text).color(theme::palette(ui).muted));
+            // It may just be starting.
+            ui.ctx().request_repaint_after(Duration::from_secs(1));
+        }
     }
 
     fn capture(&mut self, ui: &mut Ui) {

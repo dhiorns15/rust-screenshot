@@ -94,6 +94,26 @@ fn switches_save_the_option_and_tell_the_tray_app() {
 }
 
 #[test]
+fn linux_keeps_rsnip_in_the_background_and_starts_it_at_sign_in() {
+    let mut h = settings("settings-background", |env| env.tray_app = false);
+    assert!(is_on(&h, "Keep RSnip in the background"), "on by default");
+    assert!(h.query_by_label_contains("The icon isn't showing").is_none(), "the sandbox's icon is running");
+    toggle(&mut h, "Start when you sign in");
+    assert!(h.state().env.sandboxed().start_with_windows);
+
+    toggle(&mut h, "Keep RSnip in the background");
+    assert_eq!(h.state().env.setting(options::RUN_IN_BACKGROUND.name), Some(0));
+    assert_eq!(requests(&h), [TrayRequest::Quit]);
+    assert!(h.get_by_role_and_label(eframe::egui::accesskit::Role::CheckBox, "Start when you sign in").accesskit_node().is_disabled());
+    toggle(&mut h, "Keep RSnip in the background");
+    assert_eq!(h.state().env.sandboxed().trays_started, 1);
+
+    h.state().env.sandboxed().tray_running = false;
+    settle(&mut h);
+    assert!(h.query_by_label_contains("The icon isn't showing").is_some());
+}
+
+#[test]
 fn theme_choice_is_saved_and_shown_at_once() {
     let mut h = settings("settings-theme", |_| {});
     click(&mut h, "Light");

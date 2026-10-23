@@ -66,6 +66,8 @@ pub fn tell_tray(request: TrayRequest) {
         TrayRequest::SettingsChanged => (crate::WM_APP_SETTINGS_CHANGED, 0),
         TrayRequest::RecordShortcut(action) => (crate::WM_APP_RECORD_SHORTCUT, action.index()),
         TrayRequest::InstallUpdate => (crate::WM_APP_UPDATE_NOW, 0),
+        // Only Linux's background icon is stopped from Settings.
+        TrayRequest::Quit => return,
     };
     let tray = tray_window();
     if !tray.is_null() {

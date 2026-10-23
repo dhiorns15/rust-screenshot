@@ -54,6 +54,12 @@ annotates what's there. Reading the text in screenshots (to copy it, or to searc
 Debian and Ubuntu; the installer's check recommends it). Pinning, copying as files, dragging files
 out, and capture/recording are Windows-only.
 
+Closing the library leaves RSnip's icon in the top bar or panel, for opening the library, Settings
+or the screenshots folder again; *Quit RSnip* in its menu stops it. Ubuntu, KDE and most panels show
+it; on plain GNOME (e.g. Fedora) it needs the
+[AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/). Settings →
+General turns it off, or starts it when you sign in.
+
 #### Installing on Linux
 
 The download runs on any x86-64 distribution with glibc 2.39 or later (for example Ubuntu 24.04,
@@ -75,7 +81,8 @@ before copying anything if this build can't run on your system (e.g. an older gl
 
 - `./install.sh --check` only runs that check.
 - Run `./install.sh` from a newer download to upgrade.
-- `./install.sh --uninstall` removes it; your screenshots and settings are kept.
+- `./install.sh --uninstall` removes it (and stops it running in the background); your screenshots
+  and settings are kept.
 
 Then use your desktop's screenshot tool as usual; screenshots saved to `~/Pictures/Screenshots` show
 up in the library. To open a capture straight in the editor, bind a key to a command such as
@@ -148,7 +155,7 @@ Changes apply straight away.
 
 | Section | |
 | --- | --- |
-| General | **Theme**: System (follows Windows' light or dark mode), Light or Dark. **Start with Windows**, **Open the library when RSnip starts** (otherwise it starts quietly in the tray), **Show notifications** |
+| General | **Theme**: System (follows Windows' light or dark mode), Light or Dark. **Start with Windows**, **Open the library when RSnip starts** (otherwise it starts quietly in the tray), **Show notifications**. On Linux: **Keep RSnip in the background** (an icon in the top bar or panel once the library closes) and **Start when you sign in** |
 | Capture | **Save screenshots to the folder** (when off, captures go to the clipboard only), **Open the editor after capture** (this saves the capture even if saving is off), **Show the magnifier** (or press M while selecting), **Hide RSnip while capturing** (on by default: the library and Settings windows step aside during a capture or recording and come back after). Every capture is copied to the clipboard |
 | Shortcuts | A shortcut for each action (region, all screens, last region, scrolling, record, text). *Change* asks you to press the new combination (Esc cancels); giving it a key another action has moves it. **Also take over Win+Shift+S** for a region capture. It warns if Windows' own Print Screen setting is on or two actions share a key |
 | Recording | MP4 or GIF; for MP4s, the frame rate (15, 24, 30 or 60) and codec (H.264 or H.265) |
@@ -240,6 +247,15 @@ rsnip --gallery [file] open the library, optionally with a file selected
 rsnip --pin <file>      pin an image on top of other windows
 rsnip --update         check for a newer version and install it
 rsnip --settings       open the Settings window
+```
+
+On Linux:
+
+```
+rsnip [file]           open the library, optionally with a file selected
+rsnip --settings       open the Settings window
+rsnip --tray           put RSnip's icon in the top bar or panel (the library does this itself)
+rsnip --tray-quit      remove it again
 ```
 
 ## Troubleshooting
