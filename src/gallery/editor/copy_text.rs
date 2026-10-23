@@ -39,11 +39,14 @@ impl Editor {
         let Some(reader) = &self.reader else { return };
         if let Some(r) = self.recognised.as_mut().filter(|r| r.version == self.doc.version) {
             if let Reading::Busy(rx) = &r.reading {
-                match rx.try_recv() {
-                    Ok(result) => r.reading = Reading::Done(result),
-                    Err(TryRecvError::Disconnected) => r.reading = Reading::Done(Err("Text recognition stopped unexpectedly".into())),
-                    Err(TryRecvError::Empty) => {}
-                }
+                let done = match rx.try_recv() {
+                    Ok(result) => result,
+                    Err(TryRecvError::Disconnected) => Err("Text recognition stopped unexpectedly".into()),
+                    Err(TryRecvError::Empty) => return,
+                };
+                r.reading = Reading::Done(done);
+                // The toolbar above was drawn this frame while still reading; show what was found.
+                ctx.request_repaint();
             }
             return;
         }

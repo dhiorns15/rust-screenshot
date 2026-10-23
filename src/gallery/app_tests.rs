@@ -251,6 +251,8 @@ fn copy_text(name: &str, lines: &[&str]) -> Harness<'static, App> {
             break;
         }
     }
+    // The toolbar is drawn before the editor finds out, so it shows the result a frame later.
+    settle(&mut h);
     h
 }
 
