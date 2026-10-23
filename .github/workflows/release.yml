@@ -38,7 +38,11 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME (Get-ChildItem target/installer/*-setup.exe).FullName target/release/rsnip.exe target/release/rsnip.pdb $env:ZIP --title "RSnip $env:GITHUB_REF_NAME" --notes-file notes.md
+        run: |
+          $files = @((Get-ChildItem target/installer/*-setup.exe).FullName, "target/release/rsnip.exe", $env:ZIP)
+          # Only for looking up crash report addresses, so a release goes out without it if need be.
+          if (Test-Path target/release/rsnip.pdb) { $files += "target/release/rsnip.pdb" } else { Write-Warning "No rsnip.pdb to publish" }
+          gh release create $env:GITHUB_REF_NAME @files --title "RSnip $env:GITHUB_REF_NAME" --notes-file notes.md
 
   linux:
     needs: release
