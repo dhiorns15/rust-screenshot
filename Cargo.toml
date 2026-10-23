@@ -43,6 +43,9 @@ features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_Kernel",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Registry",
@@ -73,4 +76,6 @@ egui_kittest = { version = "0.36", features = ["eframe", "snapshot", "wgpu"] }
 [profile.release]
 lto = true
 codegen-units = 1
-strip = true
+# Keeps function names, so Linux crash reports have a backtrace (Windows keeps its symbols in a
+# .pdb file, which the release workflow builds and publishes separately).
+strip = "debuginfo"

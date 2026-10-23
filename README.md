@@ -164,7 +164,8 @@ Settings are stored in `HKCU\Software\RSnip` (on Linux, `~/.config/rsnip/setting
 If RSnip crashes, it writes what happened to a crash report in `%LOCALAPPDATA%\RSnip\crashes` (on
 Linux, `~/.local/state/rsnip/crashes`; the last 10 are kept). Next time, the tray app or the library
 says so, and *Settings → System info → Report this crash* copies the report for a GitHub issue. A
-report says where in RSnip's code it crashed; it has no screenshots or file names.
+report says where in RSnip's code it crashed; it has no screenshots or file names. Crashes outside
+RSnip's own code, such as in a graphics driver, are reported too.
 
 ### Editor
 

@@ -19,6 +19,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
       - run: cargo build --release
+        env:
+          # Also writes target/release/rsnip.pdb, published below so the addresses in Windows crash
+          # reports can be looked up. The exe only names the file, not the path it was built in.
+          CARGO_PROFILE_RELEASE_STRIP: none
       - name: Package
         shell: pwsh
         run: |
@@ -34,7 +38,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME (Get-ChildItem target/installer/*-setup.exe).FullName target/release/rsnip.exe $env:ZIP --title "RSnip $env:GITHUB_REF_NAME" --notes-file notes.md
+        run: gh release create $env:GITHUB_REF_NAME (Get-ChildItem target/installer/*-setup.exe).FullName target/release/rsnip.exe target/release/rsnip.pdb $env:ZIP --title "RSnip $env:GITHUB_REF_NAME" --notes-file notes.md
 
   linux:
     needs: release
