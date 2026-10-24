@@ -144,6 +144,7 @@ pub fn decode(path: &Path, from: Duration, max: (u32, u32), ctx: Option<egui::Co
 }
 
 /// Whether a recording plays: its first frame decodes (for `rsnip --check-recording`).
+#[cfg(not(windows))]
 pub fn can_play(path: &Path) -> Result<(), String> {
     let decoding = decode(path, Duration::ZERO, (320, 240), None);
     match decoding.frames.recv_timeout(Duration::from_secs(10)) {
@@ -307,6 +308,12 @@ impl Player {
             trim: None,
             dragging: false,
         })
+    }
+
+    /// A frame is on screen.
+    #[cfg(test)]
+    pub fn showing(&self) -> bool {
+        self.shown.is_some()
     }
 
     pub fn playing(&self) -> bool {
@@ -486,7 +493,7 @@ impl Player {
         if let Some((from, to)) = self.trim {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label(format!("Keep {} to {} ({})", clock(from), clock(to), clock(to.saturating_sub(from))));
+                ui.label(format!("Keep {} to {} ({:.1} s)", fine_clock(from), fine_clock(to), to.saturating_sub(from).as_secs_f64()));
                 if ui.small_button("Start here").on_hover_text("Keep from where the player is").clicked() {
                     let at = self.position().min(to);
                     self.trim = Some((at, to));
@@ -516,7 +523,9 @@ impl Player {
             ui.add_space(ui.available_width());
             return;
         };
-        let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::click_and_drag());
+        let (outer, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::click_and_drag());
+        // Room for the knob at either end.
+        let rect = outer.shrink2(egui::vec2(10.0, 0.0));
         let x = |t: Duration| rect.left() + rect.width() * (t.as_secs_f32() / total.as_secs_f32()).clamp(0.0, 1.0);
         let time = |px: f32| Duration::from_secs_f32(((px - rect.left()) / rect.width()).clamp(0.0, 1.0) * total.as_secs_f32());
         let palette = super::theme::palette(ui);
@@ -577,6 +586,12 @@ impl Player {
     }
 }
 
+/// "1:05.3": to a tenth of a second, for trimming.
+pub fn fine_clock(d: Duration) -> String {
+    let tenths = d.as_millis() / 100;
+    format!("{}.{}", clock(Duration::from_secs((tenths / 10) as u64)), tenths % 10)
+}
+
 /// "1:05", or "1:02:05".
 pub fn clock(d: Duration) -> String {
     let s = d.as_secs();
@@ -588,7 +603,7 @@ pub fn clock(d: Duration) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
     #[test]
@@ -598,13 +613,14 @@ mod tests {
         assert_eq!(fit((641, 481), (1920, 1080)), (640, 480), "never bigger, and even");
         assert_eq!(clock(Duration::from_secs(65)), "1:05");
         assert_eq!(clock(Duration::from_secs(3725)), "1:02:05");
+        assert_eq!(fine_clock(Duration::from_millis(65_340)), "1:05.3");
     }
 
-    /// A GIF of `n` frames, each shown for a tenth of a second and filled with its number.
-    fn gif(path: &Path, n: u8) {
+    /// A GIF of `n` (up to 21) frames, each shown for a tenth of a second, the nth filled with red n × 12.
+    pub fn gif(path: &Path, n: u8) {
         let mut out = gif::Encoder::new(std::fs::File::create(path).unwrap(), 8, 6, &[]).unwrap();
         for i in 0..n {
-            let mut rgba: Vec<u8> = std::iter::repeat_n([i * 20, 0, 0, 255], 48).flatten().collect();
+            let mut rgba: Vec<u8> = std::iter::repeat_n([i * 12, 0, 0, 255], 48).flatten().collect();
             let mut frame = gif::Frame::from_rgba_speed(8, 6, &mut rgba, 10);
             frame.delay = 10;
             out.write_frame(&frame).unwrap();
@@ -623,15 +639,15 @@ mod tests {
         let decoding = decode(&path, Duration::from_millis(450), MAX_SIZE, None);
         let frames: Vec<Frame> = decoding.frames.iter().collect();
         assert_eq!(frames.iter().map(|f| f.at.as_millis()).collect::<Vec<_>>(), [400, 500, 600, 700, 800, 900]);
-        assert_eq!(frames[0].image.pixels[0].r(), 80);
-        assert_eq!(first_frame(&path, (4, 4)).map(|f| f.size), Some([4, 3]), "shrunk to fit");
+        assert_eq!(frames[0].image.pixels[0].r(), 48);
+        assert_eq!(first_frame(&path, (4, 4)).map(|f| f.size), Some([4, 2]), "shrunk to fit, in even sizes");
 
         let trimmed = trimmed_path(&path);
         assert_eq!(trimmed.file_name().unwrap(), "Recording (trimmed).gif");
         assert_eq!(trim(&path, &trimmed, Duration::from_millis(250), Duration::from_millis(600)).unwrap(), (Duration::from_millis(250), Duration::from_millis(600)));
         assert_eq!(info(&trimmed).duration, Some(Duration::from_millis(350)), "the part of each frame inside the trim");
         let first = first_frame(&trimmed, MAX_SIZE).unwrap();
-        assert_eq!(first.pixels[0].r(), 40, "starts on the frame shown at 0.25 s");
+        assert_eq!(first.pixels[0].r(), 24, "starts on the frame shown at 0.25 s");
         assert_eq!(trimmed_path(&path).file_name().unwrap(), "Recording (trimmed 2).gif");
         assert!(trim(&path, &dir.join("none.gif"), Duration::from_secs(5), Duration::from_secs(6)).is_err());
         let _ = std::fs::remove_dir_all(&dir);

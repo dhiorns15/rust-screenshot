@@ -141,7 +141,7 @@ impl App {
                 ui.label(RichText::new("Library").strong().size(15.0));
                 ui.add_space(6.0);
                 ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(search_hint()).desired_width(220.0));
-                self.count_or_bulk_bar(ui, visible.len());
+                self.count_or_bulk_bar(ui, &visible);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| self.library_buttons(ui));
             });
         } else {
@@ -150,7 +150,7 @@ impl App {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| self.library_buttons(ui));
             });
             ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(search_hint()).desired_width(f32::INFINITY));
-            ui.horizontal_wrapped(|ui| self.count_or_bulk_bar(ui, visible.len()));
+            ui.horizontal_wrapped(|ui| self.count_or_bulk_bar(ui, &visible));
         }
         ui.add_space(4.0);
         if visible.is_empty() {
@@ -207,16 +207,22 @@ impl App {
         });
     }
 
-    fn count_or_bulk_bar(&mut self, ui: &mut egui::Ui, count: usize) {
+    /// How many of the `visible` entries there are, or what to do with the selected ones.
+    fn count_or_bulk_bar(&mut self, ui: &mut egui::Ui, visible: &[usize]) {
         if self.selected.len() > 1 {
             self.bulk_bar(ui);
         } else {
-            let noun = if count == 1 { "screenshot" } else { "screenshots" };
+            let recordings = visible.iter().filter(|&&i| self.entries[i].video).count();
+            let n = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+            let mut what = n(visible.len() - recordings, "screenshot", "screenshots");
+            if recordings > 0 {
+                what = format!("{what}, {}", n(recordings, "recording", "recordings"));
+            }
             let reading = match self.reading.len() {
                 0 => String::new(),
                 n => format!(" · reading text, {n} left"),
             };
-            ui.label(RichText::new(format!("{count} {noun}{reading}")).small().color(theme::palette(ui).muted));
+            ui.label(RichText::new(format!("{what}{reading}")).small().color(theme::palette(ui).muted));
         }
     }
 

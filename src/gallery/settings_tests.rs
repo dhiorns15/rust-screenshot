@@ -222,6 +222,63 @@ fn checks_for_updates_and_offers_the_new_version() {
 }
 
 #[test]
+fn release_candidates_are_opt_in() {
+    let mut h = settings("settings-release-candidates", |_| {});
+    open(&mut h, Section::Updates);
+    assert!(!is_on(&h, "Get release candidates"));
+    toggle(&mut h, "Get release candidates");
+    assert!(options::RELEASE_CANDIDATES.read(|n| h.state().env.setting(n)));
+}
+
+#[test]
+fn installs_an_update_and_restarts_into_it() {
+    let mut h = settings("settings-install", |env| env.sandboxed().can_install = true);
+    open(&mut h, Section::Updates);
+    let release = crate::update::Release { version: crate::update::Version::new(99, 0, 0), page: "https://example.com".into(), installer: None, deb: None, rpm: None };
+    h.state().env.sandboxed().latest = Some(release);
+    click(&mut h, "Check now");
+    click(&mut h, "Install");
+    assert_eq!(requests(&h), [TrayRequest::InstallUpdate]);
+    if cfg!(windows) {
+        // The tray app installs it and restarts RSnip.
+        assert!(h.query_by_label_contains("Installing; RSnip will restart.").is_some());
+    } else {
+        // Linux: installed by the package manager, then the library restarts into it.
+        assert!(h.query_by_label_contains("Installed. Restart RSnip").is_some());
+        click(&mut h, "Restart RSnip");
+        assert_eq!(h.state().env.sandboxed().restarts, 1);
+    }
+}
+
+#[test]
+fn chooses_where_screenshots_and_recordings_are_saved() {
+    let dir = tests::sandbox_dir("settings-folder");
+    let elsewhere = dir.join("Elsewhere");
+    let picked = elsewhere.clone();
+    let mut env = Env::sandbox(dir);
+    env.tray_app = true;
+    env.sandboxed().picked_folder = Some(picked);
+    let mut h = Harness::builder().with_size(SIZE).build_eframe(move |cc| SettingsApp::new(&cc.egui_ctx, env));
+    settle(&mut h);
+    open(&mut h, Section::Library);
+    assert!(h.query_by_label("~").is_some(), "the sandbox's home, the library's folder");
+    click(&mut h, "Change…");
+    settle(&mut h);
+    assert_eq!(h.state().env.text_setting(options::SAVE_FOLDER), Some(elsewhere.to_string_lossy().into_owned()));
+    assert_eq!(h.state().env.dir, elsewhere, "the library follows");
+    assert!(h.query_by_label(&format!("~{}Elsewhere", std::path::MAIN_SEPARATOR)).is_some());
+    assert!(requests(&h).contains(&TrayRequest::SettingsChanged), "the tray app saves there from now on");
+    click(&mut h, "Open");
+    assert_eq!(h.state().env.sandboxed().opened, [elsewhere.clone()]);
+
+    // Cancelling the chooser changes nothing.
+    h.state().env.sandboxed().picked_folder = None;
+    click(&mut h, "Change…");
+    settle(&mut h);
+    assert_eq!(h.state().env.dir, elsewhere);
+}
+
+#[test]
 fn system_info_reports_the_machine_and_copies_it() {
     let mut h = settings("settings-system-info", |env| {
         std::fs::write(env.dir.join("a.png"), b"png").unwrap();

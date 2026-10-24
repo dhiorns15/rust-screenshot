@@ -381,6 +381,64 @@ fn ctrl_and_shift_click_select_several() {
     settle(&mut h);
 }
 
+/// The library with a 2-second GIF recording, the newest file, besides the screenshots.
+fn with_recording(name: &str) -> (Harness<'static, App>, PathBuf) {
+    let dir = fixtures(name);
+    let gif = dir.join("Recording z.gif");
+    super::player::tests::gif(&gif, 20);
+    let env = Env::sandbox(dir);
+    let mut h = Harness::builder().with_size(SIZE).with_step_dt(1.0 / 60.0).build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
+    settle(&mut h);
+    (h, gif)
+}
+
+/// Until the player shows a frame.
+fn wait_for_frame(h: &mut Harness<App>) {
+    for _ in 0..200 {
+        settle(h);
+        if h.state().player.as_ref().is_some_and(|p| p.showing()) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("the player showed nothing");
+}
+
+#[test]
+fn recordings_play_in_the_library() {
+    let (mut h, gif) = with_recording("kittest-player");
+    click(&mut h, "Recording z");
+    assert!(h.state().player.as_ref().is_some_and(|p| p.path == gif) && h.state().editor.is_none(), "it plays in the viewer");
+    wait_for_frame(&mut h);
+    assert!(shows(&h, "0:00 / 0:02"));
+    click(&mut h, icon::PLAY);
+    assert!(h.state().player.as_ref().unwrap().playing());
+    click(&mut h, icon::PAUSE);
+    assert!(!h.state().player.as_ref().unwrap().playing());
+    // Back to a screenshot: the editor again.
+    click(&mut h, "Screenshot a");
+    assert!(h.state().player.is_none() && h.state().editor.is_some());
+}
+
+#[test]
+fn trimming_saves_the_part_kept_as_a_new_recording() {
+    let (mut h, gif) = with_recording("kittest-trim");
+    click(&mut h, "Recording z");
+    wait_for_frame(&mut h);
+    click(&mut h, &format!("{} Trim", icon::SCISSORS));
+    for (at, button) in [(500, "Start here"), (1500, "End here")] {
+        h.state_mut().player.as_mut().unwrap().seek(Duration::from_millis(at));
+        settle(&mut h);
+        click(&mut h, button);
+    }
+    assert!(shows(&h, "Keep 0:00.5 to 0:01.5 (1.0 s)"));
+    click(&mut h, "Save trimmed copy");
+    let copy = gif.with_file_name("Recording z (trimmed).gif");
+    assert_eq!(super::player::info(&copy).duration, Some(Duration::from_secs(1)), "0.5 s to 1.5 s");
+    assert!(h.state().player.as_ref().is_some_and(|p| p.path == copy), "the copy opens");
+    assert!(gif.exists(), "the original stays");
+}
+
 /// Pixel snapshots of the window, rendered on a software GPU. Linux only, so every machine renders
 /// the same pixels: run them with the `ci/Dockerfile` image, and refresh them after an intended
 /// change with `UPDATE_SNAPSHOTS=1` (then look at every changed PNG in `tests/snapshots`).
@@ -417,6 +475,19 @@ mod snapshots {
         h.remove_cursor();
         settle(h);
         h.snapshot(name);
+    }
+
+    #[test]
+    fn player_trimming() {
+        let _gpu = super::super::tests::gpu();
+        let dir = fixtures("snap-player");
+        super::super::player::tests::gif(&dir.join("Recording z.gif"), 20);
+        let mut h = window(dir, SIZE, |_| {});
+        click(&mut h, "Recording z");
+        wait_for_frame(&mut h);
+        click(&mut h, &format!("{} Trim", icon::SCISSORS));
+        h.state_mut().player.as_mut().unwrap().trim = Some((Duration::from_millis(500), Duration::from_millis(1500)));
+        snapshot(&mut h, "player_trim");
     }
 
     #[test]

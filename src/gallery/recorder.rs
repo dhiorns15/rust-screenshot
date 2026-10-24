@@ -491,6 +491,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A recording as RSnip makes it trims without re-encoding and plays back from anywhere: from
+    /// the keyframe before (one a second), decoded up to the point asked for.
+    #[test]
+    fn recordings_trim_and_play_from_anywhere() {
+        let (encoder, _) = encoder(false);
+        if available().is_err() || encoder.extension != "mp4" || !["avdec_h264", "openh264dec"].into_iter().any(installed) {
+            return eprintln!("skipped: no GStreamer H.264");
+        }
+        let dir = std::env::temp_dir().join(format!("rsnip-trim-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Recording.mp4");
+        record_test_picture(&encoder, &path).unwrap();
+        let movie = crate::mp4::Movie::open(&path).unwrap();
+        let keys = movie.keyframes();
+        assert!(keys.len() >= 2 && keys[1] <= Duration::from_millis(1100), "a keyframe every second: {keys:?}");
+
+        let trimmed = super::super::player::trimmed_path(&path);
+        let (from, to) = super::super::player::trim(&path, &trimmed, Duration::from_millis(1200), Duration::from_millis(1400)).unwrap();
+        assert!(from <= Duration::from_millis(1200) && from >= Duration::from_millis(900), "from the keyframe at about 1 s: {from:?}");
+        assert!(to.abs_diff(Duration::from_millis(1400)) < Duration::from_millis(50));
+        super::super::player::can_play(&trimmed).unwrap();
+
+        let decoding = super::super::player::decode(&path, Duration::from_millis(1200), (160, 120), None);
+        let first = decoding.frames.recv_timeout(Duration::from_secs(10)).expect("a frame");
+        assert!(first.at.abs_diff(Duration::from_millis(1200)) < Duration::from_millis(40), "starts where asked: {:?}", first.at);
+        let (w, h) = super::super::player::fit((movie.width, movie.height), (160, 120));
+        assert_eq!(first.image.size, [w as usize, h as usize], "shrunk to fit");
+        drop(decoding);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// An encoder without its parser or muxer can't record; RSnip says which package has them
     /// rather than failing when a recording starts.
     #[test]
