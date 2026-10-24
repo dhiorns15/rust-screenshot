@@ -281,7 +281,7 @@ recognition (Tesseract on Linux), in the background, and keeps it beside the scr
 matched. On Linux without Tesseract, search uses names only.
 The library groups screenshots by date (Today, Yesterday, This week, …). Ctrl+click and Shift+click
 select several, to copy them as files, delete them, pin them or drag them out together.
-Recordings appear with an MP4/GIF badge and open in your video player.
+Recordings appear with an MP4/GIF badge and play in the library (below).
 Drag a library thumbnail into Explorer, a chat app or an email to drop the file there.
 Right-click a library thumbnail to open it externally, show it in Explorer, pin it, or move it to the Recycle Bin.
 
@@ -291,7 +291,9 @@ here* / *End here*, and *Save trimmed copy* saves it beside the original as "…
 cut without re-encoding, so it's instant and loses nothing, but the cut starts on the keyframe at or
 before the start (recordings have one every second); GIFs are cut to the frame. On Linux, playing
 MP4s needs GStreamer's H.264 decoder (`gstreamer1.0-libav` on Debian and Ubuntu, which the `.deb`
-recommends).
+recommends). For a recording, *Copy* copies the file, to paste into a folder, chat or email
+(Windows), and *Export* saves a copy to another folder or shows it in its folder, selected (as
+*Show in folder* does for screenshots, and in the library's right-click menu).
 
 ### Command line
 

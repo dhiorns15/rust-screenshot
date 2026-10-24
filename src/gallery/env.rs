@@ -17,6 +17,8 @@ use super::words::Word;
 use crate::shortcuts::Action;
 use crate::update::{Release, Version};
 
+/// The folder chooser's answer: the folder, or `None` if it was cancelled.
+pub type PickedFolder = Receiver<Result<Option<PathBuf>, String>>;
 /// Reads the text in an image file (for search).
 pub type Ocr = Arc<dyn Fn(&Path) -> Result<String, String> + Send + Sync>;
 /// Reads the text in an image word by word, with where each word is (for the Copy text tool).
@@ -97,6 +99,8 @@ pub struct Sandbox {
     pub copied: Option<String>,
     /// Files, folders and links opened in other apps.
     pub opened: Vec<PathBuf>,
+    /// Files shown in their folder in the file manager.
+    pub shown_in_folder: Vec<PathBuf>,
 }
 
 enum Store {
@@ -232,7 +236,7 @@ impl Env {
 
     /// Asks for a folder with the system's folder chooser, starting in `current`; the answer
     /// (`None` if it was cancelled) arrives on the channel, and `ctx` repaints when it does.
-    pub fn pick_folder(&self, ctx: &eframe::egui::Context, title: &str, current: &Path) -> Receiver<Result<Option<PathBuf>, String>> {
+    pub fn pick_folder(&self, ctx: &eframe::egui::Context, title: &str, current: &Path) -> PickedFolder {
         let (tx, rx) = channel();
         match &self.sandbox {
             Some(s) => {
@@ -369,6 +373,14 @@ impl Env {
         match &self.sandbox {
             Some(s) => s.borrow_mut().opened.push(path.to_owned()),
             None => platform::open(path),
+        }
+    }
+
+    /// Opens the file manager on `path`'s folder, with it selected.
+    pub fn show_in_folder(&self, path: &Path) {
+        match &self.sandbox {
+            Some(s) => s.borrow_mut().shown_in_folder.push(path.to_owned()),
+            None => platform::show_in_folder(path),
         }
     }
 

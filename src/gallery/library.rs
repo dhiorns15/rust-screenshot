@@ -178,7 +178,7 @@ impl App {
                 let paths = self.targets(&path, &order);
                 match label {
                     "Open in default app" => paths.iter().for_each(|p| open_with_shell(p)),
-                    "Show in folder" => platform::show_in_folder(&path),
+                    "Show in folder" => self.env.show_in_folder(&path),
                     "Pin to screen" => paths.iter().for_each(|p| platform::pin_file(p)),
                     "Copy as files" => self.copy_files(&paths),
                     "Delete" => self.delete(&paths),

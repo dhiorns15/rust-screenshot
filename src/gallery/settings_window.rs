@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Ui, Vec2};
 
-use super::env::{Env, MoveReport, TrayRequest};
+use super::env::{Env, MoveReport, PickedFolder, TrayRequest};
 use super::system_info::{self, Gpu};
 use super::theme::{self, icon, Appearance};
 use super::{platform, Dock};
@@ -129,7 +129,7 @@ pub struct SettingsApp {
     /// What's missing for recording as H.264 and as H.265, found then too.
     recording_problems: Option<[Option<String>; 2]>,
     /// The folder chooser, while it's open.
-    picking: Option<Receiver<Result<Option<PathBuf>, String>>>,
+    picking: Option<PickedFolder>,
     /// The previous save folder and how many screenshots and recordings are still there.
     left_behind: Option<(PathBuf, usize)>,
     /// When that was counted (`None`: count again).

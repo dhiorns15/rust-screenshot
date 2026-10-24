@@ -139,6 +139,10 @@ fn export_menu_offers_what_this_system_supports() {
         assert_eq!(h.query_by_label_contains(windows_only).is_some(), cfg!(windows), "{windows_only}");
     }
     assert!(h.query_by_label_contains("Copy text (OCR)").is_some(), "wherever text can be read");
+    h.get_by_label_contains("Show in folder").click();
+    settle(&mut h);
+    let open = h.state().editor.as_ref().unwrap().doc.path.clone();
+    assert_eq!(h.state().env.sandboxed().shown_in_folder, [open]);
 }
 
 #[test]
@@ -418,6 +422,37 @@ fn recordings_play_in_the_library() {
     // Back to a screenshot: the editor again.
     click(&mut h, "Screenshot a");
     assert!(h.state().player.is_none() && h.state().editor.is_some());
+}
+
+#[test]
+fn recordings_are_saved_elsewhere_copied_and_shown_in_their_folder() {
+    let (mut h, gif) = with_recording("kittest-recording-actions");
+    click(&mut h, "Recording z");
+    let elsewhere = gif.with_file_name("Elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    h.state().env.sandboxed().picked_folder = Some(elsewhere.clone());
+    let off = |h: &Harness<App>, name: &str| h.get_by_label(name).accesskit_node().is_disabled();
+    assert!(off(&h, &super::theme::label(icon::FLOPPY_DISK, "Save")), "nothing to save: Trim saves its own copy");
+    assert_eq!(off(&h, &super::theme::label(icon::COPY, "Copy")), cfg!(not(windows)), "copied as a file, where RSnip can");
+
+    h.get_by_label_contains("Export").click();
+    settle(&mut h);
+    assert!(h.query_by_label_contains("JPG").is_none() && h.query_by_label_contains("OCR").is_none(), "only what applies to a recording");
+    h.get_by_label_contains("Save copy to…").click();
+    settle(&mut h);
+    assert_eq!(std::fs::read(elsewhere.join("Recording z.gif")).unwrap(), std::fs::read(&gif).unwrap());
+    // Again: beside the first copy.
+    h.get_by_label_contains("Export").click();
+    settle(&mut h);
+    h.get_by_label_contains("Save copy to…").click();
+    settle(&mut h);
+    assert!(elsewhere.join("Recording z (2).gif").exists());
+
+    h.get_by_label_contains("Export").click();
+    settle(&mut h);
+    h.get_by_label_contains("Show in folder").click();
+    settle(&mut h);
+    assert_eq!(h.state().env.sandboxed().shown_in_folder, [gif]);
 }
 
 /// Drags with the mouse on the open player's timeline, from one time to another (in seconds).

@@ -184,6 +184,8 @@ struct App {
     editor: Option<Editor>,
     /// The recording open in the viewer, instead of an editor.
     player: Option<player::Player>,
+    /// A recording to save a copy of, and the folder chooser while it's open.
+    copying_to: Option<(PathBuf, env::PickedFolder)>,
     tools: ToolState,
     font: Option<FontVec>,
     /// Action waiting on the "unsaved changes" dialog.
@@ -263,6 +265,7 @@ impl App {
             thumb_rx,
             editor: None,
             player: None,
+            copying_to: None,
             tools: ToolState::default(),
             font: font_bytes.and_then(|b| FontVec::try_from_vec(b).ok()),
             pending: None,
@@ -547,6 +550,20 @@ impl App {
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
+        if let Some(picked) = self.copying_to.as_ref().and_then(|(_, rx)| rx.try_recv().ok()) {
+            let (src, _) = self.copying_to.take().unwrap();
+            match picked {
+                Ok(Some(dir)) => {
+                    let to = free_name(&dir, &src);
+                    match std::fs::copy(&src, &to) {
+                        Ok(_) => self.set_status(format!("Saved a copy to {}", to.display())),
+                        Err(e) => self.set_status(format!("Couldn't save a copy: {e}")),
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => self.set_status(format!("Couldn't open the folder chooser: {e}")),
+            }
+        }
         while let Ok((path, modified, thumb)) = self.thumb_rx.try_recv() {
             // Files that can't be read stay "requested", so they aren't retried every frame.
             if let Some(thumb) = thumb {
@@ -729,8 +746,12 @@ impl App {
         self.actions_width = width.inner;
     }
 
-    /// Copy, Save and the Export menu, added right to left.
+    /// Copy, Save and the Export menu, added right to left: for the screenshot in the editor, or
+    /// what applies to the recording in the player.
     fn actions(&mut self, ui: &mut egui::Ui, enabled: bool) {
+        if let Some(path) = self.player.as_ref().map(|p| p.path.clone()) {
+            return self.recording_actions(ui, &path);
+        }
         ui.add_enabled_ui(enabled, |ui| {
             ui.menu_button(format!("{}  Export  {}", icon::EXPORT, icon::CARET_DOWN), |ui| self.export_menu(ui))
         });
@@ -741,6 +762,32 @@ impl App {
         let copy = egui::Button::new(theme::label(icon::COPY, "Copy"));
         if ui.add_enabled(enabled, copy).on_hover_text("Copy to clipboard (Ctrl+C)").clicked() {
             self.copy();
+        }
+    }
+
+    /// A recording has nothing to save (Trim saves its own copy); it's copied as a file.
+    fn recording_actions(&mut self, ui: &mut egui::Ui, path: &Path) {
+        ui.menu_button(format!("{}  Export  {}", icon::EXPORT, icon::CARET_DOWN), |ui| {
+            ui.set_min_width(200.0);
+            if ui.add_enabled(self.copying_to.is_none(), egui::Button::new(theme::label(icon::FLOPPY_DISK, "Save copy to…"))).on_hover_text("Copy the recording to another folder").clicked() {
+                let picking = self.env.pick_folder(ui.ctx(), "Save a copy of the recording to", &self.env.dir);
+                self.copying_to = Some((path.to_owned(), picking));
+                ui.close();
+            }
+            if ui.button(theme::label(icon::FOLDER_OPEN, "Show in folder")).clicked() {
+                self.env.show_in_folder(path);
+                ui.close();
+            }
+        });
+        let save = theme::primary_button(theme::label(icon::FLOPPY_DISK, "Save"));
+        ui.add_enabled(false, save).on_disabled_hover_text("Recordings aren't changed here. Trim saves the part you keep as a new recording");
+        let copy = ui.add_enabled(platform::EXTRAS, egui::Button::new(theme::label(icon::COPY, "Copy")));
+        let copy = copy.on_hover_text("Copy the recording as a file, to paste into a folder, chat or email").on_disabled_hover_text("Copying recordings isn't available on Linux yet; Export → Show in folder finds the file");
+        if copy.clicked() {
+            match platform::copy_files(&[path.to_owned()]) {
+                Ok(()) => self.set_status("Copied as a file — paste it into a folder, chat or email"),
+                Err(e) => self.set_status(format!("Couldn't copy: {e}")),
+            }
         }
     }
 
@@ -889,6 +936,12 @@ impl App {
                 self.copy_as_file();
                 ui.close();
             }
+        }
+        if ui.button(theme::label(icon::FOLDER_OPEN, "Show in folder")).clicked() {
+            if let Some(editor) = &self.editor {
+                self.env.show_in_folder(&editor.doc.path);
+            }
+            ui.close();
         }
         if platform::EXTRAS || self.env.read_words.is_some() {
             ui.separator();
@@ -1162,6 +1215,19 @@ fn copy_path(path: &Path, ext: &str) -> PathBuf {
     let mut n = 2;
     while candidate.exists() {
         candidate = dir.join(format!("{stem} (edited {n}).{ext}"));
+        n += 1;
+    }
+    candidate
+}
+
+/// Where a copy of `file` goes in `dir`: under its own name, else "name (2).ext", and so on.
+fn free_name(dir: &Path, file: &Path) -> PathBuf {
+    let name = file.file_name().unwrap_or_default();
+    let (stem, ext) = (file.file_stem().unwrap_or_default().to_string_lossy(), file.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default());
+    let mut candidate = dir.join(name);
+    let mut n = 2;
+    while candidate.exists() {
+        candidate = dir.join(format!("{stem} ({n}){ext}"));
         n += 1;
     }
     candidate

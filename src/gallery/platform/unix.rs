@@ -225,6 +225,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn names_files_for_the_file_manager() {
+        let path = Path::new("/home/a/RSnip/Recording 2026-10-24 091500 (trimmed)#1.mp4");
+        assert_eq!(file_uri(path), "file:///home/a/RSnip/Recording%202026-10-24%20091500%20%28trimmed%29%231.mp4");
+        assert_eq!(file_uri(Path::new("/tmp/café.png")), "file:///tmp/caf%C3%A9.png");
+    }
+
+    #[test]
     fn quotes_paths_for_the_autostart_entry() {
         assert_eq!(desktop_quote("/home/a b/.local/bin/rsnip"), r#""/home/a b/.local/bin/rsnip""#);
         assert_eq!(desktop_quote(r#"/x/$y"z\w"#), r#""/x/\$y\"z\\w""#);
@@ -297,8 +304,33 @@ pub fn open(path: &Path) {
     reap(Command::new("xdg-open").arg(path).spawn());
 }
 
+/// Opens the file manager on `path`'s folder with it selected, where the file manager can (GNOME's
+/// Files, Dolphin, Nemo and Caja answer `org.freedesktop.FileManager1`), else just the folder.
 pub fn show_in_folder(path: &Path) {
-    open(path.parent().unwrap_or(path));
+    let (path, folder) = (path.to_owned(), path.parent().unwrap_or(path).to_owned());
+    std::thread::spawn(move || {
+        let shown = zbus::blocking::Connection::session().is_ok_and(|conn| {
+            let (uris, startup_id) = (vec![file_uri(&path)], "");
+            conn.call_method(Some("org.freedesktop.FileManager1"), "/org/freedesktop/FileManager1", Some("org.freedesktop.FileManager1"), "ShowItems", &(uris, startup_id)).is_ok()
+        });
+        if !shown {
+            open(&folder);
+        }
+    });
+}
+
+/// `path` as a file:// URI, with anything but letters, digits and `/-._~` percent-encoded.
+fn file_uri(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut uri = String::from("file://");
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            uri.push(b as char);
+        } else {
+            uri.push_str(&format!("%{b:02X}"));
+        }
+    }
+    uri
 }
 
 /// The desktop's folder chooser, starting in `current`; `None` if it was cancelled.
