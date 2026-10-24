@@ -81,6 +81,10 @@ pub struct Sandbox {
     pub host: Host,
     /// The folder "picked" in the folder chooser (`None`: cancelled).
     pub picked_folder: Option<PathBuf>,
+    /// Updates can be installed from Settings.
+    pub can_install: bool,
+    /// Times RSnip was asked to restart into an update it installed.
+    pub restarts: usize,
     /// The text last put on the clipboard.
     pub copied: Option<String>,
     /// Files, folders and links opened in other apps.
@@ -333,6 +337,55 @@ impl Env {
     /// This copy came from the installer, so it can update itself.
     pub fn installed(&self) -> bool {
         self.sandbox.is_none() && platform::installed()
+    }
+
+    /// An update can be installed from Settings: by the tray app, for a copy from the installer
+    /// (Windows), or with the package manager, for one from the .deb or .rpm (Linux).
+    pub fn can_install_update(&self) -> bool {
+        match &self.sandbox {
+            Some(s) => s.borrow().can_install,
+            #[cfg(windows)]
+            None => self.tray_app && platform::installed() && platform::tray_running(),
+            #[cfg(not(windows))]
+            None => platform::package().is_some(),
+        }
+    }
+
+    /// Installs `release`; the answer arrives on the channel once it's installed (Linux) or handed
+    /// to the tray app, which installs it and restarts RSnip (Windows).
+    pub fn install_update(&self, ctx: &eframe::egui::Context, release: &Release) -> Receiver<Result<(), String>> {
+        let (tx, rx) = channel();
+        if self.sandbox.is_some() || cfg!(windows) {
+            self.tell_tray(TrayRequest::InstallUpdate);
+            let _ = tx.send(Ok(()));
+            return rx;
+        }
+        #[cfg(not(windows))]
+        if let Some(package) = platform::package() {
+            let (ctx, release) = (ctx.clone(), release.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::update::package::install(&release, package));
+                ctx.request_repaint();
+            });
+        }
+        #[cfg(windows)]
+        let _ = (ctx, release);
+        rx
+    }
+
+    /// Restarts the library into the update just installed (Linux; on Windows the installer does).
+    pub fn restart_after_update(&self) {
+        match &self.sandbox {
+            Some(s) => s.borrow_mut().restarts += 1,
+            #[cfg(not(windows))]
+            None if platform::instance_running("Gallery") => {
+                let _ = std::fs::write(&self.request_file, "--restart");
+            }
+            #[cfg(not(windows))]
+            None => platform::relaunch_when_closed(),
+            #[cfg(windows)]
+            None => {}
+        }
     }
 }
 

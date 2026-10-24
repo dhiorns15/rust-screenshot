@@ -82,10 +82,14 @@ pub struct Release {
     /// The Windows installer, if the release has one.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub installer: Option<Download>,
+    /// The Linux packages.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub deb: Option<Download>,
+    #[cfg_attr(windows, allow(dead_code))]
+    pub rpm: Option<Download>,
 }
 
 #[derive(Clone, Debug)]
-#[cfg_attr(not(windows), allow(dead_code))]
 pub struct Download {
     pub url: String,
     /// Lowercase hex SHA-256, as GitHub reports it.
@@ -109,18 +113,30 @@ fn release(v: &serde_json::Value) -> Result<Release, String> {
     let tag = v["tag_name"].as_str().ok_or("Unexpected reply from GitHub: no version")?;
     let version = Version::parse(tag).ok_or_else(|| format!("Unrecognised version {tag}"))?;
     let page = v["html_url"].as_str().unwrap_or("https://github.com/dhiorns15/rust-screenshot/releases").to_owned();
-    let installer = v["assets"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|a| a["name"].as_str().is_some_and(|n| n.ends_with(INSTALLER_SUFFIX)))
-        .and_then(|a| {
-            Some(Download {
-                url: a["browser_download_url"].as_str()?.to_owned(),
-                sha256: a["digest"].as_str().and_then(|d| d.strip_prefix("sha256:")).map(str::to_ascii_lowercase),
-            })
-        });
-    Ok(Release { version, page, installer })
+    let asset = |suffix: &str| {
+        let a = v["assets"].as_array().into_iter().flatten().find(|a| a["name"].as_str().is_some_and(|n| n.ends_with(suffix)))?;
+        Some(Download {
+            url: a["browser_download_url"].as_str()?.to_owned(),
+            sha256: a["digest"].as_str().and_then(|d| d.strip_prefix("sha256:")).map(str::to_ascii_lowercase),
+        })
+    };
+    Ok(Release { version, page, installer: asset(INSTALLER_SUFFIX), deb: asset("_amd64.deb"), rpm: asset(".x86_64.rpm") })
+}
+
+/// A download's SHA-256, as GitHub reports it: lowercase hex.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Downloads `download`, checked against GitHub's SHA-256.
+fn fetch(download: &Download, what: &str) -> Result<Vec<u8>, String> {
+    let expected = download.sha256.as_deref().ok_or_else(|| format!("GitHub gave no checksum for the {what}"))?;
+    let bytes = get(&download.url)?;
+    if sha256_hex(&bytes) != expected {
+        return Err("The download was damaged (its checksum doesn't match)".into());
+    }
+    Ok(bytes)
 }
 
 /// The latest release, if it is newer than this build; with `release_candidates`, the newest
@@ -256,7 +272,7 @@ mod install {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-    use super::{get, Release};
+    use super::{fetch, Release};
     use crate::util::{wide, wide_os};
 
     /// True if this copy came from the installer (so it can update itself), rather than being run
@@ -268,19 +284,10 @@ mod install {
     /// Downloads the release's installer to the temp folder, checked against GitHub's SHA-256.
     pub fn download(release: &Release) -> Result<PathBuf, String> {
         let installer = release.installer.as_ref().ok_or("This release has no installer")?;
-        let expected = installer.sha256.as_deref().ok_or("GitHub gave no checksum for the installer")?;
-        let bytes = get(&installer.url)?;
-        if sha256_hex(&bytes) != expected {
-            return Err("The download was damaged (its checksum doesn't match)".into());
-        }
+        let bytes = fetch(installer, "installer")?;
         let path = std::env::temp_dir().join(format!("rsnip-v{}-setup.exe", release.version));
         std::fs::write(&path, bytes).map_err(|e| format!("Couldn't save the installer: {e}"))?;
         Ok(path)
-    }
-
-    pub(super) fn sha256_hex(bytes: &[u8]) -> String {
-        use sha2::{Digest, Sha256};
-        Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
     }
 
     /// Asks the library window to close, so its unsaved edits can be saved, and waits for it.
@@ -312,6 +319,82 @@ mod install {
             Ok(())
         } else {
             Err(format!("Couldn't start the installer ({})", std::io::Error::last_os_error()))
+        }
+    }
+}
+
+/// Updating a copy installed from the .deb or .rpm: download the new package and install it with
+/// the system's package manager, which asks for the user's password (pkexec). The package asks
+/// RSnip's background icon to quit first (installer/linux/package/debian/prerm); the library then
+/// restarts into the new version (`--restart`, see `gallery`).
+#[cfg(not(windows))]
+pub mod package {
+    use std::ffi::OsString;
+    use std::path::Path;
+    use std::process::Command;
+
+    use super::{fetch, Release};
+
+    /// How this copy was installed, so an update is installed the same way.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum Package {
+        Deb,
+        Rpm,
+    }
+
+    pub fn install(release: &Release, package: Package) -> Result<(), String> {
+        let (download, ext) = match package {
+            Package::Deb => (release.deb.as_ref(), "deb"),
+            Package::Rpm => (release.rpm.as_ref(), "rpm"),
+        };
+        let download = download.ok_or_else(|| format!("RSnip {} has no .{ext} package", release.version))?;
+        let bytes = fetch(download, "package")?;
+        let path = std::env::temp_dir().join(format!("rsnip-{}.{ext}", release.version));
+        std::fs::write(&path, bytes).map_err(|e| format!("Couldn't save the package: {e}"))?;
+        // Readable by the package manager's own user (apt's _apt fetches even local packages).
+        let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o644));
+        let status = Command::new("pkexec").args(command(package, &path, &on_path)).status();
+        let _ = std::fs::remove_file(&path);
+        let status = status.map_err(|e| format!("Couldn't ask for permission to install it (pkexec): {e}"))?;
+        match status.code() {
+            Some(0) => Ok(()),
+            // pkexec's: the password prompt was dismissed, or the user isn't allowed.
+            Some(126) => Err("Cancelled".into()),
+            Some(127) => Err("This account isn't allowed to install software".into()),
+            _ => Err(format!("The package manager couldn't install it ({status})")),
+        }
+    }
+
+    /// What installs a package file, as root: apt for a .deb (which brings what it depends on),
+    /// dnf or zypper for an .rpm, else rpm itself. `has` says whether a program is installed.
+    fn command(package: Package, path: &Path, has: &dyn Fn(&str) -> bool) -> Vec<OsString> {
+        let words: &[&str] = match package {
+            // No questions: there's no terminal to answer them in.
+            Package::Deb => &["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y"],
+            Package::Rpm if has("dnf") => &["dnf", "install", "-y"],
+            Package::Rpm if has("zypper") => &["zypper", "--non-interactive", "install", "--allow-unsigned-rpm"],
+            Package::Rpm => &["rpm", "-U"],
+        };
+        words.iter().map(OsString::from).chain([path.as_os_str().to_owned()]).collect()
+    }
+
+    fn on_path(program: &str) -> bool {
+        let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
+        std::env::split_paths(&path).chain(["/usr/sbin".into(), "/usr/bin".into()]).any(|dir| dir.join(program).is_file())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn installs_with_the_systems_package_manager() {
+            let path = Path::new("/tmp/rsnip-0.5.3.deb");
+            let words = |p, has: &dyn Fn(&str) -> bool| command(p, path, has).into_iter().map(|w| w.into_string().unwrap()).collect::<Vec<_>>().join(" ");
+            assert_eq!(words(Package::Deb, &|_| true), "env DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/rsnip-0.5.3.deb");
+            assert_eq!(words(Package::Rpm, &|p| p == "dnf"), "dnf install -y /tmp/rsnip-0.5.3.deb");
+            assert_eq!(words(Package::Rpm, &|p| p == "zypper"), "zypper --non-interactive install --allow-unsigned-rpm /tmp/rsnip-0.5.3.deb");
+            assert_eq!(words(Package::Rpm, &|_| false), "rpm -U /tmp/rsnip-0.5.3.deb");
         }
     }
 }
@@ -376,6 +459,8 @@ mod tests {
         "assets": [
             {"name": "rsnip-v0.3.0-linux-x64.tar.gz", "browser_download_url": "https://example.com/linux", "digest": "sha256:aa"},
             {"name": "rsnip-v0.3.0-windows-x64-setup.exe", "browser_download_url": "https://example.com/setup", "digest": "sha256:ABCDEF"},
+            {"name": "rsnip_0.3.0-1_amd64.deb", "browser_download_url": "https://example.com/deb", "digest": "sha256:cc"},
+            {"name": "rsnip-0.3.0-1.x86_64.rpm", "browser_download_url": "https://example.com/rpm", "digest": "sha256:dd"},
             {"name": "rsnip.exe", "browser_download_url": "https://example.com/exe", "digest": "sha256:bb"}
         ]
     }"#;
@@ -388,6 +473,7 @@ mod tests {
         let installer = r.installer.unwrap();
         assert_eq!(installer.url, "https://example.com/setup");
         assert_eq!(installer.sha256.as_deref(), Some("abcdef"));
+        assert_eq!((r.deb.unwrap().url, r.rpm.unwrap().url), ("https://example.com/deb".into(), "https://example.com/rpm".into()));
 
         let r = parse(br#"{"tag_name": "v0.3.0", "assets": [{"name": "rsnip-v0.3.0-windows-x64-setup.exe", "browser_download_url": "u"}]}"#).unwrap();
         assert_eq!(r.installer.unwrap().sha256, None);
@@ -396,10 +482,9 @@ mod tests {
         assert!(parse(b"<html>").is_err());
     }
 
-    #[cfg(windows)]
     #[test]
     fn hashes_sha256() {
-        assert_eq!(install::sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 
     proptest::proptest! {

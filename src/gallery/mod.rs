@@ -174,6 +174,8 @@ struct App {
     ocr: Option<Receiver<Result<String, String>>>,
     /// A newer release, once the update check has found one.
     newer: Option<update::Release>,
+    /// Start again when this window closes, into an update that was just installed.
+    restart: bool,
     update_rx: Option<Receiver<update::Release>>,
     /// Library items selected for bulk actions.
     selected: HashSet<PathBuf>,
@@ -241,6 +243,7 @@ impl App {
             effects: load_effects(&env),
             ocr: None,
             newer: None,
+            restart: false,
             update_rx: env.check_updates.then(|| check_for_update(ctx, crate::options::RELEASE_CANDIDATES.read(|n| env.setting(n)))),
             selected: HashSet::new(),
             anchor: None,
@@ -539,6 +542,11 @@ impl App {
             match request.trim() {
                 // Out of the way of a recording, on Linux (see `background`).
                 "--hide" => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
+                // Into the update Settings installed, once any edits are saved (see `Env::restart_after_update`).
+                "--restart" => {
+                    self.restart = true;
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                }
                 request => {
                     ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(ViewportCommand::Focus);
@@ -955,6 +963,10 @@ impl eframe::App for App {
         if closing && self.dirty() && !self.allow_close {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             self.pending = Some(Pending::Close);
+        } else if closing && self.restart {
+            self.restart = false;
+            #[cfg(not(windows))]
+            platform::relaunch_when_closed();
         }
         if self.pending.is_none() {
             self.shortcuts(ctx);

@@ -121,12 +121,36 @@ pub fn installed() -> bool {
     false
 }
 
+/// Where the .deb and .rpm install RSnip (see installer/linux/build-packages.sh).
+const PACKAGED: &str = "/usr/bin/rsnip";
+
+/// The package this copy came from, if it's one (so updates can be installed the same way).
+pub fn package() -> Option<Package> {
+    // After an update replaces it, the old program reads as "/usr/bin/rsnip (deleted)".
+    let program = std::env::current_exe().ok()?;
+    if !program.to_string_lossy().starts_with(PACKAGED) {
+        return None;
+    }
+    Some(if Path::new("/var/lib/dpkg/info/rsnip.list").exists() { Package::Deb } else { Package::Rpm })
+}
+
+/// Starts the library again once this process has ended: the newly installed program, after an
+/// update.
+pub fn relaunch_when_closed() {
+    use std::os::unix::process::CommandExt;
+    let program = if package().is_some() { PathBuf::from(PACKAGED) } else { std::env::current_exe().unwrap_or_else(|_| PACKAGED.into()) };
+    let wait = r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec "$2""#;
+    let _ = Command::new("sh").args(["-c", wait, "sh", &std::process::id().to_string()]).arg(program).process_group(0).spawn();
+}
+
 pub fn shortcut_name(key: u32) -> String {
     crate::shortcuts::fallback_name(key)
 }
 
 /// Where screenshots and recordings are saved: the folder chosen in Settings, else `~/RSnip` (see
 /// `options::save_folder`).
+pub use crate::update::package::Package;
+
 pub fn screenshots_dir() -> PathBuf {
     // `~/Pictures/Screenshots`, or wherever the desktop's Pictures folder is: where RSnip saved before.
     let pictures = Command::new("xdg-user-dir")
@@ -306,14 +330,12 @@ pub fn host() -> Host {
     };
     let meminfo = read("/proc/meminfo").unwrap_or_default();
     let home = home();
-    let program = std::env::current_exe().ok();
-    let install = match program.as_deref() {
+    let install = match package() {
+        Some(Package::Deb) => ".deb package",
+        Some(Package::Rpm) => ".rpm package",
         // installer/linux/install.sh copies it here.
-        Some(p) if p.parent() == Some(home.join(".local/bin").as_path()) => "install.sh",
-        // The .deb or .rpm (see installer/linux/build-packages.sh).
-        Some(p) if p == Path::new("/usr/bin/rsnip") && Path::new("/var/lib/dpkg/info/rsnip.list").exists() => ".deb package",
-        Some(p) if p == Path::new("/usr/bin/rsnip") => ".rpm package",
-        _ => "Standalone",
+        None if std::env::current_exe().is_ok_and(|p| p.parent() == Some(home.join(".local/bin").as_path())) => "install.sh",
+        None => "Standalone",
     };
     Host {
         os: os.unwrap_or_else(|| std::env::consts::OS.to_string()),
@@ -324,7 +346,7 @@ pub fn host() -> Host {
         memory: system_info::meminfo(&meminfo, "MemTotal"),
         memory_available: system_info::meminfo(&meminfo, "MemAvailable"),
         install: install.into(),
-        program,
+        program: std::env::current_exe().ok(),
         settings: system_info::tidy_path(&settings_path(), Some(&home)),
         font: font_path(),
         helpers: HELPERS.map(|h| (h, on_path(h))).to_vec(),

@@ -130,6 +130,14 @@ pub struct SettingsApp {
     recording_problems: Option<[Option<String>; 2]>,
     /// The folder chooser, while it's open.
     picking: Option<Receiver<Result<Option<PathBuf>, String>>>,
+    installing: Installing,
+}
+
+/// Installing an update from Settings → Updates.
+enum Installing {
+    Idle,
+    Started(Receiver<Result<(), String>>),
+    Done(Result<(), String>),
 }
 
 impl SettingsApp {
@@ -139,7 +147,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, picking: None }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, picking: None, installing: Installing::Idle }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -504,15 +512,44 @@ impl SettingsApp {
                     self.update = UpdateCheck::Checking(self.env.check_for_update(ui.ctx()));
                 }
                 if let Some(release) = available {
-                    let install = self.env.tray_app && self.env.installed() && self.env.tray_running();
-                    if install && ui.add(theme::primary_button("Install")).clicked() {
-                        self.env.tell_tray(TrayRequest::InstallUpdate);
-                        self.note = Some("Installing; RSnip will restart.".into());
-                    } else if !install && ui.button("Download").clicked() {
-                        platform::open(Path::new(&release.page));
+                    let install = self.env.can_install_update();
+                    match &self.installing {
+                        Installing::Done(Ok(())) if !cfg!(windows) => {
+                            if ui.add(theme::primary_button("Restart RSnip")).clicked() {
+                                self.env.restart_after_update();
+                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                        }
+                        Installing::Started(_) => {
+                            ui.add_enabled(false, egui::Button::new("Installing…"));
+                        }
+                        _ if install => {
+                            if ui.add(theme::primary_button("Install")).clicked() {
+                                self.installing = Installing::Started(self.env.install_update(ui.ctx(), &release));
+                                if cfg!(windows) {
+                                    self.note = Some("Installing; RSnip will restart.".into());
+                                }
+                            }
+                        }
+                        _ => {
+                            if ui.button("Download").clicked() {
+                                platform::open(Path::new(&release.page));
+                            }
+                        }
                     }
                 }
             });
+            if let Installing::Started(rx) = &self.installing {
+                if let Ok(result) = rx.try_recv() {
+                    if !cfg!(windows) {
+                        self.note = Some(match &result {
+                            Ok(()) => "Installed. Restart RSnip to use the new version.".into(),
+                            Err(e) => format!("Couldn't install the update: {e}"),
+                        });
+                    }
+                    self.installing = Installing::Done(result);
+                }
+            }
         });
     }
 
