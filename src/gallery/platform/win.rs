@@ -118,6 +118,14 @@ pub fn set_setting(name: &str, value: u32) {
     crate::settings::set(name, value);
 }
 
+pub fn text_setting(name: &str) -> Option<String> {
+    crate::settings::get_text(name)
+}
+
+pub fn set_text_setting(name: &str, value: &str) {
+    crate::settings::set_text(name, value);
+}
+
 /// BGRA pixels for the Windows APIs, composited over white since they ignore transparency.
 fn to_bgra(img: &RgbaImage) -> Image {
     let img = flatten(img);
@@ -144,6 +152,32 @@ pub fn open(path: &Path) {
 
 pub fn show_in_folder(path: &Path) {
     let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn();
+}
+
+/// Windows' folder picker, starting in `current`; `None` if it was cancelled.
+pub fn pick_folder(title: &str, current: &Path) -> Result<Option<PathBuf>, String> {
+    use windows::core::HSTRING;
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, SIGDN_FILESYSPATH};
+    unsafe {
+        // Run on a thread of its own (see `Env::pick_folder`), so this is its COM setup.
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).map_err(|e| e.to_string())?;
+        let options = dialog.GetOptions().map_err(|e| e.to_string())?;
+        dialog.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM).map_err(|e| e.to_string())?;
+        let _ = dialog.SetTitle(&HSTRING::from(title));
+        if let Ok(start) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(current.as_os_str()), None) {
+            let _ = dialog.SetFolder(&start);
+        }
+        // Fails when it's cancelled.
+        if dialog.Show(None).is_err() {
+            return Ok(None);
+        }
+        let name = dialog.GetResult().and_then(|item| item.GetDisplayName(SIGDN_FILESYSPATH)).map_err(|e| e.to_string())?;
+        let path = name.to_string().map_err(|e| e.to_string());
+        CoTaskMemFree(Some(name.0 as *const _));
+        path.map(|p| Some(PathBuf::from(p)))
+    }
 }
 
 /// Moves a file to the Recycle Bin.

@@ -79,6 +79,8 @@ pub struct Sandbox {
     pub words: Arc<std::sync::Mutex<Vec<Word>>>,
     /// What System info reports about the machine.
     pub host: Host,
+    /// The folder "picked" in the folder chooser (`None`: cancelled).
+    pub picked_folder: Option<PathBuf>,
     /// The text last put on the clipboard.
     pub copied: Option<String>,
     /// Files, folders and links opened in other apps.
@@ -88,8 +90,9 @@ pub struct Sandbox {
 enum Store {
     /// The registry on Windows, `settings.json` elsewhere.
     Platform,
+    /// Numbers, and text.
     #[cfg_attr(not(test), allow(dead_code))]
-    Memory(RefCell<BTreeMap<String, u32>>),
+    Memory(RefCell<BTreeMap<String, u32>>, RefCell<BTreeMap<String, String>>),
 }
 
 impl Env {
@@ -128,7 +131,7 @@ impl Env {
             version: Version(1, 2, 3),
             ocr: Some(ocr),
             read_words: Some(read_words),
-            settings: Store::Memory(RefCell::default()),
+            settings: Store::Memory(RefCell::default(), RefCell::default()),
             sandbox: Some(RefCell::new(sandbox)),
         }
     }
@@ -142,17 +145,66 @@ impl Env {
     pub fn setting(&self, name: &str) -> Option<u32> {
         match &self.settings {
             Store::Platform => platform::setting(name),
-            Store::Memory(values) => values.borrow().get(name).copied(),
+            Store::Memory(values, _) => values.borrow().get(name).copied(),
         }
     }
 
     pub fn set_setting(&self, name: &str, value: u32) {
         match &self.settings {
             Store::Platform => platform::set_setting(name, value),
-            Store::Memory(values) => {
+            Store::Memory(values, _) => {
                 values.borrow_mut().insert(name.to_owned(), value);
             }
         }
+    }
+
+    pub fn text_setting(&self, name: &str) -> Option<String> {
+        match &self.settings {
+            Store::Platform => platform::text_setting(name),
+            Store::Memory(_, texts) => texts.borrow().get(name).cloned(),
+        }
+    }
+
+    pub fn set_text_setting(&self, name: &str, value: &str) {
+        match &self.settings {
+            Store::Platform => platform::set_text_setting(name, value),
+            Store::Memory(_, texts) => {
+                texts.borrow_mut().insert(name.to_owned(), value.to_owned());
+            }
+        }
+    }
+
+    /// Follows a change of the folder screenshots are saved to, made in Settings; true if it moved.
+    pub fn refresh_dir(&mut self) -> bool {
+        let dir = match &self.settings {
+            Store::Platform => platform::screenshots_dir(),
+            Store::Memory(..) => match self.text_setting(crate::options::SAVE_FOLDER) {
+                Some(dir) => dir.into(),
+                None => return false,
+            },
+        };
+        let moved = dir != self.dir;
+        self.dir = dir;
+        moved
+    }
+
+    /// Asks for a folder with the system's folder chooser, starting in `current`; the answer
+    /// (`None` if it was cancelled) arrives on the channel, and `ctx` repaints when it does.
+    pub fn pick_folder(&self, ctx: &eframe::egui::Context, title: &str, current: &Path) -> Receiver<Result<Option<PathBuf>, String>> {
+        let (tx, rx) = channel();
+        match &self.sandbox {
+            Some(s) => {
+                let _ = tx.send(Ok(s.borrow().picked_folder.clone()));
+            }
+            None => {
+                let (ctx, title, current) = (ctx.clone(), title.to_owned(), current.to_owned());
+                std::thread::spawn(move || {
+                    let _ = tx.send(platform::pick_folder(&title, &current));
+                    ctx.request_repaint();
+                });
+            }
+        }
+        rx
     }
 
     pub fn start_with_windows(&self) -> bool {

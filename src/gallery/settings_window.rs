@@ -4,7 +4,7 @@
 //! them. Shortcuts are recorded by the tray app (its keyboard hook sees keys like Print Screen
 //! before anything else). Settings are re-read every half second, so changes made elsewhere show up.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
@@ -128,6 +128,8 @@ pub struct SettingsApp {
     hevc: Option<bool>,
     /// What's missing for recording as H.264 and as H.265, found then too.
     recording_problems: Option<[Option<String>; 2]>,
+    /// The folder chooser, while it's open.
+    picking: Option<Receiver<Result<Option<PathBuf>, String>>>,
 }
 
 impl SettingsApp {
@@ -137,7 +139,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, picking: None }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -400,6 +402,7 @@ impl SettingsApp {
     }
 
     fn library(&mut self, ui: &mut Ui) {
+        self.save_folder(ui);
         theme::card(ui, |ui| {
             let dock = Dock::from_setting(self.env.setting(Dock::SETTING));
             row(ui, "Library position", "Along the bottom gives the editor the whole width", |ui| {
@@ -430,6 +433,38 @@ impl SettingsApp {
                     self.set(name, on as u32);
                 }
             }
+        });
+    }
+
+    /// Where screenshots and recordings are saved, and choosing another folder.
+    fn save_folder(&mut self, ui: &mut Ui) {
+        if let Some(picked) = self.picking.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.picking = None;
+            match picked {
+                Ok(Some(dir)) => {
+                    self.env.set_text_setting(crate::options::SAVE_FOLDER, &dir.to_string_lossy());
+                    self.env.tell_tray(TrayRequest::SettingsChanged);
+                    self.note = Some(format!("New screenshots and recordings go to {}", dir.display()));
+                }
+                Ok(None) => {}
+                Err(e) => self.note = Some(format!("Couldn't open the folder chooser: {e}")),
+            }
+        }
+        self.env.refresh_dir();
+        let env_dir = self.env.dir.clone();
+        let shown = system_info::tidy_path(&env_dir, self.env.host().home.as_deref());
+        theme::card(ui, |ui| {
+            row(ui, "Save screenshots and recordings to", &shown, |ui| {
+                let choosing = self.picking.is_some();
+                if ui.add_enabled(!choosing, egui::Button::new(if choosing { "Choosing…" } else { "Change…" })).clicked() {
+                    self.picking = Some(self.env.pick_folder(ui.ctx(), "Save screenshots and recordings to", &env_dir));
+                }
+                if ui.button("Open").clicked() {
+                    let _ = std::fs::create_dir_all(&env_dir);
+                    self.env.open(&env_dir);
+                }
+            });
+            ui.label(RichText::new("The library shows this folder. What's already saved stays where it is.").small().color(theme::palette(ui).muted));
         });
     }
 

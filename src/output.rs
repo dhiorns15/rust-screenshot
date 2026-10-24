@@ -121,15 +121,17 @@ unsafe fn known_folder(id: &GUID) -> Option<PathBuf> {
     path
 }
 
-/// The same folder Windows uses for Win+PrtScn captures.
+/// Where screenshots and recordings are saved: the folder chosen in Settings, else `RSnip` in the
+/// user's folder (see `options::save_folder`).
 pub fn screenshots_dir() -> PathBuf {
-    unsafe {
-        known_folder(&FOLDERID_Screenshots)
-            .or_else(|| known_folder(&FOLDERID_Pictures).map(|p| p.join("Screenshots")))
-            .unwrap_or_else(|| {
-                PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()).join("Pictures\\Screenshots")
-            })
-    }
+    let home = unsafe { known_folder(&FOLDERID_Profile) }.unwrap_or_else(|| PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()));
+    let legacy = unsafe {
+        // The folder Windows uses for Win+PrtScn captures, where RSnip saved before.
+        known_folder(&FOLDERID_Screenshots).or_else(|| known_folder(&FOLDERID_Pictures).map(|p| p.join("Screenshots"))).unwrap_or_else(|| home.join("Pictures\\Screenshots"))
+    };
+    crate::options::save_folder(crate::settings::get_text(crate::options::SAVE_FOLDER), legacy, &home, |dir| {
+        crate::settings::set_text(crate::options::SAVE_FOLDER, &dir.to_string_lossy())
+    })
 }
 
 pub fn next_path() -> Result<PathBuf, String> {

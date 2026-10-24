@@ -100,6 +100,45 @@ fn source_options(sources: Sources, available: u32, cursor_modes: u32) -> HashMa
     HashMap::from([("types", Value::from(wanted.max(1))), ("multiple", Value::from(false)), ("cursor_mode", Value::from(cursor))])
 }
 
+/// Asks the desktop to pick a folder, starting in `current`, with its own file chooser; `None` if
+/// it was cancelled.
+pub fn pick_folder(title: &str, current: &std::path::Path) -> Result<Option<std::path::PathBuf>, String> {
+    use std::os::unix::ffi::OsStrExt;
+    let conn = Connection::session().map_err(|e| format!("Couldn't reach the desktop's session bus: {e}"))?;
+    let chooser = Proxy::new(&conn, PORTAL, PORTAL_PATH, "org.freedesktop.portal.FileChooser").map_err(|e| e.to_string())?;
+    // The current folder as the portal takes it: bytes, ending in a zero.
+    let mut start = current.as_os_str().as_bytes().to_vec();
+    start.push(0);
+    let mut options = HashMap::from([("directory", Value::from(true)), ("current_folder", Value::from(start))]);
+    let Response::Done(results) = request(&conn, &chooser, "OpenFile", &mut options, |c, o| c.call_method("OpenFile", &("", title, o)))? else {
+        return Ok(None);
+    };
+    let uris: Vec<String> = take(results, "uris")?;
+    Ok(uris.first().and_then(|uri| file_path(uri)))
+}
+
+/// The path in a `file://` URI.
+fn file_path(uri: &str) -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let encoded = uri.strip_prefix("file://")?.as_bytes();
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let mut i = 0;
+    while i < encoded.len() {
+        let hex = encoded.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (encoded[i], hex) {
+            (b'%', Some(byte)) => {
+                bytes.push(byte);
+                i += 3;
+            }
+            (byte, _) => {
+                bytes.push(byte);
+                i += 1;
+            }
+        }
+    }
+    Some(std::ffi::OsString::from_vec(bytes).into())
+}
+
 fn portal_missing(e: zbus::Error) -> String {
     format!("This desktop has no screen-recording portal (xdg-desktop-portal), which recording needs ({e})")
 }
@@ -151,6 +190,13 @@ mod tests {
         let options = source_options(Sources::ScreenOrWindow, 7, 7);
         let types: Vec<(&str, String)> = ["types", "multiple", "cursor_mode"].map(|k| (k, options[k].value_signature().to_string())).into();
         assert_eq!(types, [("types", "u".to_string()), ("multiple", "b".to_string()), ("cursor_mode", "u".to_string())]);
+    }
+
+    #[test]
+    fn reads_the_folder_from_the_choosers_uri() {
+        assert_eq!(file_path("file:///home/a%20b/RSnip%C3%A9").unwrap(), std::path::Path::new("/home/a b/RSnipé"));
+        assert_eq!(file_path("file:///tmp/100%"), Some("/tmp/100%".into()), "a stray % stays");
+        assert_eq!(file_path("https://example.com/x"), None);
     }
 
     #[test]

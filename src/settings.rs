@@ -132,13 +132,30 @@ pub fn read_machine_dword(subkey: &str, name: &str) -> Option<u32> {
 
 /// A text value under HKEY_LOCAL_MACHINE, trimmed; None if it's missing or empty.
 pub fn read_machine_string(subkey: &str, name: &str) -> Option<String> {
+    string(HKEY_LOCAL_MACHINE, subkey, name)
+}
+
+/// A text setting, like the folder screenshots are saved to; None if it's missing or empty.
+pub fn get_text(name: &str) -> Option<String> {
+    string(HKEY_CURRENT_USER, KEY, name)
+}
+
+pub fn set_text(name: &str, value: &str) {
+    let value = wide(value);
+    let bytes = unsafe { std::slice::from_raw_parts(value.as_ptr() as *const u8, value.len() * 2) };
+    write_value(KEY, name, REG_SZ, bytes);
+}
+
+fn string(root: HKEY, subkey: &str, name: &str) -> Option<String> {
     let (subkey, name) = (wide(subkey), wide(name));
-    let mut buf = [0u16; 256];
-    let mut size = std::mem::size_of_val(&buf) as u32;
-    let status = unsafe {
-        RegGetValueW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, null_mut(), buf.as_mut_ptr() as *mut _, &mut size)
-    };
-    if status != ERROR_SUCCESS {
+    let get = |buf: *mut u16, size: &mut u32| unsafe { RegGetValueW(root, subkey.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, null_mut(), buf as *mut _, size) };
+    // Asked for its size first: a folder's path can be long.
+    let mut size = 0u32;
+    if get(null_mut(), &mut size) != ERROR_SUCCESS {
+        return None;
+    }
+    let mut buf = vec![0u16; (size as usize).div_ceil(2)];
+    if get(buf.as_mut_ptr(), &mut size) != ERROR_SUCCESS {
         return None;
     }
     let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());

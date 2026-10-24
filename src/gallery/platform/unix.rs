@@ -2,7 +2,6 @@
 //! desktop's own, Flameshot or grim); RSnip opens and annotates the results.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -126,8 +125,10 @@ pub fn shortcut_name(key: u32) -> String {
     crate::shortcuts::fallback_name(key)
 }
 
-/// `~/Pictures/Screenshots`, or wherever the desktop's Pictures folder is.
+/// Where screenshots and recordings are saved: the folder chosen in Settings, else `~/RSnip` (see
+/// `options::save_folder`).
 pub fn screenshots_dir() -> PathBuf {
+    // `~/Pictures/Screenshots`, or wherever the desktop's Pictures folder is: where RSnip saved before.
     let pictures = Command::new("xdg-user-dir")
         .arg("PICTURES")
         .output()
@@ -136,7 +137,8 @@ pub fn screenshots_dir() -> PathBuf {
         .map(|s| PathBuf::from(s.trim()))
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home().join("Pictures"));
-    pictures.join("Screenshots")
+    let chosen = text_setting(crate::options::SAVE_FOLDER);
+    crate::options::save_folder(chosen, pictures.join("Screenshots"), &home(), |dir| set_text_setting(crate::options::SAVE_FOLDER, &dir.to_string_lossy()))
 }
 
 fn settings_path() -> PathBuf {
@@ -144,13 +146,29 @@ fn settings_path() -> PathBuf {
     config.join("rsnip").join("settings.json")
 }
 
-fn settings() -> BTreeMap<String, u32> {
+fn settings() -> Settings {
     std::fs::read(settings_path()).map(|b| parse_settings(&b)).unwrap_or_default()
 }
 
+fn save_settings(all: &Settings) {
+    let path = settings_path();
+    if let (Some(dir), Ok(json)) = (path.parent(), serde_json::to_vec_pretty(all)) {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(path, json);
+    }
+}
+
+/// Settings: numbers, and some text (a folder, say).
+type Settings = serde_json::Map<String, serde_json::Value>;
+
 /// The settings in a `settings.json`; anything unreadable means defaults.
-fn parse_settings(bytes: &[u8]) -> BTreeMap<String, u32> {
+fn parse_settings(bytes: &[u8]) -> Settings {
     serde_json::from_slice(bytes).unwrap_or_default()
+}
+
+/// A number setting, if it's set to one.
+fn number(all: &Settings, name: &str) -> Option<u32> {
+    all.get(name)?.as_u64().and_then(|n| u32::try_from(n).ok())
 }
 
 #[cfg(test)]
@@ -165,25 +183,37 @@ mod tests {
 
     #[test]
     fn damaged_settings_mean_defaults() {
-        assert_eq!(parse_settings(br#"{"LibraryDock": 1, "CheckUpdates": 0}"#).get("LibraryDock"), Some(&1));
-        for junk in [&b""[..], b"{", b"null", b"[1,2]", br#"{"LibraryDock": -1}"#, br#"{"LibraryDock": "bottom"}"#, b"\xff\xfe"] {
+        let all = parse_settings(br#"{"LibraryDock": 1, "CheckUpdates": 0, "SaveFolder": "/home/a/RSnip"}"#);
+        assert_eq!((number(&all, "LibraryDock"), number(&all, "CheckUpdates")), (Some(1), Some(0)));
+        assert_eq!(all["SaveFolder"].as_str(), Some("/home/a/RSnip"), "text settings sit beside them");
+        for junk in [&b""[..], b"{", b"null", b"[1,2]", b"\xff\xfe"] {
             assert!(parse_settings(junk).is_empty(), "{junk:?}");
         }
+        // A value of the wrong kind is unset, without losing the rest.
+        let all = parse_settings(br#"{"LibraryDock": -1, "Notify": "bottom", "Theme": 4294967296, "CheckUpdates": 0}"#);
+        assert_eq!(["LibraryDock", "Notify", "Theme", "CheckUpdates"].map(|n| number(&all, n)), [None, None, None, Some(0)]);
     }
 }
 
 pub fn setting(name: &str) -> Option<u32> {
-    settings().get(name).copied()
+    number(&settings(), name)
 }
 
 pub fn set_setting(name: &str, value: u32) {
     let mut all = settings();
-    all.insert(name.to_owned(), value);
-    let path = settings_path();
-    if let (Some(dir), Ok(json)) = (path.parent(), serde_json::to_vec_pretty(&all)) {
-        let _ = std::fs::create_dir_all(dir);
-        let _ = std::fs::write(path, json);
-    }
+    all.insert(name.to_owned(), value.into());
+    save_settings(&all);
+}
+
+/// A text setting, like the folder screenshots are saved to; None if it's missing or empty.
+pub fn text_setting(name: &str) -> Option<String> {
+    settings().get(name)?.as_str().map(str::trim).filter(|t| !t.is_empty()).map(String::from)
+}
+
+pub fn set_text_setting(name: &str, value: &str) {
+    let mut all = settings();
+    all.insert(name.to_owned(), value.into());
+    save_settings(&all);
 }
 
 thread_local! {
@@ -220,6 +250,11 @@ pub fn open(path: &Path) {
 
 pub fn show_in_folder(path: &Path) {
     open(path.parent().unwrap_or(path));
+}
+
+/// The desktop's folder chooser, starting in `current`; `None` if it was cancelled.
+pub fn pick_folder(title: &str, current: &Path) -> Result<Option<PathBuf>, String> {
+    super::super::portal::pick_folder(title, current)
 }
 
 pub fn recycle(path: &Path) -> bool {

@@ -528,9 +528,10 @@ impl App {
             self.update_rx = None;
         }
         if self.last_scan.elapsed() >= RESCAN_EVERY {
-            // Settings may have changed in the Settings window.
+            // Settings may have changed in the Settings window, the folder too.
             self.dock = Dock::from_setting(self.env.setting(Dock::SETTING));
             self.effects = load_effects(&self.env);
+            self.env.refresh_dir();
             self.rescan();
         }
         if let Ok(request) = std::fs::read_to_string(&self.env.request_file) {
