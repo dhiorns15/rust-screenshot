@@ -71,11 +71,22 @@ impl Stitcher {
         for d in 1..end - start {
             let mut matched = 0;
             let mut informative = 0;
-            for (&a, &b) in next[start..end - d].iter().zip(&self.prev[start + d..end]) {
+            let mut count = |a: Row, b: Row| {
                 if !(a.plain && b.plain) {
                     informative += 1;
                     matched += (a == b) as usize;
                 }
+            };
+            for (&a, &b) in next[start..end - d].iter().zip(&self.prev[start + d..end]) {
+                count(a, b);
+            }
+            // Rows taken for a sticky header or footer may be page that happened to look the same
+            // where it was (blank lines, rules): they count too while they line up at this distance.
+            for i in (end - d..h - d).take_while(|&i| next[i] == self.prev[i + d]) {
+                count(next[i], self.prev[i + d]);
+            }
+            for i in (0..start).rev().take_while(|&i| next[i] == self.prev[i + d]) {
+                count(next[i], self.prev[i + d]);
             }
             let good = matched >= 4 && matched * 10 >= informative * 6;
             if good && best.is_none_or(|(_, m)| matched > m) {
@@ -177,25 +188,43 @@ mod tests {
             view in 150usize..300,
             steps in proptest::collection::vec(1usize..1000, 1..8),
         ) {
-            let (w, h) = (48, 1200);
-            let page = page(w, h);
-            let visible = view - header - footer;
-            let mut offset = 0;
-            let mut s = Stitcher::new(&frame(&page, w, 0, view, header, footer));
-            for step in steps {
-                // Keep enough rows overlapping to line frames up, and stay on the page.
-                let step = 1 + step % (visible - 10);
-                if offset + step + view > h {
-                    break;
-                }
-                offset += step;
-                let added = matches!(s.push(&frame(&page, w, offset, view, header, footer)), Step::Added(d) if d == step);
-                proptest::prop_assert!(added, "scrolled {step} at {offset}");
+            if let Err(e) = scroll_through(header, footer, view, &steps) {
+                proptest::prop_assert!(false, "{}", e);
             }
-            let out = s.finish();
-            let expected = frame(&page, w, 0, view + offset, header, footer);
-            proptest::prop_assert_eq!((out.width, out.height), (expected.width, expected.height));
-            proptest::prop_assert!(out.data == expected.data);
         }
+    }
+
+    /// Scrolls down the test page by `steps` (kept on the page, and overlapping enough to line
+    /// frames up) and checks each step is found and the result is the page.
+    fn scroll_through(header: usize, footer: usize, view: usize, steps: &[usize]) -> Result<(), String> {
+        let (w, h) = (48, 1200);
+        let page = page(w, h);
+        let visible = view - header - footer;
+        let mut offset = 0;
+        let mut s = Stitcher::new(&frame(&page, w, 0, view, header, footer));
+        for &step in steps {
+            let step = 1 + step % (visible - 10);
+            if offset + step + view > h {
+                break;
+            }
+            offset += step;
+            if !matches!(s.push(&frame(&page, w, offset, view, header, footer)), Step::Added(d) if d == step) {
+                return Err(format!("scrolled {step} at {offset}"));
+            }
+        }
+        let out = s.finish();
+        let expected = frame(&page, w, 0, view + offset, header, footer);
+        if (out.width, out.height) != (expected.width, expected.height) || out.data != expected.data {
+            return Err("the stitched image isn't the page".into());
+        }
+        Ok(())
+    }
+
+    /// Found by the test above: page rows that repeat (the test page's white bands) were taken
+    /// for part of the sticky footer when they sat just above it in both frames, which left too
+    /// few rows to line up a big scroll.
+    #[test]
+    fn repeated_rows_above_a_footer_arent_footer() {
+        assert_eq!(scroll_through(24, 19, 152, &[272, 593]), Ok(()));
     }
 }
