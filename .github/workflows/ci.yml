@@ -79,6 +79,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: ci/desktop-test.sh
 
+  # Pushing to real S3, WebDAV and SFTP servers, in Docker (ci/test-destinations.sh); the linux
+  # job's container can't start containers of its own.
+  destinations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ci/test-destinations.sh
+
   # The .deb and .rpm build, install with what they depend on and recommend on Ubuntu, Fedora and
   # openSUSE, and run (installer/linux/build-packages.sh, ci/test-packages.sh).
   packages:

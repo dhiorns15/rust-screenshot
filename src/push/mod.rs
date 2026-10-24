@@ -440,6 +440,63 @@ mod tests {
         assert!(matches!(d.kind, Kind::Sftp { port: 22, .. }));
     }
 
+    /// Against real servers, as ci/test-destinations.sh starts them: rclone's S3 and WebDAV at
+    /// `RSNIP_TEST_S3` and `RSNIP_TEST_WEBDAV`, and OpenSSH's SFTP at the host `RSNIP_TEST_SFTP`.
+    /// What each keeps shows here in the folder `RSNIP_TEST_<KIND>_DIR`.
+    #[test]
+    #[ignore = "needs the servers ci/test-destinations.sh starts"]
+    fn real_servers() {
+        let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name} isn't set: run ci/test-destinations.sh"));
+        let png = shot("real");
+        // A recording big enough that it has to stream.
+        let mp4 = png.with_file_name("Recording 2026-10-24 091500.mp4");
+        std::fs::write(&mp4, (0..12_000_000u32).map(|i| (i % 251) as u8).collect::<Vec<_>>()).unwrap();
+        // The server has `file`, whole, in `folder`.
+        let check = |folder: &Path, file: &Path| {
+            let there = folder.join(file.file_name().unwrap());
+            assert!(std::fs::read(&there).is_ok_and(|bytes| bytes == std::fs::read(file).unwrap()), "{} isn't the same", there.display());
+        };
+
+        let s3 = var("RSNIP_TEST_S3");
+        let bucket = Kind::S3 {
+            endpoint: s3.clone(),
+            region: "us-east-1".into(),
+            bucket: "shots".into(),
+            prefix: "rsnip/today".into(),
+            access_key: "rsnip".into(),
+            public_url: format!("{s3}/shots"),
+        };
+        let d = to(bucket);
+        assert_eq!(test(&d, Some("rsnip-secret")), Ok("Connected to shots".into()));
+        assert!(test(&d, Some("wrong")).unwrap_err().starts_with("Access denied"));
+        for file in [&png, &mp4] {
+            let link = push(&d, Some("rsnip-secret"), file).unwrap();
+            let name = encode(&file.file_name().unwrap().to_string_lossy());
+            assert_eq!(link, Some(format!("{s3}/shots/rsnip/today/{name}")), "a link, as it has a public address");
+            check(&Path::new(&var("RSNIP_TEST_S3_DIR")).join("shots/rsnip/today"), file);
+        }
+        println!("S3: pushed");
+
+        let d = to(Kind::WebDav { url: format!("{}/shots/today", var("RSNIP_TEST_WEBDAV")), user: "rsnip".into(), public_url: String::new() });
+        assert!(test(&d, Some("rsnip-secret")).is_ok());
+        assert_eq!(test(&d, Some("wrong")), Err("The server didn't accept the user name or password".into()));
+        for file in [&png, &mp4] {
+            assert_eq!(push(&d, Some("rsnip-secret"), file), Ok(None), "no link without a public address");
+            check(&Path::new(&var("RSNIP_TEST_WEBDAV_DIR")).join("shots/today"), file);
+        }
+        println!("WebDAV: pushed, making the folders");
+
+        let d = to(Kind::Sftp { host: var("RSNIP_TEST_SFTP"), port: 22, user: "rsnip".into(), folder: "upload/shots/today".into(), public_url: String::new() });
+        test(&d, None).unwrap();
+        for file in [&png, &mp4] {
+            assert_eq!(push(&d, None, file), Ok(None));
+            check(&Path::new(&var("RSNIP_TEST_SFTP_DIR")).join("shots/today"), file);
+        }
+        let stranger = to(Kind::Sftp { host: var("RSNIP_TEST_SFTP"), port: 22, user: "nobody".into(), folder: String::new(), public_url: String::new() });
+        assert!(test(&stranger, None).unwrap_err().contains("didn't accept your SSH keys"));
+        println!("SFTP: pushed, making the folders");
+    }
+
     #[test]
     fn ids_are_unique() {
         let ids: std::collections::BTreeSet<String> = (0..1000).map(|_| new_id()).collect();

@@ -19,11 +19,11 @@ pub struct Server<'a> {
 /// Signs in and looks at the folder, without changing anything.
 pub fn test(s: &Server) -> Result<String, String> {
     let folder = s.folder.trim_end_matches('/');
-    let batch = if folder.is_empty() { "pwd\n".to_owned() } else { format!("ls -d {}\n", quote(folder)) };
+    let batch = if folder.is_empty() { "pwd\n".to_owned() } else { format!("cd {}\n", quote(folder)) };
     match run(s, &batch) {
         Ok(()) => Ok("Connected".into()),
         // The folder isn't there yet: it's made with the first push.
-        Err(e) if e.contains("not found") => Ok("Connected. The folder will be made with the first push".into()),
+        Err(e) if e.contains("No such file") || e.contains("not found") => Ok("Connected. The folder will be made with the first push".into()),
         Err(e) => Err(e),
     }
 }
