@@ -121,6 +121,9 @@ enum Action {
     Click(PathBuf, egui::Modifiers),
     Drag(PathBuf),
     Menu(PathBuf, &'static str),
+    /// Push this (or the selected ones, if it's one of them) there.
+    Push(PathBuf, crate::push::Destination),
+    CopyLink(String),
 }
 
 impl App {
@@ -185,6 +188,14 @@ impl App {
                     _ => {}
                 }
             }
+            Some(Action::Push(path, destination)) => {
+                let paths = self.targets(&path, &order);
+                self.push_to(ui.ctx(), &destination, paths);
+            }
+            Some(Action::CopyLink(link)) => match self.env.copy_text(&link) {
+                Ok(()) => self.set_status("Link copied"),
+                Err(e) => self.set_status(format!("Couldn't copy: {e}")),
+            },
             None => {}
         }
     }
@@ -382,6 +393,29 @@ impl App {
                 if ui.button(text).clicked() {
                     action = Some(Action::Menu(path.clone(), label));
                     ui.close();
+                }
+            }
+            ui.separator();
+            let push = if many { format!("Push to ({})", self.selected.len()) } else { "Push to".into() };
+            ui.menu_button(theme::label(icon::CLOUD_ARROW_UP, &push), |ui| {
+                let destinations = crate::push::load(&self.env);
+                if destinations.is_empty() && ui.button("Set up places to push to…").clicked() {
+                    self.env.open_settings();
+                    ui.close();
+                }
+                for destination in destinations {
+                    if ui.add_enabled(self.pushing.is_none(), egui::Button::new(&destination.name)).on_disabled_hover_text("Still pushing").clicked() {
+                        action = Some(Action::Push(path.clone(), destination));
+                        ui.close();
+                    }
+                }
+            });
+            if !many {
+                for (name, link) in self.links(&path) {
+                    if ui.button(theme::label(icon::LINK, &format!("Copy link ({name})"))).clicked() {
+                        action = Some(Action::CopyLink(link));
+                        ui.close();
+                    }
                 }
             }
         });

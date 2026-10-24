@@ -23,6 +23,7 @@ mod dragout;
 mod library;
 mod platform;
 mod player;
+mod pushing;
 mod editor;
 pub mod env;
 mod search;
@@ -74,6 +75,7 @@ use crate::update;
 use doc::{apply_effects, flatten, render, Doc, Effects};
 use editor::{Editor, TextStatus, Tool, ToolState, GROUP_STARTS, PALETTE, PALETTE_NAMES, TEXT_SIZES, TOOLS};
 use env::Env;
+use pushing::Pushing;
 use theme::{icon, Appearance, IconButton};
 
 pub const TITLE: &str = "RSnip Library";
@@ -188,6 +190,8 @@ struct App {
     player: Option<player::Player>,
     /// A recording to save a copy of, and the folder chooser while it's open.
     copying_to: Option<(PathBuf, env::PickedFolder)>,
+    /// Files being pushed to a destination, chosen by hand (see `push_to`).
+    pushing: Option<Pushing>,
     tools: ToolState,
     font: Option<FontVec>,
     /// Action waiting on the "unsaved changes" dialog.
@@ -268,6 +272,7 @@ impl App {
             editor: None,
             player: None,
             copying_to: None,
+            pushing: None,
             tools: ToolState::default(),
             font: font_bytes.and_then(|b| FontVec::try_from_vec(b).ok()),
             pending: None,
@@ -552,6 +557,7 @@ impl App {
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
+        self.poll_pushing();
         if let Some(picked) = self.copying_to.as_ref().and_then(|(_, rx)| rx.try_recv().ok()) {
             let (src, _) = self.copying_to.take().unwrap();
             match picked {
@@ -577,10 +583,13 @@ impl App {
         if let Some(rx) = &self.read_rx {
             for (path, stamp, text) in rx.try_iter() {
                 self.reading.remove(&path);
-                if let Some(meta) = self.metas.get_mut(&path) {
+                if self.metas.contains_key(&path) {
+                    // Read again, not the copy kept here: pushing records itself in it too.
+                    let mut meta = search::load(&path);
                     meta.text = Some(text);
                     meta.stamp = stamp;
-                    let _ = search::save(&path, meta);
+                    let _ = search::save(&path, &meta);
+                    self.metas.insert(path, meta);
                 }
             }
         }
@@ -782,6 +791,7 @@ impl App {
                 self.env.show_in_folder(path);
                 ui.close();
             }
+            self.push_menu(ui, &[path.to_owned()]);
         });
         let save = theme::primary_button(theme::label(icon::FLOPPY_DISK, "Save"));
         ui.add_enabled(false, save).on_disabled_hover_text("Recordings aren't changed here. Trim saves the part you keep as a new recording");
@@ -946,6 +956,11 @@ impl App {
                 self.env.show_in_folder(&editor.doc.path);
             }
             ui.close();
+        }
+        if let Some(path) = self.editor.as_ref().map(|e| e.doc.path.clone()) {
+            // What's pushed is the file, so edits go once they're saved.
+            let dirty = self.dirty();
+            ui.add_enabled_ui(!dirty, |ui| self.push_menu(ui, &[path])).response.on_disabled_hover_text("Save your edits first, so they go too");
         }
         if platform::EXTRAS || self.env.read_words.is_some() {
             ui.separator();

@@ -46,6 +46,18 @@ pub struct Env {
     sandbox: Option<RefCell<Sandbox>>,
 }
 
+/// How pushing files to a destination is going (see `Env::push_files`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum PushEvent {
+    /// Starting on the file at this place in the list.
+    Pushing(usize),
+    /// Pushed, with the link to it there if it has one.
+    Pushed(PathBuf, Option<String>),
+    Failed(PathBuf, String),
+    /// That's all of them.
+    Done,
+}
+
 /// What the Settings window asks of the running tray app.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TrayRequest {
@@ -108,6 +120,10 @@ pub struct Sandbox {
     pub secrets: BTreeMap<String, String>,
     /// What testing a destination finds (`None`: it connects).
     pub test_result: Option<Result<String, String>>,
+    /// Files pushed, with the destination's name.
+    pub pushed: Vec<(String, PathBuf)>,
+    /// What pushing a file gives (`None`: a link ending in its name).
+    pub push_result: Option<Result<Option<String>, String>>,
 }
 
 enum Store {
@@ -470,6 +486,40 @@ impl Env {
         rx
     }
 
+    /// Pushes `files` to `destination` one after another, noting each in its search data (see
+    /// `search::record_push`); how it goes arrives on the channel, and `ctx` repaints as it does.
+    pub fn push_files(&self, ctx: &eframe::egui::Context, destination: &Destination, files: Vec<PathBuf>) -> Receiver<PushEvent> {
+        let (tx, rx) = channel();
+        match &self.sandbox {
+            Some(s) => {
+                for (i, file) in files.into_iter().enumerate() {
+                    let _ = tx.send(PushEvent::Pushing(i));
+                    s.borrow_mut().pushed.push((destination.name.clone(), file.clone()));
+                    let name = file.file_name().unwrap_or_default().to_string_lossy();
+                    let result = s.borrow().push_result.clone().unwrap_or_else(|| Ok(Some(format!("https://example.com/{name}"))));
+                    let _ = tx.send(outcome(&destination.id, file, result));
+                }
+                let _ = tx.send(PushEvent::Done);
+            }
+            None => {
+                let (ctx, destination) = (ctx.clone(), destination.clone());
+                std::thread::spawn(move || {
+                    // The keyring may ask to be unlocked first, here rather than on the UI thread.
+                    let secret = saved_secret(&destination, None);
+                    for (i, file) in files.into_iter().enumerate() {
+                        let _ = tx.send(PushEvent::Pushing(i));
+                        ctx.request_repaint();
+                        let result = secret.clone().and_then(|secret| crate::push::push(&destination, secret.as_deref(), &file));
+                        let _ = tx.send(outcome(&destination.id, file, result));
+                    }
+                    let _ = tx.send(PushEvent::Done);
+                    ctx.request_repaint();
+                });
+            }
+        }
+        rx
+    }
+
     /// Checks that `destination` can be reached (see `push::test`), with `secret` if given, else the
     /// one saved for it; the answer arrives on the channel, and `ctx` repaints when it does.
     pub fn test_destination(&self, ctx: &eframe::egui::Context, destination: &Destination, secret: Option<String>) -> Receiver<Result<String, String>> {
@@ -544,7 +594,15 @@ impl Env {
     }
 }
 
-/// The secret to test `destination` with: the one given, else the one saved for it (which may
+/// What pushing `file` to the destination `id` came to, noted in its search data if it went.
+fn outcome(id: &str, file: PathBuf, result: Result<Option<String>, String>) -> PushEvent {
+    match result.and_then(|link| super::search::record_push(&file, id, link.clone()).map(|()| link)) {
+        Ok(link) => PushEvent::Pushed(file, link),
+        Err(e) => PushEvent::Failed(file, e),
+    }
+}
+
+/// The secret to use with `destination`: the one given, else the one saved for it (which may
 /// wait for the keyring), or an error if it needs one and has none.
 fn saved_secret(destination: &Destination, given: Option<String>) -> Result<Option<String>, String> {
     let Some(label) = destination.kind.secret_label() else { return Ok(None) };

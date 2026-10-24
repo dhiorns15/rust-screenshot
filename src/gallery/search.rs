@@ -2,6 +2,7 @@
 //! captured from, and its name. What's known about a screenshot is cached beside it, in
 //! `.rsnip/<name>.meta.json`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,28 @@ pub struct Meta {
     pub text: Option<String>,
     #[serde(default)]
     pub stamp: Option<FileStamp>,
+    /// Where it's been pushed, by destination id (see `push`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pushed: BTreeMap<String, Pushed>,
+}
+
+/// One push of a screenshot or recording.
+#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Pushed {
+    /// When, in seconds since 1970.
+    pub at: u64,
+    /// Where it can be seen there, if the place gives a link.
+    #[serde(default)]
+    pub link: Option<String>,
+}
+
+/// Notes that `path` was pushed to the destination `id`, and the link to it there.
+pub fn record_push(path: &Path, id: &str, link: Option<String>) -> Result<(), String> {
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    // From the file, not a copy kept since: another process may have written it.
+    let mut meta = load(path);
+    meta.pushed.insert(id.to_owned(), Pushed { at, link });
+    save(path, &meta)
 }
 
 pub(super) fn meta_path(path: &Path) -> Option<PathBuf> {
@@ -105,7 +128,7 @@ mod tests {
     use super::*;
 
     fn meta(app: &str, window: &str, text: &str) -> Meta {
-        Meta { app: app.into(), window: window.into(), text: Some(text.into()), stamp: None }
+        Meta { app: app.into(), window: window.into(), text: Some(text.into()), ..Meta::default() }
     }
 
     #[test]

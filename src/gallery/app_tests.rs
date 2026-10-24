@@ -385,6 +385,78 @@ fn ctrl_and_shift_click_select_several() {
     settle(&mut h);
 }
 
+/// The library, with an Immich destination set up in Settings → Push to.
+fn with_destination(name: &str) -> (Harness<'static, App>, crate::push::Destination) {
+    let h = harness(name);
+    let immich = crate::push::Destination::new(crate::push::Kind::Immich { server: "https://photos.example.com".into() });
+    crate::push::save(&h.state().env, std::slice::from_ref(&immich));
+    (h, immich)
+}
+
+#[test]
+fn pushes_the_open_screenshot_and_copies_its_link() {
+    let (mut h, immich) = with_destination("kittest-push");
+    let open = h.state().editor.as_ref().unwrap().doc.path.clone();
+    h.get_by_label_contains("Export").click();
+    settle(&mut h);
+    h.get_by_label_contains("Push to").click();
+    settle(&mut h);
+    click(&mut h, "Immich");
+    settle(&mut h);
+    assert_eq!(h.state().env.sandboxed().pushed, [("Immich".to_owned(), open.clone())]);
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some("https://example.com/Screenshot a.png"));
+    assert!(h.query_by_label_contains("Pushed to Immich, link copied").is_some());
+    let pushed = &super::search::load(&open).pushed[&immich.id];
+    assert_eq!(pushed.link.as_deref(), Some("https://example.com/Screenshot a.png"), "noted beside it");
+
+    // And its link can be copied again later, from the library.
+    h.state().env.sandboxed().copied = None;
+    h.get_by_label("Screenshot a").click_secondary();
+    settle(&mut h);
+    click(&mut h, &format!("{}  Copy link (Immich)", icon::LINK));
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some("https://example.com/Screenshot a.png"));
+}
+
+#[test]
+fn pushes_the_selected_ones_and_says_what_failed() {
+    let (mut h, _) = with_destination("kittest-push-several");
+    click(&mut h, "Screenshot a");
+    h.get_by_label("Screenshot c").click_modifiers(Modifiers::COMMAND);
+    settle(&mut h);
+    h.get_by_label("Screenshot c").click_secondary();
+    settle(&mut h);
+    h.get_by_label_contains("Push to (2)").click();
+    settle(&mut h);
+    click(&mut h, "Immich");
+    settle(&mut h);
+    let pushed: Vec<String> = h.state().env.sandboxed().pushed.iter().map(|(_, p)| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    assert_eq!(pushed, ["Screenshot a.png", "Screenshot c.png"]);
+    assert!(h.query_by_label_contains("Pushed 2 to Immich, links copied").is_some());
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some("https://example.com/Screenshot a.png\nhttps://example.com/Screenshot c.png"));
+
+    // A failure says what went wrong, and records nothing.
+    h.state().env.sandboxed().push_result = Some(Err("Immich didn't accept the API key".into()));
+    h.get_by_label("Screenshot b").click_secondary();
+    settle(&mut h);
+    h.get_by_label_contains("Push to").click();
+    settle(&mut h);
+    click(&mut h, "Immich");
+    settle(&mut h);
+    assert!(h.query_by_label_contains("Couldn't push to Immich: Immich didn't accept the API key").is_some());
+    let b = h.state().env.dir.join("Screenshot b.png");
+    assert!(super::search::load(&b).pushed.is_empty());
+}
+
+#[test]
+fn push_waits_for_edits_to_be_saved() {
+    let (mut h, _) = with_destination("kittest-push-edited");
+    drag_on_canvas(&mut h, (0.3, 0.3), (0.6, 0.6));
+    assert!(h.state().dirty());
+    h.get_by_label_contains("Export").click();
+    settle(&mut h);
+    assert!(h.get_by_label_contains("Push to").accesskit_node().is_disabled());
+}
+
 /// The library with a 2-second GIF recording, the newest file, besides the screenshots.
 fn with_recording(name: &str) -> (Harness<'static, App>, PathBuf) {
     let dir = fixtures(name);

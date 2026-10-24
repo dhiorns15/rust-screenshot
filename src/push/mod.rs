@@ -237,8 +237,6 @@ pub fn test(destination: &Destination, secret: Option<&str>) -> Result<String, S
 }
 
 /// Sends `file` to `destination`, with its secret; the link to it there, if there is one.
-// Used from the library and the background, next.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Result<Option<String>, String> {
     let secret = secret.unwrap_or_default();
     let name = file.file_name().ok_or("Not a file")?.to_string_lossy().into_owned();
