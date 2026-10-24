@@ -110,6 +110,10 @@ pub fn screenshots_dir() -> PathBuf {
     crate::output::screenshots_dir()
 }
 
+pub fn legacy_save_folder() -> PathBuf {
+    crate::output::legacy_save_folder()
+}
+
 pub fn setting(name: &str) -> Option<u32> {
     crate::settings::get(name)
 }

@@ -167,12 +167,18 @@ pub fn shortcut_name(key: u32) -> String {
     crate::shortcuts::fallback_name(key)
 }
 
-/// Where screenshots and recordings are saved: the folder chosen in Settings, else `~/RSnip` (see
-/// `options::save_folder`).
 pub use crate::update::package::Package;
 
+/// Where screenshots and recordings are saved: the folder chosen in Settings, else `~/RSnip` (see
+/// `options::save_folder`).
 pub fn screenshots_dir() -> PathBuf {
-    // `~/Pictures/Screenshots`, or wherever the desktop's Pictures folder is: where RSnip saved before.
+    let chosen = text_setting(crate::options::SAVE_FOLDER);
+    crate::options::save_folder(chosen, legacy_save_folder(), &home(), |dir| set_text_setting(crate::options::SAVE_FOLDER, &dir.to_string_lossy()))
+}
+
+/// `~/Pictures/Screenshots`, or wherever the desktop's Pictures folder is: where RSnip saved before
+/// there was a choice.
+pub fn legacy_save_folder() -> PathBuf {
     let pictures = Command::new("xdg-user-dir")
         .arg("PICTURES")
         .output()
@@ -181,8 +187,7 @@ pub fn screenshots_dir() -> PathBuf {
         .map(|s| PathBuf::from(s.trim()))
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home().join("Pictures"));
-    let chosen = text_setting(crate::options::SAVE_FOLDER);
-    crate::options::save_folder(chosen, pictures.join("Screenshots"), &home(), |dir| set_text_setting(crate::options::SAVE_FOLDER, &dir.to_string_lossy()))
+    pictures.join("Screenshots")
 }
 
 fn settings_path() -> PathBuf {

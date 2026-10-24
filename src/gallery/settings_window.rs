@@ -6,11 +6,11 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Ui, Vec2};
 
-use super::env::{Env, TrayRequest};
+use super::env::{Env, MoveReport, TrayRequest};
 use super::system_info::{self, Gpu};
 use super::theme::{self, icon, Appearance};
 use super::{platform, Dock};
@@ -130,6 +130,12 @@ pub struct SettingsApp {
     recording_problems: Option<[Option<String>; 2]>,
     /// The folder chooser, while it's open.
     picking: Option<Receiver<Result<Option<PathBuf>, String>>>,
+    /// The previous save folder and how many screenshots and recordings are still there.
+    left_behind: Option<(PathBuf, usize)>,
+    /// When that was counted (`None`: count again).
+    counted: Option<Instant>,
+    /// Moving them to the current folder, while it's under way.
+    moving: Option<Receiver<Result<MoveReport, String>>>,
     installing: Installing,
 }
 
@@ -147,7 +153,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, picking: None, installing: Installing::Idle }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, picking: None, left_behind: None, counted: None, moving: None, installing: Installing::Idle }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -450,6 +456,11 @@ impl SettingsApp {
             self.picking = None;
             match picked {
                 Ok(Some(dir)) => {
+                    if dir != self.env.dir {
+                        // So what's there can be moved too.
+                        self.env.set_text_setting(options::PREVIOUS_SAVE_FOLDER, &self.env.dir.to_string_lossy());
+                        self.counted = None;
+                    }
                     self.env.set_text_setting(crate::options::SAVE_FOLDER, &dir.to_string_lossy());
                     self.env.tell_tray(TrayRequest::SettingsChanged);
                     self.note = Some(format!("New screenshots and recordings go to {}", dir.display()));
@@ -460,7 +471,25 @@ impl SettingsApp {
         }
         self.env.refresh_dir();
         let env_dir = self.env.dir.clone();
-        let shown = system_info::tidy_path(&env_dir, self.env.host().home.as_deref());
+        let home = self.env.host().home.clone();
+        let shown = system_info::tidy_path(&env_dir, home.as_deref());
+        if let Some(result) = self.moving.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.moving = None;
+            self.counted = None;
+            self.note = Some(match result {
+                Ok(r) if r.already_there == 0 => format!("Moved {} to {shown}", items(r.moved)),
+                Ok(r) => format!("Moved {}; {} stayed, as {shown} has files with the same names", items(r.moved), r.already_there),
+                Err(e) => format!("Couldn't move them all: {e}"),
+            });
+        }
+        // Counted again now and then, as they may be moved or deleted elsewhere.
+        if self.moving.is_none() && self.counted.is_none_or(|at| at.elapsed() >= Duration::from_secs(2)) {
+            self.left_behind = self.env.previous_folder().map(|dir| {
+                let n = super::library_files(&dir).len();
+                (dir, n)
+            });
+            self.counted = Some(Instant::now());
+        }
         theme::card(ui, |ui| {
             row(ui, "Save screenshots and recordings to", &shown, |ui| {
                 let choosing = self.picking.is_some();
@@ -472,7 +501,25 @@ impl SettingsApp {
                     self.env.open(&env_dir);
                 }
             });
-            ui.label(RichText::new("The library shows this folder. What's already saved stays where it is.").small().color(theme::palette(ui).muted));
+            ui.label(RichText::new("The library shows this folder. What's already saved stays where it is unless you move it.").small().color(theme::palette(ui).muted));
+            if let Some((from, n)) = self.left_behind.clone().filter(|(_, n)| *n > 0) {
+                ui.separator();
+                let still = if n == 1 { "is still in" } else { "are still in" };
+                let title = format!("{} {still} {}", items(n), system_info::tidy_path(&from, home.as_deref()));
+                row(ui, &title, "With their edits and the text found in them", |ui| {
+                    if self.moving.is_some() {
+                        ui.add_enabled(false, egui::Button::new("Moving…"));
+                    } else {
+                        if ui.add(theme::primary_button("Move them here")).clicked() {
+                            self.moving = Some(self.env.move_library(ui.ctx(), &from, &env_dir));
+                        }
+                        if ui.button("Leave them").clicked() {
+                            self.env.set_text_setting(options::PREVIOUS_SAVE_FOLDER, &env_dir.to_string_lossy());
+                            self.counted = None;
+                        }
+                    }
+                });
+            }
         });
     }
 
@@ -659,6 +706,11 @@ impl eframe::App for SettingsApp {
 }
 
 /// A setting: its title and a line of detail on the left, its control on the right.
+/// "1 screenshot or recording", "42 screenshots and recordings".
+fn items(n: usize) -> String {
+    if n == 1 { "1 screenshot or recording".into() } else { format!("{n} screenshots and recordings") }
+}
+
 fn row<R>(ui: &mut Ui, title: &str, detail: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
     ui.horizontal(|ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

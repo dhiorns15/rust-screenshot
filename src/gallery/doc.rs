@@ -407,6 +407,57 @@ pub fn prune_layers(dir: &Path) {
     }
 }
 
+/// What became of a screenshot or recording `move_shot` was asked to move.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Moved {
+    Moved,
+    /// There's a file of the same name there, so it stayed.
+    AlreadyThere,
+}
+
+/// Moves the screenshot or recording at `path` into `to_dir`, with its saved edits and search
+/// data, keeping its modified time: the edits only load while the file's size and time match.
+pub fn move_shot(path: &Path, to_dir: &Path) -> Result<Moved, String> {
+    let name = path.file_name().ok_or("Bad file name")?;
+    let to = to_dir.join(name);
+    if to.exists() {
+        return Ok(Moved::AlreadyThere);
+    }
+    move_file(path, &to).map_err(|e| format!("Couldn't move {}: {e}", path.display()))?;
+    let (json, base) = layer_paths(path).ok_or("Bad file name")?;
+    let data: Vec<PathBuf> = [Some(json), Some(base), super::search::meta_path(path)].into_iter().flatten().filter(|p| p.exists()).collect();
+    if !data.is_empty() {
+        let dir = to_dir.join(".rsnip");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("Can't create {}: {e}", dir.display()))?;
+        hide(&dir);
+        for file in data {
+            let to = dir.join(file.file_name().unwrap_or_default());
+            move_file(&file, &to).map_err(|e| format!("Couldn't move the edits of {}: {e}", path.display()))?;
+        }
+    }
+    Ok(Moved::Moved)
+}
+
+/// Renames `from` to `to`, else (onto another drive or filesystem) copies it, with its modified
+/// time, and deletes the original.
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    copy_and_delete(from, to)
+}
+
+fn copy_and_delete(from: &Path, to: &Path) -> std::io::Result<()> {
+    let modified = std::fs::metadata(from)?.modified()?;
+    std::fs::copy(from, to)?;
+    let done = std::fs::File::options().write(true).open(to).and_then(|f| f.set_modified(modified)).and_then(|()| std::fs::remove_file(from));
+    if done.is_err() {
+        // Not both: the original stays where it was.
+        let _ = std::fs::remove_file(to);
+    }
+    done
+}
+
 /// Keeps the `.rsnip` folder out of the way in Explorer.
 fn hide(dir: &Path) {
     super::platform::hide(dir);
@@ -981,6 +1032,42 @@ mod tests {
         left.sort();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(left, ["kept.png.base.png", "kept.png.json", "kept.png.meta.json", "notes.txt"], "search metadata of live screenshots is kept too");
+    }
+
+    #[test]
+    fn moves_a_screenshot_with_its_edits_and_search_data() {
+        let root = std::env::temp_dir().join(format!("rsnip-move-shot-{}", std::process::id()));
+        let (from, to) = (root.join("from"), root.join("to"));
+        std::fs::create_dir_all(from.join(".rsnip")).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(from.join("a.png"), b"png").unwrap();
+        for name in ["a.png.json", "a.png.base.png", "a.png.meta.json", "b.png.json"] {
+            std::fs::write(from.join(".rsnip").join(name), b"x").unwrap();
+        }
+        let modified = std::fs::metadata(from.join("a.png")).unwrap().modified().unwrap();
+        assert_eq!(move_shot(&from.join("a.png"), &to), Ok(Moved::Moved));
+        assert!(!from.join("a.png").exists());
+        assert_eq!(std::fs::metadata(to.join("a.png")).unwrap().modified().unwrap(), modified);
+        let names = |dir: &Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            names.sort();
+            names
+        };
+        assert_eq!(names(&to.join(".rsnip")), ["a.png.base.png", "a.png.json", "a.png.meta.json"]);
+        assert_eq!(names(&from.join(".rsnip")), ["b.png.json"], "another screenshot's stay");
+
+        // A name that's taken stays where it is, as does the file there.
+        std::fs::write(from.join("a.png"), b"another").unwrap();
+        assert_eq!(move_shot(&from.join("a.png"), &to), Ok(Moved::AlreadyThere));
+        assert_eq!((std::fs::read(from.join("a.png")).unwrap(), std::fs::read(to.join("a.png")).unwrap()), (b"another".to_vec(), b"png".to_vec()));
+
+        // Onto another drive: copied with its modified time, then deleted.
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        std::fs::File::options().write(true).open(from.join("a.png")).unwrap().set_modified(old).unwrap();
+        copy_and_delete(&from.join("a.png"), &to.join("c.png")).unwrap();
+        assert!(!from.join("a.png").exists());
+        assert_eq!(std::fs::metadata(to.join("c.png")).unwrap().modified().unwrap(), old);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

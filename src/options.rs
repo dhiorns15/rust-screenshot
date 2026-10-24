@@ -50,6 +50,9 @@ impl Choice {
 }
 /// The folder screenshots and recordings are saved to, chosen in Settings (a text setting).
 pub const SAVE_FOLDER: &str = "SaveFolder";
+/// The folder they were saved to before it was last changed in Settings, so what's still there
+/// can be moved to the new one; the new one again once that's done or declined.
+pub const PREVIOUS_SAVE_FOLDER: &str = "PreviousSaveFolder";
 
 /// Where screenshots and recordings are saved: the folder chosen in Settings, else `RSnip` in the
 /// home folder. Before there was a choice, RSnip saved to the Pictures folder's `Screenshots`
@@ -59,12 +62,16 @@ pub fn save_folder(chosen: Option<String>, legacy: std::path::PathBuf, home: &st
     if let Some(chosen) = chosen.filter(|c| !c.trim().is_empty()) {
         return chosen.into();
     }
-    let used_before = std::fs::read_dir(&legacy).is_ok_and(|mut files| files.any(|f| f.is_ok_and(|f| made_by_rsnip(&f.file_name().to_string_lossy()))));
-    if used_before {
+    if saved_to_by_rsnip(&legacy) {
         remember(&legacy);
         return legacy;
     }
     home.join("RSnip")
+}
+
+/// Whether RSnip has saved screenshots or recordings in `dir`.
+pub fn saved_to_by_rsnip(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|mut files| files.any(|f| f.is_ok_and(|f| made_by_rsnip(&f.file_name().to_string_lossy()))))
 }
 
 /// The names RSnip gives what it saves: "Screenshot 2026-10-24 091500.png", "Recording ….mp4".

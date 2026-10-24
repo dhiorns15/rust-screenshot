@@ -56,6 +56,14 @@ pub enum TrayRequest {
     Quit,
 }
 
+/// What moving the library to another folder did (see `Env::move_library`).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct MoveReport {
+    pub moved: usize,
+    /// Left behind, as the new folder has files with the same names.
+    pub already_there: usize,
+}
+
 /// The outside world, as far as tests are concerned.
 #[derive(Default)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -190,6 +198,36 @@ impl Env {
         let moved = dir != self.dir;
         self.dir = dir;
         moved
+    }
+
+    /// The folder screenshots were saved to before it was changed in Settings, while it isn't the
+    /// current one: as remembered then, else (a change made before RSnip remembered it) the one it
+    /// saved to before there was a choice, if it did.
+    pub fn previous_folder(&self) -> Option<PathBuf> {
+        let remembered = self.text_setting(crate::options::PREVIOUS_SAVE_FOLDER).filter(|d| !d.trim().is_empty()).map(PathBuf::from);
+        let previous = match (&self.sandbox, remembered) {
+            (_, Some(dir)) => Some(dir),
+            (Some(_), None) => None,
+            (None, None) => Some(platform::legacy_save_folder()).filter(|d| crate::options::saved_to_by_rsnip(d)),
+        };
+        previous.filter(|d| *d != self.dir)
+    }
+
+    /// Moves the screenshots and recordings in `from` to `to`, with their edits and search data;
+    /// the report arrives on the channel, and `ctx` repaints when it does.
+    pub fn move_library(&self, ctx: &eframe::egui::Context, from: &Path, to: &Path) -> Receiver<Result<MoveReport, String>> {
+        let (tx, rx) = channel();
+        let (from, to) = (from.to_owned(), to.to_owned());
+        if self.sandbox.is_some() {
+            let _ = tx.send(super::move_library(&from, &to));
+        } else {
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(super::move_library(&from, &to));
+                ctx.request_repaint();
+            });
+        }
+        rx
     }
 
     /// Asks for a folder with the system's folder chooser, starting in `current`; the answer

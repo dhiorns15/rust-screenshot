@@ -279,6 +279,45 @@ fn chooses_where_screenshots_and_recordings_are_saved() {
 }
 
 #[test]
+fn offers_to_move_whats_in_the_previous_folder() {
+    let dir = tests::sandbox_dir("settings-move");
+    let elsewhere = dir.join("Elsewhere");
+    std::fs::create_dir_all(dir.join(".rsnip")).unwrap();
+    for (file, data) in [("a.png", "png"), ("b.mp4", "mp4"), ("notes.txt", "notes"), (".rsnip/a.png.json", "edits"), (".rsnip/a.png.meta.json", "search")] {
+        std::fs::write(dir.join(file), data).unwrap();
+    }
+    // The new folder has a b.mp4 of its own.
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("b.mp4"), "theirs").unwrap();
+    let mut env = Env::sandbox(dir.clone());
+    env.tray_app = true;
+    env.sandboxed().picked_folder = Some(elsewhere.clone());
+    let mut h = Harness::builder().with_size(SIZE).build_eframe(move |cc| SettingsApp::new(&cc.egui_ctx, env));
+    settle(&mut h);
+    open(&mut h, Section::Library);
+    assert!(h.query_by_label("Move them here").is_none(), "nothing to move before the folder changes");
+
+    click(&mut h, "Change…");
+    settle(&mut h);
+    assert!(h.query_by_label_contains("2 screenshots and recordings are still in ~").is_some(), "not notes.txt");
+    click(&mut h, "Move them here");
+    settle(&mut h);
+    assert!(h.query_by_label_contains("Moved 1 screenshot or recording; 1 stayed").is_some());
+    assert_eq!(std::fs::read_to_string(elsewhere.join("a.png")).unwrap(), "png");
+    assert_eq!(std::fs::read_to_string(elsewhere.join(".rsnip/a.png.json")).unwrap(), "edits", "with its edits");
+    assert_eq!(std::fs::read_to_string(elsewhere.join(".rsnip/a.png.meta.json")).unwrap(), "search", "and search data");
+    assert_eq!(std::fs::read_to_string(elsewhere.join("b.mp4")).unwrap(), "theirs", "a name that's taken isn't replaced");
+    assert!(dir.join("b.mp4").exists() && dir.join("notes.txt").exists() && !dir.join("a.png").exists());
+
+    // What stayed is still offered, until it's left there.
+    assert!(h.query_by_label_contains("1 screenshot or recording is still in ~").is_some());
+    click(&mut h, "Leave them");
+    settle(&mut h);
+    assert!(h.query_by_label("Move them here").is_none());
+    assert!(dir.join("b.mp4").exists());
+}
+
+#[test]
 fn system_info_reports_the_machine_and_copies_it() {
     let mut h = settings("settings-system-info", |env| {
         std::fs::write(env.dir.join("a.png"), b"png").unwrap();
@@ -417,6 +456,20 @@ mod snapshots {
             env.sandboxed().snipping_key = true;
         });
         snapshot(&mut h, Section::Shortcuts, "settings_shortcut_problems");
+    }
+
+    #[test]
+    fn offer_to_move_the_library() {
+        let _gpu = super::super::tests::gpu();
+        let mut h = rendered("snap-settings-move", |env| {
+            let previous = env.dir.join("Pictures").join("Screenshots");
+            std::fs::create_dir_all(&previous).unwrap();
+            for name in ["a.png", "b.png", "c.mp4"] {
+                std::fs::write(previous.join(name), b"").unwrap();
+            }
+            env.set_text_setting(options::PREVIOUS_SAVE_FOLDER, &previous.to_string_lossy());
+        });
+        snapshot(&mut h, Section::Library, "settings_move_library");
     }
 
     /// Renders the Settings window to a PNG, like `render_window` does the library:

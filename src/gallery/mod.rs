@@ -113,6 +113,25 @@ fn is_library_file(path: &Path) -> bool {
     matches!(ext.as_deref().and_then(|x| x.to_str()), Some("png" | "jpg" | "jpeg" | "gif" | "mp4" | "webm"))
 }
 
+/// The screenshots and recordings in `dir`, as the library lists them.
+fn library_files(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| is_library_file(p) && p.is_file()).collect()
+}
+
+/// Moves the screenshots and recordings in `from` to `to`, with their edits and search data (see
+/// `doc::move_shot`). What moved before an error stays moved.
+fn move_library(from: &Path, to: &Path) -> Result<env::MoveReport, String> {
+    std::fs::create_dir_all(to).map_err(|e| format!("Can't create {}: {e}", to.display()))?;
+    let mut report = env::MoveReport::default();
+    for path in library_files(from) {
+        match doc::move_shot(&path, to)? {
+            doc::Moved::Moved => report.moved += 1,
+            doc::Moved::AlreadyThere => report.already_there += 1,
+        }
+    }
+    Ok(report)
+}
+
 struct Entry {
     path: PathBuf,
     name: String,

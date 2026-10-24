@@ -26,7 +26,7 @@ pub struct Meta {
     pub stamp: Option<FileStamp>,
 }
 
-fn meta_path(path: &Path) -> Option<PathBuf> {
+pub(super) fn meta_path(path: &Path) -> Option<PathBuf> {
     let name = path.file_name()?.to_string_lossy();
     Some(path.parent()?.join(".rsnip").join(format!("{name}.meta.json")))
 }
