@@ -26,6 +26,8 @@ pub enum Part {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Body {
     Empty,
+    // For a request with a small body of its own; none yet.
+    #[cfg_attr(not(test), allow(dead_code))]
     Bytes(Vec<u8>),
     /// A file, streamed from disk.
     File(PathBuf),
@@ -43,6 +45,7 @@ pub struct Response {
 
 impl Response {
     /// A header's value; names don't care about case.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
     }
@@ -89,7 +92,8 @@ impl Response {
 /// Sends a request and returns the reply. A 4xx or 5xx is still `Ok`; `Err` means nothing came
 /// back (no connection, a timeout, a file that couldn't be read) and is worded for the user.
 pub fn request(method: &str, url: &str, headers: &[(&str, &str)], body: Body) -> Result<Response, String> {
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
+    let scheme = url.split_once("://").map(|(scheme, _)| scheme.to_ascii_lowercase());
+    if !matches!(scheme.as_deref(), Some("http" | "https")) {
         // Not the address itself: some carry a secret (a Discord webhook's token).
         return Err("The address has to start with http:// or https://".into());
     }
@@ -254,23 +258,24 @@ pub fn content_type(path: &Path) -> &'static str {
     }
 }
 
+/// A pretend server for tests (here and in `push`).
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use std::io::Write;
     use std::net::TcpListener;
     use std::thread::JoinHandle;
 
     /// What the test server received.
-    struct Received {
-        method: String,
-        path: String,
-        headers: Vec<(String, String)>,
-        body: Vec<u8>,
+    pub struct Received {
+        pub method: String,
+        pub path: String,
+        pub headers: Vec<(String, String)>,
+        pub body: Vec<u8>,
     }
 
     impl Received {
-        fn header(&self, name: &str) -> Option<&str> {
+        pub fn header(&self, name: &str) -> Option<&str> {
             self.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
         }
     }
@@ -278,9 +283,21 @@ mod tests {
     /// Answers one request with `status`, `reply_headers` and `reply_body`, and hands back what
     /// it was sent. Returns the address to use.
     fn serve(status: &'static str, reply_headers: &'static str, reply_body: &'static str) -> (String, JoinHandle<Received>) {
+        let (url, handle) = serve_each(vec![(status, reply_headers, reply_body.to_owned())]);
+        (url, std::thread::spawn(move || handle.join().unwrap().remove(0)))
+    }
+
+    /// Answers a request (each on its own connection) with each of `replies` in turn: status,
+    /// headers ending in "\r\n" each, body. Hands back what it was sent.
+    pub fn serve_each(replies: Vec<(&'static str, &'static str, String)>) -> (String, JoinHandle<Vec<Received>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
-        let handle = std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || replies.into_iter().map(|(status, headers, body)| answer(&listener, status, headers, &body)).collect());
+        (url, handle)
+    }
+
+    fn answer(listener: &TcpListener, status: &str, reply_headers: &str, reply_body: &str) -> Received {
+        {
             let (mut stream, _) = listener.accept().unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
             let mut data = Vec::new();
@@ -315,8 +332,7 @@ mod tests {
             );
             stream.write_all(reply.as_bytes()).unwrap();
             Received { method, path, headers, body }
-        });
-        (url, handle)
+        }
     }
 
     fn temp_file(name: &str, contents: &[u8]) -> PathBuf {

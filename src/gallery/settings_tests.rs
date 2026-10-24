@@ -473,8 +473,9 @@ fn a_destination_without_a_secret_needs_only_its_fields() {
     open(&mut h, Section::Destinations);
     click(&mut h, "Add…");
     click(&mut h, "SFTP");
+    assert!(!is_enabled(&h, "Save"), "needs a server");
     type_into(&mut h, "Server", "nas.local");
-    assert!(!is_enabled(&h, "Save"), "needs a user");
+    assert!(is_enabled(&h, "Save"), "the user can come from ~/.ssh/config");
     type_into(&mut h, "User", "me");
     assert!(is_enabled(&h, "Save"));
     type_into(&mut h, "Port", "x");

@@ -150,7 +150,7 @@ pub fn utc(secs: u64) -> String {
 }
 
 /// Seconds since 1970 as UTC year, month, day, hour and minute (no allocation, for `native`).
-fn civil(secs: u64) -> [u64; 5] {
+pub fn civil(secs: u64) -> [u64; 5] {
     let (days, rest) = (secs / 86_400, secs % 86_400);
     // Days since 1970 to a calendar date (Howard Hinnant's civil_from_days).
     let z = days as i64 + 719_468;

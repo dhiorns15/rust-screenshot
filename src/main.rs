@@ -7,8 +7,6 @@
 
 mod crash;
 mod gallery;
-// Used by src/push (in a later step).
-#[cfg_attr(not(test), allow(dead_code))]
 mod http;
 mod icon_art;
 mod mp4;

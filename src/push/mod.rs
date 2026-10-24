@@ -1,8 +1,16 @@
 //! Places RSnip sends screenshots and recordings to ("destinations"), each set to push new items
 //! by itself or only when asked. This holds what a destination is, how the list is kept, and what
 //! counts as a complete one. The secrets (passwords, keys, webhook URLs) are not here: they live in
-//! the system's credential store (see `secrets`), by the destination's id.
+//! the system's credential store (see `secrets`), by the destination's id. Each kind's talking to
+//! its server is in a module of its own.
 
+mod discord;
+mod immich;
+mod s3;
+mod sftp;
+mod webdav;
+
+use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -164,9 +172,9 @@ impl Destination {
             (!value.trim().is_empty() && !is_web_address(value)).then(|| "The link to share must start with http:// or https://".to_owned())
         };
         match &self.kind {
-            Kind::Sftp { host, port, user, public_url, .. } => required(host, "the server's address")
+            // No user name is fine: ~/.ssh/config or the local one is used.
+            Kind::Sftp { host, port, public_url, .. } => required(host, "the server's address")
                 .or_else(|| (*port == 0).then(|| "Enter a port from 1 to 65535".to_owned()))
-                .or_else(|| required(user, "the user name"))
                 .or_else(|| public(public_url)),
             Kind::WebDav { url, user, public_url } => {
                 address(url, "the folder's address").or_else(|| required(user, "the user name")).or_else(|| public(public_url))
@@ -214,19 +222,176 @@ pub fn save(env: &Env, destinations: &[Destination]) {
 }
 
 /// Checks that `destination` can be reached with `secret` (its password, key or webhook address),
-/// and says what it found.
+/// without changing anything there, and says what it found.
 pub fn test(destination: &Destination, secret: Option<&str>) -> Result<String, String> {
-    // Steps 4 and 5 replace this with a real check per kind.
-    let _ = secret;
-    Err(format!("Testing {} comes in a later step", destination.kind.name()))
+    let secret = secret.unwrap_or_default();
+    match &destination.kind {
+        Kind::Sftp { host, port, user, folder, .. } => sftp::test(&sftp::Server { host, port: *port, user, folder }),
+        Kind::WebDav { url, user, .. } => webdav::test(&webdav::Folder { url, user, password: secret }),
+        Kind::S3 { endpoint, region, bucket, access_key, .. } => {
+            s3::test(&s3::Bucket { endpoint, region, bucket, access_key, secret_key: secret })
+        }
+        Kind::Discord {} => discord::test(secret),
+        Kind::Immich { server } => immich::test(server, secret),
+    }
+}
+
+/// Sends `file` to `destination`, with its secret; the link to it there, if there is one.
+// Used from the library and the background, next.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Result<Option<String>, String> {
+    let secret = secret.unwrap_or_default();
+    let name = file.file_name().ok_or("Not a file")?.to_string_lossy().into_owned();
+    match &destination.kind {
+        Kind::Sftp { host, port, user, folder, public_url } => {
+            sftp::put(&sftp::Server { host, port: *port, user, folder }, &name, file)?;
+            Ok(link(public_url, &name))
+        }
+        Kind::WebDav { url, user, public_url } => {
+            webdav::put(&webdav::Folder { url, user, password: secret }, &name, file)?;
+            Ok(link(public_url, &name))
+        }
+        Kind::S3 { endpoint, region, bucket, prefix, access_key, public_url } => {
+            let prefix = prefix.trim_matches('/');
+            let key = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+            s3::put(&s3::Bucket { endpoint, region, bucket, access_key, secret_key: secret }, &key, file)?;
+            Ok(link(public_url, &key))
+        }
+        Kind::Discord {} => discord::post(secret, file),
+        Kind::Immich { server } => immich::upload(server, secret, file),
+    }
+}
+
+/// Where something pushed as `path` can be seen: under the public address given, if any.
+fn link(public_url: &str, path: &str) -> Option<String> {
+    let base = public_url.trim().trim_end_matches('/');
+    (!base.is_empty()).then(|| format!("{base}/{}", path.split('/').map(encode).collect::<Vec<_>>().join("/")))
+}
+
+/// Percent-encodes all but the unreserved characters (RFC 3986), for a name in an address.
+fn encode(s: &str) -> String {
+    let mut out = String::new();
+    for &b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::tests::serve_each;
 
     fn every_kind() -> Vec<Kind> {
         Kind::ALL.iter().map(|make| make()).collect()
+    }
+
+    /// A screenshot to push, with a space in its name.
+    fn shot(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("rsnip-push-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a b.png");
+        std::fs::write(&file, b"png bytes").unwrap();
+        file
+    }
+
+    fn to(kind: Kind) -> Destination {
+        Destination::new(kind)
+    }
+
+    #[test]
+    fn webdav_makes_the_folder_then_puts() {
+        let reply = |status| (status, "", String::new());
+        let (server, requests) = serve_each(vec![reply("409 Conflict"), reply("409 Conflict"), reply("201 Created"), reply("201 Created"), reply("201 Created")]);
+        let d = to(Kind::WebDav { url: format!("{server}/dav/shots"), user: "me".into(), public_url: "https://files.example.com/shots/".into() });
+        let link = push(&d, Some("pw"), &shot("webdav")).unwrap();
+        assert_eq!(link.as_deref(), Some("https://files.example.com/shots/a%20b.png"));
+        let requests = requests.join().unwrap();
+        let sent: Vec<String> = requests.iter().map(|r| format!("{} {}", r.method, r.path)).collect();
+        assert_eq!(sent, ["PUT /dav/shots/a%20b.png", "MKCOL /dav/shots/", "MKCOL /dav/", "MKCOL /dav/shots/", "PUT /dav/shots/a%20b.png"]);
+        assert_eq!(requests[0].header("Authorization"), Some("Basic bWU6cHc="));
+        assert_eq!(requests[4].body, b"png bytes");
+        assert_eq!(requests[4].header("Content-Type"), Some("image/png"));
+
+        let (server, _) = serve_each(vec![reply("401 Unauthorized")]);
+        let d = to(Kind::WebDav { url: server, user: "me".into(), public_url: String::new() });
+        assert_eq!(test(&d, Some("wrong")), Err("The server didn't accept the user name or password".into()));
+    }
+
+    #[test]
+    fn s3_puts_a_signed_object_under_the_prefix() {
+        let (server, requests) = serve_each(vec![("200 OK", "", String::new())]);
+        let bucket = Kind::S3 {
+            endpoint: server.clone(),
+            region: "auto".into(),
+            bucket: "shots".into(),
+            prefix: "/rsnip/".into(),
+            access_key: "AKID".into(),
+            public_url: "https://cdn.example.com".into(),
+        };
+        let link = push(&to(bucket.clone()), Some("secret"), &shot("s3")).unwrap();
+        assert_eq!(link.as_deref(), Some("https://cdn.example.com/rsnip/a%20b.png"));
+        let request = requests.join().unwrap().remove(0);
+        assert_eq!((request.method.as_str(), request.path.as_str()), ("PUT", "/shots/rsnip/a%20b.png"));
+        assert_eq!(request.header("x-amz-content-sha256"), Some("UNSIGNED-PAYLOAD"));
+        let auth = request.header("Authorization").unwrap();
+        assert!(auth.starts_with("AWS4-HMAC-SHA256 Credential=AKID/") && auth.contains("/auto/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature="), "{auth}");
+        assert_eq!(request.body, b"png bytes");
+
+        let xml = "<?xml version=\"1.0\"?>\n<Error><Code>SignatureDoesNotMatch</Code><Message>The request signature we calculated does not match</Message></Error>";
+        let (server, _) = serve_each(vec![("403 Forbidden", "", xml.to_owned())]);
+        let Kind::S3 { region, bucket, prefix, access_key, public_url, .. } = bucket else { unreachable!() };
+        let wrong = to(Kind::S3 { endpoint: server, region, bucket, prefix, access_key, public_url });
+        assert_eq!(push(&wrong, Some("wrong"), &shot("s3-wrong")), Err("The storage service replied 403: The request signature we calculated does not match".into()));
+    }
+
+    #[test]
+    fn discord_posts_the_file_and_links_to_it() {
+        let reply = r#"{"id":"1","attachments":[{"url":"https://cdn.discordapp.com/attachments/1/2/a_b.png"}]}"#;
+        let (server, requests) = serve_each(vec![("200 OK", "Content-Type: application/json\r\n", reply.to_owned())]);
+        let webhook = format!("{server}/api/webhooks/1/secret-token");
+        let link = push(&to(Kind::discord()), Some(&webhook), &shot("discord")).unwrap();
+        assert_eq!(link.as_deref(), Some("https://cdn.discordapp.com/attachments/1/2/a_b.png"));
+        let request = requests.join().unwrap().remove(0);
+        assert_eq!(request.path, "/api/webhooks/1/secret-token?wait=true");
+        let body = String::from_utf8_lossy(&request.body);
+        assert!(body.contains("name=\"files[0]\"; filename=\"a b.png\"") && body.contains("png bytes"), "{body}");
+
+        let (server, _) = serve_each(vec![("404 Not Found", "", "{\"message\": \"Unknown Webhook\"}".into())]);
+        let error = test(&to(Kind::discord()), Some(&format!("{server}/api/webhooks/1/secret-token"))).unwrap_err();
+        assert!(error.contains("doesn't know this webhook") && !error.contains("secret-token"), "never shows the token: {error}");
+        let (server, _) = serve_each(vec![("413 Payload Too Large", "", String::new())]);
+        let error = push(&to(Kind::discord()), Some(&format!("{server}/api/webhooks/1/t")), &shot("discord-big")).unwrap_err();
+        assert!(error.starts_with("Too big for Discord"), "{error}");
+    }
+
+    #[test]
+    fn immich_uploads_an_asset_and_links_to_it() {
+        let (server, requests) = serve_each(vec![("201 Created", "", r#"{"id":"7c1e","status":"created"}"#.to_owned())]);
+        let link = push(&to(Kind::Immich { server: format!("{server}/") }), Some("KEY"), &shot("immich")).unwrap();
+        assert_eq!(link, Some(format!("{server}/photos/7c1e")));
+        let request = requests.join().unwrap().remove(0);
+        assert_eq!((request.method.as_str(), request.path.as_str(), request.header("x-api-key")), ("POST", "/api/assets", Some("KEY")));
+        let body = String::from_utf8_lossy(&request.body);
+        for field in ["name=\"deviceId\"\r\n\r\nRSnip", "name=\"fileCreatedAt\"", "name=\"fileModifiedAt\"", "name=\"assetData\"; filename=\"a b.png\""] {
+            assert!(body.contains(field), "{field} in {body}");
+        }
+
+        let (server, requests) = serve_each(vec![("200 OK", "", r#"{"email":"me@example.com","name":"Me"}"#.to_owned())]);
+        assert_eq!(test(&to(Kind::Immich { server }), Some("KEY")), Ok("Connected as me@example.com".into()));
+        assert_eq!(requests.join().unwrap()[0].path, "/api/users/me");
+        let (server, _) = serve_each(vec![("401 Unauthorized", "", String::new())]);
+        assert_eq!(test(&to(Kind::Immich { server }), Some("nope")), Err("Immich didn't accept the API key".into()));
+    }
+
+    #[test]
+    fn links_need_a_public_address() {
+        assert_eq!(link("", "a.png"), None);
+        assert_eq!(link(" https://x.example.com/s/ ", "dir/a #1.png").as_deref(), Some("https://x.example.com/s/dir/a%20%231.png"));
     }
 
     fn filled(kind: Kind) -> Destination {
