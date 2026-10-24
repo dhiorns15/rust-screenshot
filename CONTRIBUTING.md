@@ -133,6 +133,20 @@ workflow builds, tests and publishes everything. Its notes list every commit sin
 release, one line each with a link (`ci/release-notes.sh`), so write commit subjects that make sense
 to users reading them there.
 
+To try a release on real machines before users get it, tag a release candidate of the bumped
+version first:
+
+1. Bump the version to X.Y.Z, commit, and push a `vX.Y.Z-rc1` tag. The workflow builds and tests it
+   as usual and publishes it as a pre-release, with the same downloads. GitHub doesn't count a
+   pre-release as the latest release, so RSnip's update check never offers it, and the update test
+   is skipped.
+2. Install it and try what changed, on Windows and on a Linux desktop.
+3. If something's wrong, fix it and tag `vX.Y.Z-rc2` (the version stays X.Y.Z). When it's right,
+   tag `vX.Y.Z` on the same commit as the last candidate.
+
+The workflow refuses a tag that doesn't match the version in `Cargo.toml`. A candidate's notes, and
+the release's, list everything since the previous release, not since the last candidate.
+
 ## License
 
 RSnip is MIT-licensed, and contributions are accepted under the same license.

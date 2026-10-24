@@ -5,11 +5,13 @@
 #   ci/release-notes.sh v0.4.0 > notes.md
 #
 # Needs the whole history (actions/checkout with fetch-depth: 0). GITHUB_REPOSITORY is set on CI.
+# Release candidates (vX.Y.Z-rcN) don't count as previous releases: a release, and each of its
+# candidates, lists everything since the release before.
 set -eu
 tag="$1"
 repo="${GITHUB_REPOSITORY:-dhiorns15/rust-screenshot}"
 url="https://github.com/$repo"
-previous=$(git describe --tags --abbrev=0 "$tag^" 2>/dev/null || true)
+previous=$(git describe --tags --abbrev=0 --exclude '*-*' "$tag^" 2>/dev/null || true)
 range="${previous:+$previous..}$tag"
 
 # Skip merges and the version-bump commits; a "(#123)" in a subject already links its pull request.

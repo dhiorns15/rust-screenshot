@@ -167,7 +167,9 @@ docker run --rm -v "$PWD:/work" -w /work -e CARGO_TARGET_DIR=/work/target/linux 
 To publish a release, bump `version` in `Cargo.toml`, commit, then `git tag vX.Y.Z && git push --tags`.
 The release workflow runs the tests and attaches the Windows installer, exe and zip, and a Linux
 build, to a new GitHub Release. It then installs the previous release on a fresh machine and checks
-that `rsnip --update` updates it to the new one.
+that `rsnip --update` updates it to the new one. To try a release before it goes out, tag a release
+candidate first, `vX.Y.Z-rc1`: it's published as a pre-release, which the update check never offers
+(see [CONTRIBUTING.md](CONTRIBUTING.md#releases)).
 
 ## Usage
 

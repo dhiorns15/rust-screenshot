@@ -15,6 +15,15 @@ jobs:
         with:
           # The release notes list every commit since the previous tag.
           fetch-depth: 0
+      # vX.Y.Z releases version X.Y.Z; vX.Y.Z-rcN is a release candidate of it (see CONTRIBUTING.md).
+      - name: Check the tag matches the version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          case "$GITHUB_REF_NAME" in
+            "v$version" | "v$version"-rc[0-9]*) ;;
+            *) echo "::error::Tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml (want v$version or v$version-rcN)"; exit 1 ;;
+          esac
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
@@ -42,7 +51,11 @@ jobs:
           $files = @((Get-ChildItem target/installer/*-setup.exe).FullName, "target/release/rsnip.exe", $env:ZIP)
           # Only for looking up crash report addresses, so a release goes out without it if need be.
           if (Test-Path target/release/rsnip.pdb) { $files += "target/release/rsnip.pdb" } else { Write-Warning "No rsnip.pdb to publish" }
-          gh release create $env:GITHUB_REF_NAME @files --title "RSnip $env:GITHUB_REF_NAME" --notes-file notes.md
+          # A release candidate is a pre-release: GitHub doesn't list it as the latest release, which
+          # is what RSnip's update check asks for, so only people who download it get it.
+          $options = @('--title', "RSnip $env:GITHUB_REF_NAME", '--notes-file', 'notes.md')
+          if ($env:GITHUB_REF_NAME.Contains('-')) { $options += '--prerelease' }
+          gh release create $env:GITHUB_REF_NAME @files @options
 
   linux:
     needs: release
@@ -71,6 +84,8 @@ jobs:
   # Updates the previous release to this one with `rsnip --update`, as users' copies will.
   update:
     needs: release
+    # The update check doesn't offer release candidates, so there's nothing to update to.
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
