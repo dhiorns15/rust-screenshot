@@ -3079,7 +3079,7 @@ dependencies = [
 
 [[package]]
 name = "rsnip"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "ab_glyph",
  "arboard",
