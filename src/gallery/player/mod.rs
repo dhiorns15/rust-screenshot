@@ -627,6 +627,43 @@ pub mod tests {
         }
     }
 
+    /// An MP4 as RSnip records it on Windows (Media Foundation) reads, trims without re-encoding,
+    /// and plays back from anywhere.
+    #[cfg(windows)]
+    #[test]
+    fn plays_and_trims_windows_recordings() {
+        use crate::encode::{Encoder, Mp4};
+        let dir = std::env::temp_dir().join(format!("rsnip-player-mf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Recording.mp4");
+        let mut mp4: Box<dyn Encoder> = match Mp4::new(&path, 320, 240, 30, false) {
+            Ok(mp4) => Box::new(mp4),
+            // Server installs (like CI's) may not include Media Foundation.
+            Err(e) => return eprintln!("skipped: {e}"),
+        };
+        for i in 0..90u32 {
+            let data = (0..320 * 240).flat_map(|p| [(p % 251) as u8, (i * 2) as u8, 90, 255]).collect();
+            let frame = crate::capture::Image { width: 320, height: 240, data };
+            mp4.frame(&frame, Duration::from_millis(i as u64 * 1000 / 30)).unwrap();
+        }
+        mp4.finish().unwrap();
+
+        let movie = Movie::open(&path).unwrap();
+        assert_eq!((movie.width, movie.height), (320, 240));
+        assert!(movie.duration().abs_diff(Duration::from_secs(3)) < Duration::from_millis(100), "{:?}", movie.duration());
+        let trimmed = trimmed_path(&path);
+        let (from, to) = trim(&path, &trimmed, Duration::from_millis(1500), Duration::from_millis(2500)).unwrap();
+        assert!(from <= Duration::from_millis(1500) && to.abs_diff(Duration::from_millis(2500)) < Duration::from_millis(50), "{from:?}..{to:?}");
+        assert!(Movie::open(&trimmed).is_ok());
+        assert!(first_frame(&trimmed, MAX_SIZE).is_some_and(|f| f.size == [320, 240]), "the trimmed copy plays");
+
+        let decoding = decode(&path, Duration::from_millis(1500), MAX_SIZE, None);
+        let first = decoding.frames.recv_timeout(Duration::from_secs(10)).expect("a frame");
+        assert!(first.at.abs_diff(Duration::from_millis(1500)) < Duration::from_millis(40), "starts where asked: {:?}", first.at);
+        drop(decoding);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn plays_gifs_from_any_frame_and_trims_them() {
         let dir = std::env::temp_dir().join(format!("rsnip-player-{}", std::process::id()));

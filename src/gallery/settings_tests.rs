@@ -269,7 +269,7 @@ fn chooses_where_screenshots_and_recordings_are_saved() {
     assert!(h.query_by_label(&format!("~{}Elsewhere", std::path::MAIN_SEPARATOR)).is_some());
     assert!(requests(&h).contains(&TrayRequest::SettingsChanged), "the tray app saves there from now on");
     click(&mut h, "Open");
-    assert_eq!(h.state().env.sandboxed().opened, [elsewhere.clone()]);
+    assert_eq!(h.state().env.sandboxed().opened, std::slice::from_ref(&elsewhere));
 
     // Cancelling the chooser changes nothing.
     h.state().env.sandboxed().picked_folder = None;
