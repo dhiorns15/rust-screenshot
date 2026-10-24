@@ -37,9 +37,10 @@ Where things are:
 | `src/win_main.rs`, `tray.rs`, `hook.rs`, `settings.rs` | the Windows tray app, keyboard hook and settings |
 | `src/shortcuts.rs`, `options.rs` | the capture shortcuts and on/off options both the tray app and Settings use |
 | `src/capture.rs`, `overlay.rs`, `scroll.rs`, `stitch.rs`, `record.rs`, `encode.rs`, `ocr.rs`, `pin.rs` | capturing, scrolling capture, recording, OCR, pins |
-| `src/update.rs` | update checks and installing updates |
+| `src/mp4.rs` | reading recordings' MP4 index, and cutting them without re-encoding (trimming, and seeking on Linux) |
+| `src/update.rs` | update checks, release candidates, and installing updates (the installer on Windows, the `.deb`/`.rpm` on Linux) |
 | `src/crash.rs` | crash reports: the panic hook, and handlers for native crashes (signals on Linux, unhandled exceptions on Windows) |
-| `src/gallery/` | the library window: `mod.rs` (window, toolbar), `library.rs`, `theme.rs`, `color.rs`, `env.rs`, `search.rs` (search by text, app and window), `words.rs` (recognised words and where they are; Tesseract's output on Linux); `background.rs` (Linux's icon in the top bar, `rsnip --tray`, which also records), `portal.rs`, `recorder.rs` and `pick_area.rs` (recording on Linux: the screen-cast portal, GStreamer, and choosing an area); the Settings window: `settings_window.rs`, and its System info report: `system_info.rs` |
+| `src/gallery/` | the library window: `mod.rs` (window, toolbar), `library.rs`, `theme.rs`, `color.rs`, `env.rs`, `search.rs` (search by text, app and window), `words.rs` (recognised words and where they are; Tesseract's output on Linux); `background.rs` (Linux's icon in the top bar, `rsnip --tray`, which also records), `portal.rs`, `recorder.rs` and `pick_area.rs` (recording on Linux: the screen-cast portal, GStreamer, and choosing an area); `player/` (playing and trimming recordings in the library: GStreamer on Linux, Media Foundation on Windows, GIFs in Rust); the Settings window: `settings_window.rs`, and its System info report: `system_info.rs` |
 | `src/gallery/doc.rs` | a screenshot's annotations, undo history and rendering |
 | `src/gallery/editor/` | the annotation canvas and tools; `copy_text.rs` is the Copy text tool |
 | `src/gallery/platform/` | what differs between Windows and Linux |
@@ -134,12 +135,14 @@ release, one line each with a link (`ci/release-notes.sh`), so write commit subj
 to users reading them there.
 
 To try a release on real machines before users get it, tag a release candidate of the bumped
-version first:
+version first. Builds from the release workflow know their tag (`RSNIP_VERSION`), so a candidate
+reports `0.5.3-rc1`, and people who turn on *Settings → Updates → Get release candidates* are
+offered it like any update:
 
 1. Bump the version to X.Y.Z, commit, and push a `vX.Y.Z-rc1` tag. The workflow builds and tests it
    as usual and publishes it as a pre-release, with the same downloads. GitHub doesn't count a
-   pre-release as the latest release, so RSnip's update check never offers it, and the update test
-   is skipped.
+   pre-release as the latest release, so only those who opted in are offered it, and the update
+   test is skipped.
 2. Install it and try what changed, on Windows and on a Linux desktop.
 3. If something's wrong, fix it and tag `vX.Y.Z-rc2` (the version stays X.Y.Z). When it's right,
    tag `vX.Y.Z` on the same commit as the last candidate.

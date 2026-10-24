@@ -8,12 +8,14 @@ your desktop's own tool (see [Linux](#linux)).
 
 - **Takes over Print Screen** (and optionally **Win+Shift+S**) from the built-in Snipping Tool.
 - **Freezes the screen** and lets you drag a region, or click a window/monitor to grab it.
-- **Copies every capture to the clipboard** and saves a PNG to your Screenshots folder.
+- **Copies every capture to the clipboard** and saves a PNG to RSnip's folder (`RSnip` in your user
+  folder, or one you choose in Settings).
 - **Shortcuts for every action**: Print Screen can capture a region, all screens, record and more,
   each on its own key, set in the Settings window.
 - **Library and editor**: browse every screenshot and annotate it with arrows, lines, boxes,
   ellipses, highlighter, blur, pixelate, redact, spotlight, pen, text, numbered steps and crop, with undo/redo. Everything stays
   selectable to move, resize, restyle or delete.
+- **Recordings play in the library**, and **trim** to a new file without re-encoding.
 
 ## Download
 
@@ -48,8 +50,8 @@ The installer is written to `target\installer`.
 ### Linux
 
 The library and editor also run on Linux (X11 or Wayland), and record the screen. Screenshots are
-left to your desktop's screenshot tool (or Flameshot, `grim`/`slurp`, …): RSnip browses
-`~/Pictures/Screenshots` and annotates what's there. Reading the text in screenshots (to copy it, or
+left to your desktop's screenshot tool (or Flameshot, `grim`/`slurp`, …): RSnip browses its folder,
+`~/RSnip` unless you choose another in Settings → Library & editor, and annotates what's there. Reading the text in screenshots (to copy it, or
 to search by it) uses [Tesseract](https://github.com/tesseract-ocr/tesseract) when it's installed
 (`tesseract-ocr` on Debian and Ubuntu; the installer's check recommends it). Pinning, copying as
 files and dragging files out are Windows-only.
@@ -59,8 +61,8 @@ files and dragging files out are Windows-only.
 `rsnip --record-screen`, which you can give a keyboard shortcut in your desktop's settings).
 Your desktop asks which screen or window to share, as it does for screen sharing in a browser; for
 an area, RSnip then shows that screen to drag over. The icon gets a red dot while recording: click
-it (or *Stop recording*, or run the command again) to finish. The recording is saved to the
-screenshots folder as set in Settings → Recording, and a notification says so. Recordings use
+it (or *Stop recording*, or run the command again) to finish. The recording is saved to RSnip's
+folder in the format set in Settings → Recording, and a notification says so. Recordings use
 [GStreamer](https://gstreamer.freedesktop.org/) with its PipeWire plugin, as the desktop's own
 recorder does:
 
@@ -130,15 +132,18 @@ older glibc).
 - `./install.sh --uninstall` removes it (and stops it running in the background); your screenshots
   and settings are kept.
 
-Then use your desktop's screenshot tool as usual; screenshots saved to `~/Pictures/Screenshots` show
-up in the library. To open a capture straight in the editor, bind a key to a command such as
-`grim -g "$(slurp)" ~/Pictures/Screenshots/shot-$(date +%s).png && rsnip` (Wayland, wlroots
-desktops) or `flameshot gui -p ~/Pictures/Screenshots`. `rsnip file.png` opens one file.
+Then point your desktop's screenshot tool at RSnip's folder (or RSnip at your tool's, in Settings →
+Library & editor), and screenshots show up in the library. To open a capture straight in the
+editor, bind a key to a command such as `grim -g "$(slurp)" ~/RSnip/shot-$(date +%s).png && rsnip`
+(Wayland, wlroots desktops) or `flameshot gui -p ~/RSnip`. `rsnip file.png` opens one file.
 
 Settings live in `~/.config/rsnip/settings.json`, or open *Settings* from the library. When a new
 version is out, the library's status bar links to it. It checks once each time the library opens,
 using `curl` or, if that isn't installed (as on Ubuntu), `wget`; turn it off in *Settings → Updates*.
-There is no self-updater on Linux: download the new version and run `./install.sh` again.
+If RSnip came from its `.deb` or `.rpm`, *Settings → Updates → Install* downloads the new package,
+checks it against GitHub's SHA-256, installs it with your package manager (asking for your
+password) and offers to restart RSnip. Otherwise, download the new version and run `./install.sh`
+again.
 
 To build it yourself instead:
 
@@ -170,8 +175,8 @@ To publish a release, bump `version` in `Cargo.toml`, commit, then `git tag vX.Y
 The release workflow runs the tests and attaches the Windows installer, exe and zip, and a Linux
 build, to a new GitHub Release. It then installs the previous release on a fresh machine and checks
 that `rsnip --update` updates it to the new one. To try a release before it goes out, tag a release
-candidate first, `vX.Y.Z-rc1`: it's published as a pre-release, which the update check never offers
-(see [CONTRIBUTING.md](CONTRIBUTING.md#releases)).
+candidate first, `vX.Y.Z-rc1`: it's published as a pre-release, which the update check offers only
+to those who turned on *Get release candidates* (see [CONTRIBUTING.md](CONTRIBUTING.md#releases)).
 
 ## Usage
 
@@ -189,7 +194,7 @@ Run `rsnip.exe`. It sits in the notification area.
 | Cancel | Esc or right-click |
 | Same area again | Tray menu → *Capture last region*, or R in the selection overlay, captures exactly the area you captured last time |
 | Scrolling capture | Tray menu → *Scrolling capture*, then click a window (or drag over the part that scrolls). RSnip scrolls it to the end and stitches one tall image; sticky headers and footers appear once. Esc stops early |
-| Record video | Tray menu → *Record screen area*, pick an area, and it records to MP4 (or GIF, chosen in Settings), mouse pointer included. MP4s are H.264 or H.265 at 15, 24, 30 or 60 frames a second (Settings → Recording; H.265 needs an encoder, which most graphics drivers include). A red frame marks the area and a bar shows the time; click *Stop* or press a capture shortcut to finish. The video is saved to the screenshots folder and copied as a file, ready to paste |
+| Record video | Tray menu → *Record screen area*, pick an area, and it records to MP4 (or GIF, chosen in Settings), mouse pointer included. MP4s are H.264 or H.265 at 15, 24, 30 or 60 frames a second (Settings → Recording; H.265 needs an encoder, which most graphics drivers include). A red frame marks the area and a bar shows the time; click *Stop* or press a capture shortcut to finish. The video is saved to RSnip's folder and copied as a file, ready to paste |
 | Delayed capture | Tray menu → *Delayed capture* → 3, 5 or 10 seconds, to open a menu or tooltip first. The countdown shows in the tray tooltip |
 | Open library | Tray menu → *Open library & editor*, or click the "saved" notification |
 | Update | When a new version is out, a notification says so (once per version) and the tray menu offers *Update to RSnip x.y.z…*. If you used the installer, clicking either downloads the new installer, checks its SHA-256 against GitHub's, installs it and restarts RSnip. A standalone `rsnip.exe` opens the download page instead |
@@ -207,8 +212,8 @@ Changes apply straight away.
 | Capture | **Save screenshots to the folder** (when off, captures go to the clipboard only), **Open the editor after capture** (this saves the capture even if saving is off), **Show the magnifier** (or press M while selecting), **Hide RSnip while capturing** (on by default: the library and Settings windows step aside during a capture or recording and come back after). Every capture is copied to the clipboard |
 | Shortcuts | A shortcut for each action (region, all screens, last region, scrolling, record, text). *Change* asks you to press the new combination (Esc cancels); giving it a key another action has moves it. **Also take over Win+Shift+S** for a region capture. It warns if Windows' own Print Screen setting is on or two actions share a key |
 | Recording | MP4 or GIF; for MP4s, the frame rate (15, 24, 30 or 60) and codec (H.264 or H.265). On Linux: **Hide the library while recording**, and what's missing for recording |
-| Library & editor | Library on the left or along the bottom; **Read text in screenshots for search**; border and drop shadow on exports |
-| Updates | **Check automatically** (on by default: shortly after RSnip starts, then daily, it asks GitHub for the latest release; nothing else is sent), **Install automatically** (off by default; installed copies only: installs a new version as soon as it's found, unless you're in the middle of something), *Check now* |
+| Library & editor | **Save screenshots and recordings to**: RSnip's folder, which the library shows (`RSnip` in your user folder unless you choose another; copies of RSnip from before 0.5.3 keep the Pictures folder's `Screenshots`); library on the left or along the bottom; **Read text in screenshots for search**; border and drop shadow on exports |
+| Updates | **Check automatically** (on by default: shortly after RSnip starts, then daily, it asks GitHub for the latest release; nothing else is sent), **Get release candidates** (off by default: also offers versions to try before they're released), **Install automatically** (off by default; installed copies only: installs a new version as soon as it's found, unless you're in the middle of something), *Check now* |
 | System info | What a bug report needs: RSnip's version and install, the OS, CPU, memory, graphics driver, display scale, your settings, the last crash and where files are kept. *Copy* puts it on the clipboard; *Report a problem* copies it and opens a new GitHub issue to paste it into. It has no screenshots or file names, and your home folder shows as `~` |
 | About | Version and links |
 
@@ -279,6 +284,14 @@ select several, to copy them as files, delete them, pin them or drag them out to
 Recordings appear with an MP4/GIF badge and open in your video player.
 Drag a library thumbnail into Explorer, a chat app or an email to drop the file there.
 Right-click a library thumbnail to open it externally, show it in Explorer, pin it, or move it to the Recycle Bin.
+
+Recordings play in the library: click one for play and pause (Space), a timeline to click or drag,
+and ←/→ to skip 5 seconds. *Trim* marks the part to keep, with the timeline's handles or *Start
+here* / *End here*, and *Save trimmed copy* saves it beside the original as "… (trimmed)". MP4s are
+cut without re-encoding, so it's instant and loses nothing, but the cut starts on the keyframe at or
+before the start (recordings have one every second); GIFs are cut to the frame. On Linux, playing
+MP4s needs GStreamer's H.264 decoder (`gstreamer1.0-libav` on Debian and Ubuntu, which the `.deb`
+recommends).
 
 ### Command line
 
