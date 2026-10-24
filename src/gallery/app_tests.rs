@@ -420,6 +420,49 @@ fn recordings_play_in_the_library() {
     assert!(h.state().player.is_none() && h.state().editor.is_some());
 }
 
+/// Drags with the mouse on the open player's timeline, from one time to another (in seconds).
+fn drag_on_timeline(h: &mut Harness<App>, from: f32, to: f32) {
+    let timeline = h.state().player.as_ref().unwrap().timeline;
+    let total = 2.0;
+    let at = |t: f32| Pos2::new(timeline.left() + timeline.width() * t / total, timeline.center().y);
+    h.hover_at(at(from));
+    h.step();
+    h.drag_at(at(from));
+    h.step();
+    for i in 1..=5 {
+        h.hover_at(at(from + (to - from) * i as f32 / 5.0));
+        h.step();
+    }
+    h.drop_at(at(to));
+    settle(h);
+}
+
+#[test]
+fn trim_handles_drag_and_the_rest_of_the_timeline_seeks() {
+    let (mut h, _) = with_recording("kittest-trim-drag");
+    click(&mut h, "Recording z");
+    wait_for_frame(&mut h);
+    click(&mut h, &format!("{} Trim", icon::SCISSORS));
+    let trim = |h: &Harness<App>| h.state().player.as_ref().unwrap().trim.unwrap();
+    assert_eq!(trim(&h), (Duration::ZERO, Duration::from_secs(2)));
+
+    drag_on_timeline(&mut h, 0.0, 0.5);
+    let (from, to) = trim(&h);
+    assert!(from.abs_diff(Duration::from_millis(500)) < Duration::from_millis(60) && to == Duration::from_secs(2), "the start handle moved: {from:?}..{to:?}");
+    drag_on_timeline(&mut h, 2.0, 1.5);
+    let (from2, to) = trim(&h);
+    assert!(from2 == from && to.abs_diff(Duration::from_millis(1500)) < Duration::from_millis(60), "the end handle moved: {from2:?}..{to:?}");
+
+    // Between the handles, a drag scrubs and leaves the trim alone.
+    drag_on_timeline(&mut h, 0.8, 1.2);
+    assert_eq!(trim(&h), (from, to));
+    let at = h.state().player.as_ref().unwrap().position();
+    assert!(at.abs_diff(Duration::from_millis(1200)) < Duration::from_millis(60), "seeked to {at:?}");
+    // The start handle can't pass the end one.
+    drag_on_timeline(&mut h, 0.5, 1.9);
+    assert_eq!(trim(&h).0, to);
+}
+
 #[test]
 fn trimming_saves_the_part_kept_as_a_new_recording() {
     let (mut h, gif) = with_recording("kittest-trim");

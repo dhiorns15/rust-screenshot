@@ -256,6 +256,14 @@ pub fn trimmed_path(path: &Path) -> PathBuf {
     candidate
 }
 
+/// What a press on the timeline moves.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Grab {
+    Playhead,
+    Start,
+    End,
+}
+
 /// What the player asks of the library.
 pub enum Request {
     /// Save `from`..`to` as a new recording.
@@ -285,8 +293,10 @@ pub struct Player {
     pub error: Option<String>,
     /// The part to keep, while trimming.
     pub trim: Option<(Duration, Duration)>,
-    /// Seeking while the scrubber is dragged.
-    dragging: bool,
+    /// What the pointer pressed on the timeline is moving, until it's let go.
+    grab: Option<Grab>,
+    /// Where the timeline was drawn last (for tests to drag on).
+    pub timeline: egui::Rect,
 }
 
 impl Player {
@@ -306,7 +316,8 @@ impl Player {
             awaiting_first: true,
             error: None,
             trim: None,
-            dragging: false,
+            grab: None,
+            timeline: egui::Rect::NOTHING,
         })
     }
 
@@ -516,8 +527,8 @@ impl Player {
         request
     }
 
-    /// The timeline: where playback is, and the part kept while trimming; click or drag to seek,
-    /// or drag the trim handles.
+    /// The timeline: where playback is, and the part kept while trimming. Pressing on a trim handle
+    /// drags it; anywhere else seeks, and dragging scrubs.
     fn scrubber(&mut self, ui: &mut egui::Ui) {
         let Some(total) = self.info.duration.filter(|d| !d.is_zero()) else {
             ui.add_space(ui.available_width());
@@ -526,8 +537,51 @@ impl Player {
         let (outer, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::click_and_drag());
         // Room for the knob at either end.
         let rect = outer.shrink2(egui::vec2(10.0, 0.0));
+        self.timeline = rect;
         let x = |t: Duration| rect.left() + rect.width() * (t.as_secs_f32() / total.as_secs_f32()).clamp(0.0, 1.0);
         let time = |px: f32| Duration::from_secs_f32(((px - rect.left()) / rect.width()).clamp(0.0, 1.0) * total.as_secs_f32());
+        // The trim handle within reach of `px`, the nearer if both are.
+        let handle_at = |px: f32| {
+            let (from, to) = self.trim?;
+            let (d_from, d_to) = ((x(from) - px).abs(), (x(to) - px).abs());
+            let reach = 12.0;
+            match (d_from <= reach, d_to <= reach) {
+                (true, true) if d_to < d_from => Some(Grab::End),
+                (true, _) => Some(Grab::Start),
+                (_, true) => Some(Grab::End),
+                _ => None,
+            }
+        };
+
+        // What a press moves is settled where it starts, and kept until it's let go.
+        let down = response.is_pointer_button_down_on();
+        if down && self.grab.is_none() {
+            let origin = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos());
+            self.grab = origin.map(|p| handle_at(p.x).unwrap_or(Grab::Playhead));
+        }
+        let hovered = response.hover_pos().and_then(|p| handle_at(p.x));
+        if hovered.is_some() || matches!(self.grab, Some(Grab::Start | Grab::End)) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        if let (Some(grab), Some(pointer)) = (self.grab, response.interact_pointer_pos().filter(|_| down)) {
+            let at = time(pointer.x);
+            match (grab, self.trim) {
+                (Grab::Start, Some((_, to))) => {
+                    self.trim = Some((at.min(to), to));
+                    self.preview(at.min(to));
+                }
+                (Grab::End, Some((from, _))) => {
+                    self.trim = Some((from, at.max(from)));
+                    self.preview(at.max(from));
+                }
+                _ => self.preview(at),
+            }
+        }
+        if !down && self.grab.take().is_some() {
+            // Let go: decode from where it ended up.
+            self.seek(self.position);
+        }
+
         let palette = super::theme::palette(ui);
         let track = egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width(), 6.0));
         let painter = ui.painter();
@@ -535,43 +589,15 @@ impl Player {
         if let Some((from, to)) = self.trim {
             let kept = egui::Rect::from_min_max(egui::pos2(x(from), track.top() - 4.0), egui::pos2(x(to), track.bottom() + 4.0));
             painter.rect_filled(kept, 3.0, super::theme::ACCENT.gamma_multiply(0.35));
-            for t in [from, to] {
-                painter.rect_filled(egui::Rect::from_center_size(egui::pos2(x(t), rect.center().y), egui::vec2(5.0, 22.0)), 2.0, super::theme::ACCENT);
+            for (t, which) in [(from, Grab::Start), (to, Grab::End)] {
+                let active = self.grab == Some(which) || self.grab.is_none() && hovered == Some(which);
+                let size = if active { egui::vec2(9.0, 24.0) } else { egui::vec2(7.0, 22.0) };
+                painter.rect_filled(egui::Rect::from_center_size(egui::pos2(x(t), rect.center().y), size), 2.0, super::theme::ACCENT);
             }
         }
         let played = egui::Rect::from_min_max(track.min, egui::pos2(x(self.position()), track.max.y));
         painter.rect_filled(played, 3.0, palette.muted);
         painter.circle_filled(egui::pos2(x(self.position()), rect.center().y), 6.0, ui.visuals().strong_text_color());
-
-        let Some(pointer) = response.interact_pointer_pos() else {
-            if self.dragging {
-                self.dragging = false;
-                self.seek(self.position);
-            }
-            return;
-        };
-        let at = time(pointer.x);
-        // Near a trim handle, drag it; anywhere else, seek.
-        if response.drag_started() || response.clicked() {
-            self.dragging = true;
-        }
-        if let Some((from, to)) = self.trim {
-            let near = |t: Duration| (x(t) - pointer.x).abs() < 8.0;
-            let press = ui.input(|i| i.pointer.press_origin()).map(|p| time(p.x));
-            let grabbed = press.map(|p| if near(from) && (p.as_secs_f32() - from.as_secs_f32()).abs() <= (p.as_secs_f32() - to.as_secs_f32()).abs() { 0 } else if near(to) { 1 } else { 2 });
-            match grabbed {
-                Some(0) if response.dragged() => {
-                    self.trim = Some((at.min(to), to));
-                    return self.preview(at.min(to));
-                }
-                Some(1) if response.dragged() => {
-                    self.trim = Some((from, at.max(from)));
-                    return self.preview(at.max(from));
-                }
-                _ => {}
-            }
-        }
-        self.preview(at);
     }
 
     /// Shows `at` while the scrubber is dragged: the decoder starts there at most a few times a second.

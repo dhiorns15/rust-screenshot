@@ -167,7 +167,7 @@ pub fn check(hevc: bool) -> Result<String, String> {
     let dir = std::env::temp_dir().join(format!("rsnip-check-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
     let path = dir.join(format!("check.{}", encoder.extension));
-    let recorded = record_test_picture(&encoder, &path);
+    let recorded = record_test_picture(&encoder, &path, Duration::from_millis(1500));
     // And plays back in the library, which needs a decoder as well.
     let played = recorded.is_ok().then(|| super::player::can_play(&path));
     let _ = std::fs::remove_dir_all(&dir);
@@ -183,8 +183,9 @@ pub fn check(hevc: bool) -> Result<String, String> {
     Ok(made)
 }
 
-/// Records a test picture to `path` through `encoder`, with the pipeline a recording uses.
-fn record_test_picture(encoder: &Encoder, path: &Path) -> Result<(), String> {
+/// Records a test picture to `path` through `encoder` for about `length` (GStreamer's start-up
+/// included), with the pipeline a recording uses.
+fn record_test_picture(encoder: &Encoder, path: &Path, length: Duration) -> Result<(), String> {
     let area = Some(Area { x: 8, y: 6, width: 201, height: 151 });
     // The recording's pipeline with a test picture in place of the screen: the flags, then the
     // source's tokens.
@@ -193,7 +194,7 @@ fn record_test_picture(encoder: &Encoder, path: &Path) -> Result<(), String> {
     let test = ["-q", "-e", "videotestsrc", "is-live=true", "!", "videoconvert"].map(String::from);
     let args: Vec<String> = test.into_iter().chain(pipeline[skip..].iter().cloned()).collect();
     let mut child = Command::new("gst-launch-1.0").args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("Couldn't start GStreamer: {e}"))?;
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(length);
     unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
     if !child.wait().map_err(|e| e.to_string())?.success() {
         return Err(failure(&mut child));
@@ -486,7 +487,7 @@ mod tests {
         encoders.dedup_by_key(|e| e.codec);
         for encoder in encoders {
             let path = dir.join(format!("test-{}.{}", encoder.element, encoder.extension));
-            record_test_picture(&encoder, &path).unwrap_or_else(|e| panic!("{}: {e}", encoder.element));
+            record_test_picture(&encoder, &path, Duration::from_millis(1500)).unwrap_or_else(|e| panic!("{}: {e}", encoder.element));
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -502,7 +503,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rsnip-trim-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("Recording.mp4");
-        record_test_picture(&encoder, &path).unwrap();
+        // Long enough for a second keyframe however slowly GStreamer starts.
+        record_test_picture(&encoder, &path, Duration::from_secs(3)).unwrap();
         let movie = crate::mp4::Movie::open(&path).unwrap();
         let keys = movie.keyframes();
         assert!(keys.len() >= 2 && keys[1] <= Duration::from_millis(1100), "a keyframe every second: {keys:?}");
