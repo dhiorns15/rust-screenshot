@@ -66,6 +66,37 @@ const H265: [Encoder; 3] = [
 const WEBM: Encoder =
     Encoder { element: "vp8enc", codec: "VP8", settings: |k| format!("vp8enc deadline=1 cpu-used=8 target-bitrate={}", k * 1000), tail: "webmmux", extension: "webm" };
 
+impl Encoder {
+    /// The GStreamer elements it needs: itself, then the parser and muxer after it. They're often in
+    /// different packages (x264 in plugins-ugly, its parser in plugins-bad).
+    fn parts(&self) -> impl Iterator<Item = &'static str> {
+        std::iter::once(self.element).chain(self.tail.split(" ! "))
+    }
+}
+
+/// Where a parser or muxer comes from, for saying what to install.
+fn package(element: &str) -> &'static str {
+    match element {
+        "h264parse" | "h265parse" => "gstreamer1.0-plugins-bad on Debian and Ubuntu, gstreamer1-plugins-bad-free on Fedora, gst-plugins-bad on Arch",
+        _ => "gstreamer1.0-plugins-good on Debian and Ubuntu, gstreamer1-plugins-good on Fedora, gst-plugins-good on Arch",
+    }
+}
+
+/// The first of `encoders` with everything it needs installed (`has`).
+fn usable(encoders: &[Encoder], has: &impl Fn(&str) -> bool) -> Option<Encoder> {
+    encoders.iter().find(|e| e.parts().all(has)).copied()
+}
+
+/// Why none of `encoders` (for `codec`) can be used: what the first one installed lacks, or that
+/// none is.
+fn why_not(codec: &str, encoders: &[Encoder], has: &impl Fn(&str) -> bool) -> String {
+    let Some(encoder) = encoders.iter().find(|e| has(e.element)) else {
+        return format!("There's no {codec} encoder installed");
+    };
+    let missing: Vec<&str> = encoder.parts().filter(|p| !has(p)).collect();
+    format!("{codec} needs GStreamer's {} ({})", missing.join(" and "), package(missing[0]))
+}
+
 /// GStreamer has `element` installed.
 fn installed(element: &str) -> bool {
     Command::new("gst-inspect-1.0").args(["--exists", element]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
@@ -84,17 +115,21 @@ pub fn available() -> Result<(), String> {
 
 /// The encoder for `hevc` (H.265, else H.264), and why it's not that one if it isn't.
 pub fn encoder(hevc: bool) -> (Encoder, Option<String>) {
-    let (wanted, codec) = if hevc { (&H265[..], "H.265") } else { (&H264[..], "H.264") };
-    if let Some(&e) = wanted.iter().find(|e| installed(e.element)) {
+    choose(hevc, &|e| installed(e))
+}
+
+/// `encoder`, given what GStreamer has installed (`has`).
+fn choose(hevc: bool, has: &impl Fn(&str) -> bool) -> (Encoder, Option<String>) {
+    if let Some(e) = usable(if hevc { &H265 } else { &H264 }, has) {
         return (e, None);
     }
     // H.265 falls back to H.264 before WebM.
     if hevc {
-        if let Some(&e) = H264.iter().find(|e| installed(e.element)) {
-            return (e, Some("There's no H.265 encoder installed, so it was recorded as H.264.".into()));
+        if let Some(e) = usable(&H264, has) {
+            return (e, Some(format!("{}, so it was recorded as H.264.", why_not("H.265", &H265, has))));
         }
     }
-    (WEBM, Some(format!("There's no {codec} encoder installed, so it was recorded as WebM.")))
+    (WEBM, Some(format!("{}, so it was recorded as WebM.", why_not("H.264", &H264, has))))
 }
 
 /// What's missing for recording as `hevc` (H.265, else H.264) would have it, for Settings.
@@ -102,18 +137,61 @@ pub fn problem(hevc: bool) -> Option<String> {
     if let Err(e) = available() {
         return Some(e);
     }
-    let has = |encoders: &[Encoder]| encoders.iter().any(|e| installed(e.element));
+    problem_with(hevc, &|e| installed(e))
+}
+
+/// `problem`, past GStreamer itself, given what it has installed (`has`).
+fn problem_with(hevc: bool, has: &impl Fn(&str) -> bool) -> Option<String> {
     let h264 = "x264 (gstreamer1.0-plugins-ugly on Debian and Ubuntu, gstreamer1-plugins-ugly from RPM Fusion on Fedora, gst-plugins-ugly on Arch)";
-    match (hevc, has(&H265), has(&H264)) {
+    match (hevc, usable(&H265, has).is_some(), usable(&H264, has).is_some()) {
         (true, true, _) | (false, _, true) => None,
-        (true, false, true) => Some("No H.265 encoder is installed, so MP4s will be H.264.".into()),
-        _ => Some(format!("No H.264 encoder is installed, so recordings will be WebM (VP8) instead of MP4. Install {h264}.")),
+        (true, false, true) => Some(format!("{}, so MP4s will be H.264.", why_not("H.265", &H265, has))),
+        _ if !H264.iter().any(|e| has(e.element)) => {
+            Some(format!("No H.264 encoder is installed, so recordings will be WebM (VP8) instead of MP4. Install {h264}."))
+        }
+        _ => Some(format!("{}, so recordings will be WebM (VP8) instead of MP4.", why_not("H.264", &H264, has))),
     }
 }
 
-/// Whether there's an H.265 encoder installed.
+/// Whether there's an H.265 encoder installed, with what it needs.
 pub fn hevc_available() -> bool {
-    H265.iter().any(|e| installed(e.element))
+    usable(&H265, &|e| installed(e)).is_some()
+}
+
+/// Records a moment of a test picture as a recording would be made now (`hevc` as in Settings),
+/// for `rsnip --check-recording`: what it came out as, or why it couldn't be recorded.
+pub fn check(hevc: bool) -> Result<String, String> {
+    available()?;
+    let (encoder, note) = encoder(hevc);
+    let dir = std::env::temp_dir().join(format!("rsnip-check-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
+    let path = dir.join(format!("check.{}", encoder.extension));
+    let recorded = record_test_picture(&encoder, &path);
+    let _ = std::fs::remove_dir_all(&dir);
+    recorded?;
+    let made = format!("Recording works: {} {} with {}.", encoder.codec, encoder.extension.to_uppercase(), encoder.element);
+    Ok(note.map_or(made.clone(), |note| format!("{made}\n{note}")))
+}
+
+/// Records a test picture to `path` through `encoder`, with the pipeline a recording uses.
+fn record_test_picture(encoder: &Encoder, path: &Path) -> Result<(), String> {
+    let area = Some(Area { x: 8, y: 6, width: 201, height: 151 });
+    // The recording's pipeline with a test picture in place of the screen: the flags, then the
+    // source's tokens.
+    let pipeline = video_pipeline(0, (320, 240), area, 30, encoder, path);
+    let skip = 2 + source(0).split_whitespace().count();
+    let test = ["-q", "-e", "videotestsrc", "is-live=true", "!", "videoconvert"].map(String::from);
+    let args: Vec<String> = test.into_iter().chain(pipeline[skip..].iter().cloned()).collect();
+    let mut child = Command::new("gst-launch-1.0").args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("Couldn't start GStreamer: {e}"))?;
+    std::thread::sleep(Duration::from_millis(1500));
+    unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
+    if !child.wait().map_err(|e| e.to_string())?.success() {
+        return Err(failure(&mut child));
+    }
+    match std::fs::metadata(path) {
+        Ok(m) if m.len() > 1000 => Ok(()),
+        _ => Err(format!("GStreamer wrote no {} file", encoder.extension.to_uppercase())),
+    }
 }
 
 /// The pipeline's source: the shared stream, as RGB.
@@ -394,24 +472,40 @@ mod tests {
         }
         let dir = std::env::temp_dir().join(format!("rsnip-gst-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let area = Some(Area { x: 8, y: 6, width: 201, height: 151 });
-        let mut cases: Vec<(Encoder, &str)> = [&H264[..], &H265[..], &[WEBM]].concat().into_iter().filter(|e| installed(e.element)).map(|e| (e, e.extension)).collect();
-        cases.dedup_by_key(|c| c.0.codec);
-        for (encoder, ext) in cases {
-            let path = dir.join(format!("test-{}.{ext}", encoder.element));
-            // A test picture in place of the screen: the flags, then the source's tokens.
-            let pipeline = video_pipeline(0, (320, 240), area, 30, &encoder, &path);
-            let skip = 2 + source(0).split_whitespace().count();
-            let test = ["-q", "-e", "videotestsrc", "is-live=true", "!", "videoconvert"].map(String::from);
-            let args: Vec<String> = test.into_iter().chain(pipeline[skip..].iter().cloned()).collect();
-            let mut child = Command::new("gst-launch-1.0").args(&args).stderr(Stdio::piped()).spawn().unwrap();
-            std::thread::sleep(Duration::from_millis(1500));
-            unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
-            assert!(child.wait().unwrap().success(), "{}: {}", encoder.element, failure(&mut child));
-            let bytes = std::fs::read(&path).unwrap();
-            assert!(bytes.len() > 1000, "{} wrote {} bytes", encoder.element, bytes.len());
+        let mut encoders: Vec<Encoder> = [&H264[..], &H265[..], &[WEBM]].concat().into_iter().filter(|e| e.parts().all(installed)).collect();
+        encoders.dedup_by_key(|e| e.codec);
+        for encoder in encoders {
+            let path = dir.join(format!("test-{}.{}", encoder.element, encoder.extension));
+            record_test_picture(&encoder, &path).unwrap_or_else(|e| panic!("{}: {e}", encoder.element));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An encoder without its parser or muxer can't record; RSnip says which package has them
+    /// rather than failing when a recording starts.
+    #[test]
+    fn an_encoder_needs_its_parser_and_muxer() {
+        let has = |list: &'static [&'static str]| move |e: &str| list.contains(&e);
+        // Ubuntu with plugins-ugly (x264) but not plugins-bad (its parser).
+        let ugly_only = has(&["x264enc", "mp4mux", "vp8enc", "webmmux"]);
+        let (encoder, note) = choose(false, &ugly_only);
+        assert_eq!(encoder.element, "vp8enc");
+        assert_eq!(note.unwrap(), format!("H.264 needs GStreamer's h264parse ({}), so it was recorded as WebM.", package("h264parse")));
+        let problem = problem_with(false, &ugly_only).unwrap();
+        assert!(problem.starts_with("H.264 needs GStreamer's h264parse (gstreamer1.0-plugins-bad on Debian and Ubuntu"), "{problem}");
+
+        let full = has(&["x264enc", "h264parse", "x265enc", "h265parse", "mp4mux", "vp8enc", "webmmux"]);
+        let (encoder, note) = choose(true, &full);
+        assert_eq!((encoder.element, note), ("x265enc", None));
+        assert_eq!(problem_with(true, &full), None);
+        // H.265's encoder and the H.264 parser, but not H.265's parser: H.264 it is.
+        let no_h265_parser = has(&["x264enc", "h264parse", "x265enc", "mp4mux", "vp8enc", "webmmux"]);
+        let (encoder, note) = choose(true, &no_h265_parser);
+        assert_eq!(encoder.element, "x264enc");
+        assert!(note.unwrap().starts_with("H.265 needs GStreamer's h265parse"));
+        // Nothing for H.264 at all: the old advice, to install x264.
+        let problem = problem_with(false, &has(&["mp4mux", "vp8enc", "webmmux"])).unwrap();
+        assert!(problem.starts_with("No H.264 encoder is installed"), "{problem}");
     }
 
     #[test]

@@ -7,13 +7,15 @@ cd "$(dirname "$0")/.."
 deb=$(cd target/debian && ls -t *.deb | head -1)
 rpm=$(cd target/generate-rpm && ls -t *.rpm | head -1)
 
-# RSnip runs, its app-menu entry is there, and so is GStreamer (with PipeWire) and Tesseract.
+# RSnip runs, its app-menu entry is there, and so is GStreamer (with PipeWire) and Tesseract. RSnip
+# records a test picture as a recording would be made, with whatever GStreamer pieces came along.
 works='rsnip --write-icon /tmp/icon.png && test -s /tmp/icon.png
 test -f /usr/share/applications/rsnip.desktop
 command -v tesseract
-gst-inspect-1.0 --exists pipewiresrc'
-# An H.264 encoder: x264 on Ubuntu, OpenH264 on Fedora (openSUSE's come from Packman).
-h264='gst-inspect-1.0 --exists x264enc || gst-inspect-1.0 --exists openh264enc'
+gst-inspect-1.0 --exists pipewiresrc
+rsnip --check-recording | tee /tmp/check'
+# As H.264 MP4: x264 on Ubuntu, OpenH264 on Fedora (openSUSE's come from Packman, so it's WebM there).
+h264='grep -q "H.264 MP4" /tmp/check'
 
 run() {
     echo "== $1"

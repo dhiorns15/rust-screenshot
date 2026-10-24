@@ -67,12 +67,14 @@ recorder does:
 | | Debian, Ubuntu | Fedora | Arch | openSUSE |
 | --- | --- | --- | --- | --- |
 | Recording | `gstreamer1.0-tools gstreamer1.0-pipewire` | `gstreamer1 pipewire-gstreamer` | `gstreamer gst-plugin-pipewire` | `gstreamer-utils gstreamer-plugin-pipewire` |
-| H.264 | `gstreamer1.0-plugins-ugly` | `gstreamer1-plugins-ugly` (RPM Fusion) | `gst-plugins-ugly` | `gstreamer-plugins-ugly` (Packman) |
+| H.264 | `gstreamer1.0-plugins-ugly gstreamer1.0-plugins-bad` | `gstreamer1-plugin-openh264 gstreamer1-plugins-bad-free` | `gst-plugins-ugly gst-plugins-bad` | `gstreamer-plugins-ugly` (Packman) `gstreamer-plugins-bad` |
 | H.265 | `gstreamer1.0-plugins-bad` | `gstreamer1-plugins-bad-freeworld` (RPM Fusion) | `gst-plugins-bad` | `gstreamer-plugins-bad` (Packman) |
 
 Without an H.264 or H.265 encoder, recordings are WebM (VP8), which every GStreamer install can
-write; the graphics card's encoder (VA-API) is used when it's there and the others aren't.
-Settings → Recording says what's missing.
+write; the graphics card's encoder (VA-API) is used when it's there and the others aren't. Each
+encoder needs its parser too (`h264parse`, in plugins-bad). Settings → Recording says what's
+missing, and `rsnip --check-recording` records a moment of a test picture the way a recording
+would be made, then says what it came out as.
 
 Closing the library leaves RSnip's icon in the top bar or panel, for recording and opening the
 library, Settings or the screenshots folder again; *Quit RSnip* in its menu stops it. Ubuntu, KDE and most panels show

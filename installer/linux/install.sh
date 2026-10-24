@@ -84,6 +84,10 @@ package() {
     dnf:x264enc) echo gstreamer1-plugins-ugly ;;
     pacman:x264enc) echo gst-plugins-ugly ;;
     zypper:x264enc) echo gstreamer-plugins-ugly ;;
+    apt:h264parse) echo gstreamer1.0-plugins-bad ;;
+    dnf:h264parse) echo gstreamer1-plugins-bad-free ;;
+    pacman:h264parse) echo gst-plugins-bad ;;
+    zypper:h264parse) echo gstreamer-plugins-bad ;;
     *) echo "$2" ;;
     esac
 }
@@ -123,12 +127,14 @@ check() {
     for program in xdg-open xdg-user-dir fc-match tesseract; do
         command -v "$program" >/dev/null 2>&1 || recommended="$recommended $(package "$pm" "$program")"
     done
-    # Recording the screen: GStreamer, its PipeWire source, and an H.264 encoder (else it's WebM).
+    # Recording the screen: GStreamer, its PipeWire source, and an H.264 encoder with its parser,
+    # which is in another package (else it's WebM).
     if command -v gst-inspect-1.0 >/dev/null 2>&1; then
         gst-inspect-1.0 --exists pipewiresrc || recommended="$recommended $(package "$pm" pipewiresrc)"
         gst-inspect-1.0 --exists x264enc || gst-inspect-1.0 --exists openh264enc || recommended="$recommended $(package "$pm" x264enc)"
+        gst-inspect-1.0 --exists h264parse || recommended="$recommended $(package "$pm" h264parse)"
     else
-        recommended="$recommended $(package "$pm" gst-launch-1.0) $(package "$pm" pipewiresrc) $(package "$pm" x264enc)"
+        recommended="$recommended $(package "$pm" gst-launch-1.0) $(package "$pm" pipewiresrc) $(package "$pm" x264enc) $(package "$pm" h264parse)"
     fi
     # Checking for updates.
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then

@@ -98,8 +98,8 @@ extended-description = """\
 RSnip keeps your screenshots in a searchable library and lets you annotate them, and records the \
 screen, a window or an area to MP4 or GIF."""
 depends = "$auto, libegl1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrender1"
-recommends = "xdg-utils, xdg-user-dirs, fontconfig, curl, tesseract-ocr, gstreamer1.0-tools, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly"
-suggests = "gstreamer1.0-plugins-bad, gnome-shell-extension-appindicator"
+recommends = "xdg-utils, xdg-user-dirs, fontconfig, curl, tesseract-ocr, gstreamer1.0-tools, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-plugins-bad"
+suggests = "gnome-shell-extension-appindicator"
 maintainer-scripts = "installer/linux/package/debian/"
 assets = [
     ["target/release/rsnip", "usr/bin/", "755"],
@@ -145,6 +145,5 @@ curl = "*"
 "(gstreamer1-plugins-good or gstreamer-plugins-good)" = ""
 # Fedora's OpenH264 (its Cisco repository is on by default), else x264 from RPM Fusion or Packman.
 "(gstreamer1-plugin-openh264 or gstreamer1-plugins-ugly or gstreamer-plugins-ugly)" = ""
-
-[package.metadata.generate-rpm.suggests]
+# The H.264 parser every encoder needs before the MP4 muxer.
 "(gstreamer1-plugins-bad-free or gstreamer-plugins-bad)" = ""

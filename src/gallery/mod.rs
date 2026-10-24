@@ -39,6 +39,19 @@ pub fn pick_area(frame: &Path) {
         println!("{} {} {} {}", a.x, a.y, a.width, a.height);
     }
 }
+
+/// `rsnip --check-recording`: records a moment of a test picture as a recording would be made now
+/// and says what it came out as, or what's missing (exiting with 1).
+#[cfg(not(windows))]
+pub fn check_recording() {
+    match recorder::check(crate::options::RECORD_HEVC.read(platform::setting)) {
+        Ok(made) => println!("{made}"),
+        Err(e) => {
+            eprintln!("Recording doesn't work: {e}");
+            std::process::exit(1);
+        }
+    }
+}
 #[cfg(windows)]
 pub use settings_window::TITLE as SETTINGS_TITLE;
 
