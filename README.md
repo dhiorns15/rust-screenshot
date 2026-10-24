@@ -299,6 +299,33 @@ recommends). For a recording, *Copy* copies the file, to paste into a folder, ch
 (Windows), and *Export* saves a copy to another folder or shows it in its folder, selected (as
 *Show in folder* does for screenshots, and in the library's right-click menu).
 
+### Push to other places
+
+RSnip can send screenshots and recordings to other places as they're saved, or when you choose.
+Set them up in *Settings → Push to* (*Add…*); *Test* checks one without sending anything. Each is
+pushed to **Automatically** (whatever's saved from then on, a few seconds after; what was there
+before isn't) or **By hand**: *Export → Push to* in the editor and player, or *Push to* in the
+library's right-click menu, for everything selected. When the place gives a link, it's copied, and
+the item's right-click menu has *Copy link* for each place it went. A push that fails by itself is
+tried again after a minute, five minutes and half an hour, then reported with a notification.
+
+| Place | What it needs | Link |
+|---|---|---|
+| SFTP | The server, its port and the folder; a user name unless `~/.ssh/config` gives one. It signs in with your SSH keys and ssh-agent, through the system's OpenSSH (built into Windows 10 and 11; `openssh-client` on Linux), so RSnip never stores an SSH password. A server it hasn't met is remembered; one whose key has changed is refused | With a public address for the folder |
+| WebDAV | The folder's address (Nextcloud: `https://<server>/remote.php/dav/files/<user>/<folder>`), user name and password (an app password, where the server has them). Missing folders are made | With a public address for the folder |
+| S3-compatible | Endpoint (`https://s3.<region>.amazonaws.com`, `https://<account>.r2.cloudflarestorage.com`, Backblaze B2's or Wasabi's S3 endpoint, MinIO's address), region (`auto` for R2), bucket, an optional folder in it, and an access key ID and secret | With a public address for the bucket |
+| Discord | A channel's webhook: *Server Settings → Integrations → Webhooks → Copy Webhook URL*. Files up to Discord's limit (10 MB without a server boost) | The attachment |
+| Immich | The server's address and an API key (*Account Settings → API Keys*; it needs to upload, and to read the user for *Test*) | The photo in Immich |
+
+Passwords, keys and webhook addresses are kept in Windows' Credential Manager, or on Linux the
+desktop's keyring (GNOME Keyring, KWallet: any Secret Service), never in RSnip's settings. On Linux
+without a keyring, places that need one can't be saved.
+
+**Coming later:** Dropbox, Google Drive, OneDrive, Imgur (with albums) and Box (each needs RSnip
+registered with them), Slack, Microsoft Teams and Mattermost, SMB shares, FTPS, Imgbb, Catbox,
+Gyazo and Streamable, PhotoPrism and Synology Photos, and a custom uploader for anything with an
+upload API.
+
 ### Command line
 
 ```

@@ -41,6 +41,8 @@ Where things are:
 | `src/update.rs` | update checks, release candidates, and installing updates (the installer on Windows, the `.deb`/`.rpm` on Linux) |
 | `src/crash.rs` | crash reports: the panic hook, and handlers for native crashes (signals on Linux, unhandled exceptions on Windows) |
 | `src/gallery/` | the library window: `mod.rs` (window, toolbar), `library.rs`, `theme.rs`, `color.rs`, `env.rs`, `search.rs` (search by text, app and window), `words.rs` (recognised words and where they are; Tesseract's output on Linux); `background.rs` (Linux's icon in the top bar, `rsnip --tray`, which also records), `portal.rs`, `recorder.rs` and `pick_area.rs` (recording on Linux: the screen-cast portal, GStreamer, and choosing an area); `player/` (playing and trimming recordings in the library: GStreamer on Linux, Media Foundation on Windows, GIFs in Rust); the Settings window: `settings_window.rs`, and its System info report: `system_info.rs` |
+| `src/push/`, `src/http.rs`, `src/secrets.rs` | pushing to other places: the destinations and each kind's requests (`sftp.rs`, `webdav.rs`, `s3.rs`, `discord.rs`, `immich.rs`), HTTP for them, and their passwords and keys in the system's credential store |
+| `src/gallery/pushing.rs`, `auto_push.rs`, `bring_in.rs` | pushing by hand from the library, pushing new items automatically, and (Linux) bringing in the desktop's new screenshots; Settings → Push to is `settings_window/push.rs` |
 | `src/gallery/doc.rs` | a screenshot's annotations, undo history and rendering |
 | `src/gallery/editor/` | the annotation canvas and tools; `copy_text.rs` is the Copy text tool |
 | `src/gallery/platform/` | what differs between Windows and Linux |
@@ -81,6 +83,11 @@ runs both on Windows and Linux and must pass. The suite has several layers:
   (locally, use the Docker image); plain `cargo test` skips them. CI runs them twice: on Debian 13 (PipeWire 1.4,
   the Linux job) and on Ubuntu 24.04 LTS (PipeWire 1.0, `desktop-ubuntu`). Anything RSnip sends the
   desktop belongs here, not only in a unit test.
+- **Pushing to other places**: each kind's requests are checked against a pretend server in
+  `cargo test` (`http::tests::serve_each`). `ci/test-destinations.sh` also pushes to real S3, WebDAV
+  and SFTP servers in Docker (from Git Bash on Windows too); CI's `destinations` job runs it. Nothing
+  in the tests uses a real keyring: `src/secrets.rs`'s own test is `#[ignore]`d (run it with
+  `cargo test secrets -- --ignored`, on Linux with a keyring unlocked).
 - **Panic hunt**: random clicks, drags, keys and undo/redo against the editor. A short run is part of
   `cargo test`; CI's Linux job runs a longer one and prints its seed. Replay a failure with
   `RSNIP_HUNT_SEED=<seed> RSNIP_HUNT_STEPS=<n> cargo test panic_hunt_long -- --ignored`.
