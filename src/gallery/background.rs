@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ksni::blocking::TrayMethods;
 use ksni::menu::{MenuItem, StandardItem};
@@ -110,7 +110,13 @@ pub fn run(first: Option<Command>) {
     let stay = wanted && icon.is_some();
     let mut active: Option<Active> = None;
     let mut shown_recording = false;
+    let mut brought_in = Instant::now();
     loop {
+        // New screenshots from the desktop's screenshot tool, into RSnip's folder (see `bring_in`).
+        if brought_in.elapsed() >= Duration::from_secs(2) {
+            brought_in = Instant::now();
+            super::bring_in::run(&platform::legacy_save_folder(), &platform::screenshots_dir(), platform::setting, platform::set_setting);
+        }
         let command = match rx.recv_timeout(Duration::from_millis(500)) {
             Ok(command) => Some(command),
             Err(RecvTimeoutError::Timeout) => None,

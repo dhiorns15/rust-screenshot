@@ -178,16 +178,23 @@ pub fn screenshots_dir() -> PathBuf {
 
 /// `~/Pictures/Screenshots`, or wherever the desktop's Pictures folder is: where RSnip saved before
 /// there was a choice.
+/// It's also where the desktop's screenshot tool saves (see `bring_in`). Asked once, as the
+/// folder is looked up every frame in Settings.
 pub fn legacy_save_folder() -> PathBuf {
-    let pictures = Command::new("xdg-user-dir")
-        .arg("PICTURES")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| PathBuf::from(s.trim()))
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| home().join("Pictures"));
-    pictures.join("Screenshots")
+    static FOLDER: OnceLock<PathBuf> = OnceLock::new();
+    FOLDER
+        .get_or_init(|| {
+            let pictures = Command::new("xdg-user-dir")
+                .arg("PICTURES")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| PathBuf::from(s.trim()))
+                .filter(|p| p.is_absolute())
+                .unwrap_or_else(|| home().join("Pictures"));
+            pictures.join("Screenshots")
+        })
+        .clone()
 }
 
 fn settings_path() -> PathBuf {

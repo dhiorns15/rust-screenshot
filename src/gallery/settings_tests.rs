@@ -318,6 +318,28 @@ fn offers_to_move_whats_in_the_previous_folder() {
 }
 
 #[test]
+fn brings_in_the_desktops_screenshots_when_theyre_elsewhere() {
+    let title = "Bring in the desktop's screenshots";
+    let mut h = settings("settings-bring-in", |_| {});
+    open(&mut h, Section::Library);
+    assert!(h.query_by_label(title).is_none(), "screenshots don't come from the desktop's tool here");
+
+    let mut h = settings("settings-bring-in-linux", |env| {
+        let desktop = env.dir.join("Pictures").join("Screenshots");
+        env.sandboxed().desktop_screenshots = Some(desktop);
+    });
+    open(&mut h, Section::Library);
+    assert!(is_on(&h, title), "on unless turned off");
+    assert!(h.query_by_label_contains("from ~").is_some(), "says where from");
+    toggle(&mut h, title);
+    assert!(!is_on(&h, title));
+    assert_eq!(h.state().env.setting(options::BRING_IN_SCREENSHOTS.name), Some(0));
+    toggle(&mut h, title);
+    assert!(h.state().env.setting(options::BRING_IN_SINCE).is_some(), "what's taken from now on");
+    assert!(requests(&h).contains(&TrayRequest::SettingsChanged));
+}
+
+#[test]
 fn system_info_reports_the_machine_and_copies_it() {
     let mut h = settings("settings-system-info", |env| {
         std::fs::write(env.dir.join("a.png"), b"png").unwrap();
