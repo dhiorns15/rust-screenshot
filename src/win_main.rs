@@ -565,8 +565,9 @@ unsafe fn record_shortcut(hwnd: HWND, action: shortcuts::Action) {
 /// `WM_APP_UPDATE_CHECKED`.
 fn start_check(hwnd: HWND, check: Check) {
     let main = hwnd as isize;
+    let release_candidates = crate::options::RELEASE_CANDIDATES.read(settings::get);
     std::thread::spawn(move || {
-        let result = Box::new(update::check());
+        let result = Box::new(update::check(release_candidates));
         unsafe { PostMessageW(main as HWND, WM_APP_UPDATE_CHECKED, check as usize, Box::into_raw(result) as isize) };
     });
 }

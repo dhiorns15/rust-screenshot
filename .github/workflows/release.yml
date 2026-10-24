@@ -7,6 +7,10 @@ on:
 permissions:
   contents: write
 
+env:
+  # The version builds report, release candidates included (see update::Version::current).
+  RSNIP_VERSION: ${{ github.ref_name }}
+
 jobs:
   release:
     runs-on: windows-latest

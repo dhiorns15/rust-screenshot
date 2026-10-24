@@ -241,7 +241,7 @@ impl App {
             effects: load_effects(&env),
             ocr: None,
             newer: None,
-            update_rx: env.check_updates.then(|| check_for_update(ctx)),
+            update_rx: env.check_updates.then(|| check_for_update(ctx, crate::options::RELEASE_CANDIDATES.read(|n| env.setting(n)))),
             selected: HashSet::new(),
             anchor: None,
             dock: Dock::from_setting(env.setting(Dock::SETTING)),
@@ -1071,11 +1071,11 @@ fn tool_buttons_width(ui: &egui::Ui, captioned: bool) -> f32 {
 
 /// Looks for a newer release in the background (see `Env::check_updates`: on Windows the tray app
 /// does this, and can install it).
-fn check_for_update(ctx: &egui::Context) -> Receiver<update::Release> {
+fn check_for_update(ctx: &egui::Context, release_candidates: bool) -> Receiver<update::Release> {
     let (tx, rx) = channel();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        if let Ok(Some(release)) = update::check() {
+        if let Ok(Some(release)) = update::check(release_candidates) {
             let _ = tx.send(release);
             ctx.request_repaint();
         }

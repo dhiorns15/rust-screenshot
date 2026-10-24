@@ -3,38 +3,74 @@
 use std::fmt;
 
 const LATEST: &str = "https://api.github.com/repos/dhiorns15/rust-screenshot/releases/latest";
+/// The newest releases, release candidates (pre-releases) among them.
+const RECENT: &str = "https://api.github.com/repos/dhiorns15/rust-screenshot/releases?per_page=20";
 /// How the installer is named among a release's downloads.
 const INSTALLER_SUFFIX: &str = "-windows-x64-setup.exe";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Version(pub u32, pub u32, pub u32);
+/// A version: x.y.z, or release candidate N of it (x.y.z-rcN), which comes before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Version {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+    pub rc: Option<u32>,
+}
 
 impl Version {
-    /// Parses "1.2.3" or "v1.2.3". A pre-release or build suffix ("-beta", "+abc") is ignored.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const fn new(major: u32, minor: u32, patch: u32) -> Version {
+        Version { major, minor, patch, rc: None }
+    }
+
+    /// Parses "1.2.3", "v1.2.3" or "1.2.3-rc4". Any other suffix ("-beta", "+abc") is ignored.
     pub fn parse(s: &str) -> Option<Version> {
-        let core = s.trim().trim_start_matches('v').split(['-', '+']).next()?;
+        let s = s.trim().trim_start_matches('v');
+        let core = s.split(['-', '+']).next()?;
         let parts: Vec<u32> = core.split('.').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+        let rc = s[core.len()..].strip_prefix("-rc").and_then(|n| n.split('+').next()?.parse().ok());
         match parts[..] {
-            [major, minor, patch] => Some(Version(major, minor, patch)),
-            [major, minor] => Some(Version(major, minor, 0)),
+            [major, minor, patch] => Some(Version { major, minor, patch, rc }),
+            [major, minor] => Some(Version { major, minor, patch: 0, rc }),
             _ => None,
         }
     }
 
+    /// This build's version: the release's tag when the release workflow built it (so a release
+    /// candidate knows it's one), else the package's.
     pub fn current() -> Version {
-        Version::parse(env!("CARGO_PKG_VERSION")).expect("the package version is x.y.z")
+        option_env!("RSNIP_VERSION").and_then(Version::parse).or_else(|| Version::parse(env!("CARGO_PKG_VERSION"))).expect("the package version is x.y.z")
     }
 
     /// Packed into one number, for remembering which version the user was told about.
     #[cfg(windows)]
     pub fn pack(self) -> u32 {
-        (self.0.min(1023) << 20) | (self.1.min(1023) << 10) | self.2.min(1023)
+        let byte = |n: u32| n.min(255);
+        (byte(self.major) << 24) | (byte(self.minor) << 16) | (byte(self.patch) << 8) | self.rc.map_or(255, |n| n.min(254))
+    }
+}
+
+impl Ord for Version {
+    fn cmp(&self, other: &Version) -> std::cmp::Ordering {
+        // A release comes after its candidates.
+        let key = |v: &Version| (v.major, v.minor, v.patch, v.rc.unwrap_or(u32::MAX));
+        key(self).cmp(&key(other))
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Version) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
 impl fmt::Display for Version {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}.{}.{}", self.0, self.1, self.2)
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
+        match self.rc {
+            Some(n) => write!(f, "-rc{n}"),
+            None => Ok(()),
+        }
     }
 }
 
@@ -59,6 +95,17 @@ pub struct Download {
 /// Reads GitHub's description of a release.
 pub fn parse(json: &[u8]) -> Result<Release, String> {
     let v: serde_json::Value = serde_json::from_slice(json).map_err(|e| format!("Unexpected reply from GitHub: {e}"))?;
+    release(&v)
+}
+
+/// The newest of GitHub's list of releases, release candidates included (drafts aren't).
+pub fn newest(json: &[u8]) -> Result<Release, String> {
+    let v: serde_json::Value = serde_json::from_slice(json).map_err(|e| format!("Unexpected reply from GitHub: {e}"))?;
+    let list = v.as_array().ok_or("Unexpected reply from GitHub: no list of releases")?;
+    list.iter().filter(|r| r["draft"] != true).filter_map(|r| release(r).ok()).max_by_key(|r| r.version).ok_or_else(|| "GitHub listed no releases".into())
+}
+
+fn release(v: &serde_json::Value) -> Result<Release, String> {
     let tag = v["tag_name"].as_str().ok_or("Unexpected reply from GitHub: no version")?;
     let version = Version::parse(tag).ok_or_else(|| format!("Unrecognised version {tag}"))?;
     let page = v["html_url"].as_str().unwrap_or("https://github.com/dhiorns15/rust-screenshot/releases").to_owned();
@@ -76,9 +123,10 @@ pub fn parse(json: &[u8]) -> Result<Release, String> {
     Ok(Release { version, page, installer })
 }
 
-/// The latest release, if it is newer than this build.
-pub fn check() -> Result<Option<Release>, String> {
-    let release = parse(&get(LATEST)?)?;
+/// The latest release, if it is newer than this build; with `release_candidates`, the newest
+/// release candidate too (see `options::RELEASE_CANDIDATES`).
+pub fn check(release_candidates: bool) -> Result<Option<Release>, String> {
+    let release = if release_candidates { newest(&get(RECENT)?)? } else { parse(&get(LATEST)?)? };
     Ok((release.version > Version::current()).then_some(release))
 }
 
@@ -283,22 +331,43 @@ mod tests {
 
     #[test]
     fn parses_and_orders_versions() {
-        assert_eq!(Version::parse("v0.2.1"), Some(Version(0, 2, 1)));
-        assert_eq!(Version::parse("1.10"), Some(Version(1, 10, 0)));
-        assert_eq!(Version::parse("2.0.0-beta.1"), Some(Version(2, 0, 0)));
+        assert_eq!(Version::parse("v0.2.1"), Some(Version::new(0, 2, 1)));
+        assert_eq!(Version::parse("1.10"), Some(Version::new(1, 10, 0)));
+        assert_eq!(Version::parse("2.0.0-beta.1"), Some(Version::new(2, 0, 0)));
+        assert_eq!(Version::parse("v0.5.3-rc2"), Some(Version { rc: Some(2), ..Version::new(0, 5, 3) }));
         assert_eq!(Version::parse("v1"), None);
         assert_eq!(Version::parse("1.x.0"), None);
-        assert!(Version(0, 10, 0) > Version(0, 9, 9));
-        assert!(Version(1, 0, 0) > Version(0, 99, 99));
-        assert_eq!(Version(0, 3, 1).to_string(), "0.3.1");
-        assert_eq!(Version::current().to_string(), env!("CARGO_PKG_VERSION"));
+        assert!(Version::new(0, 10, 0) > Version::new(0, 9, 9));
+        assert!(Version::new(1, 0, 0) > Version::new(0, 99, 99));
+        assert_eq!(Version::new(0, 3, 1).to_string(), "0.3.1");
+        // Candidates come in order, before their release and after the one before.
+        let v = |s| Version::parse(s).unwrap();
+        assert!(v("0.5.2") < v("0.5.3-rc1") && v("0.5.3-rc1") < v("0.5.3-rc2") && v("0.5.3-rc2") < v("0.5.3") && v("0.5.3-rc10") > v("0.5.3-rc9"));
+        assert_eq!(v("v0.5.3-rc2").to_string(), "0.5.3-rc2");
+        let built = option_env!("RSNIP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+        assert_eq!(Version::current().to_string(), built.trim_start_matches('v'));
+    }
+
+    #[test]
+    fn release_candidates_come_from_the_whole_list() {
+        let list = br#"[
+            {"tag_name": "v0.5.3-rc2", "prerelease": true, "html_url": "https://example.com/rc2", "assets": []},
+            {"tag_name": "v0.6.0-rc1", "draft": true, "assets": []},
+            {"tag_name": "v0.5.3-rc1", "prerelease": true, "assets": []},
+            {"tag_name": "v0.5.2", "assets": []},
+            {"tag_name": "not a version"}
+        ]"#;
+        let newest = newest(list).unwrap();
+        assert_eq!((newest.version.to_string(), newest.page.as_str()), ("0.5.3-rc2".into(), "https://example.com/rc2"), "not the draft");
+        assert!(super::newest(b"[]").is_err() && super::newest(b"{}").is_err());
     }
 
     #[cfg(windows)]
     #[test]
     fn packs_versions() {
-        assert_eq!(Version(0, 3, 1).pack(), (3 << 10) | 1);
-        assert!(Version(1, 0, 0).pack() > Version(0, 1023, 1023).pack());
+        assert_eq!(Version::new(0, 3, 1).pack(), (3 << 16) | (1 << 8) | 255);
+        assert!(Version::new(1, 0, 0).pack() > Version::new(0, 255, 255).pack());
+        assert_ne!(Version::parse("0.5.3-rc2").unwrap().pack(), Version::new(0, 5, 3).pack(), "a release isn't its candidate");
     }
 
     const RELEASE: &str = r#"{
@@ -314,7 +383,7 @@ mod tests {
     #[test]
     fn parses_releases() {
         let r = parse(RELEASE.as_bytes()).unwrap();
-        assert_eq!(r.version, Version(0, 3, 0));
+        assert_eq!(r.version, Version::new(0, 3, 0));
         assert!(r.page.ends_with("/tag/v0.3.0"));
         let installer = r.installer.unwrap();
         assert_eq!(installer.url, "https://example.com/setup");
@@ -336,7 +405,7 @@ mod tests {
     proptest::proptest! {
         #[test]
         fn versions_order_like_their_numbers(a in proptest::prelude::any::<(u32, u32, u32)>(), b in proptest::prelude::any::<(u32, u32, u32)>()) {
-            let (va, vb) = (Version(a.0, a.1, a.2), Version(b.0, b.1, b.2));
+            let (va, vb) = (Version::new(a.0, a.1, a.2), Version::new(b.0, b.1, b.2));
             proptest::prop_assert_eq!(va.cmp(&vb), a.cmp(&b));
             proptest::prop_assert_eq!(Version::parse(&format!("v{va}")), Some(va));
         }

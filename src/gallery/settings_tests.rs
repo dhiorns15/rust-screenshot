@@ -214,7 +214,7 @@ fn checks_for_updates_and_offers_the_new_version() {
     click(&mut h, "Check now");
     assert!(h.query_by_label_contains("You have the latest version").is_some());
 
-    let release = crate::update::Release { version: crate::update::Version(99, 0, 0), page: "https://example.com".into(), installer: None };
+    let release = crate::update::Release { version: crate::update::Version::new(99, 0, 0), page: "https://example.com".into(), installer: None };
     h.state().env.sandboxed().latest = Some(release);
     click(&mut h, "Check now");
     assert!(h.query_by_label_contains("RSnip 99.0.0 is available").is_some());

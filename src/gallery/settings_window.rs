@@ -471,6 +471,8 @@ impl SettingsApp {
     fn updates(&mut self, ui: &mut Ui) {
         theme::card(ui, |ui| {
             self.flag_row(ui, options::CHECK_UPDATES, "Check for updates automatically", "Asks GitHub for the latest version once a day; nothing else is sent");
+            ui.separator();
+            self.flag_row(ui, options::RELEASE_CANDIDATES, "Get release candidates", "Try new versions before they're released, and help find their bugs");
             if self.env.tray_app {
                 ui.separator();
                 let installed = self.env.installed();

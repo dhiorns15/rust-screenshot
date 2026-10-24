@@ -77,6 +77,8 @@ fn made_by_rsnip(name: &str) -> bool {
 }
 
 pub const CHECK_UPDATES: Flag = Flag { name: "CheckUpdates", default: true };
+/// Offer release candidates too: versions to try before they're released (see `update::check`).
+pub const RELEASE_CANDIDATES: Flag = Flag { name: "ReleaseCandidates", default: false };
 pub const AUTO_UPDATE: Flag = Flag { name: "AutoUpdate", default: false };
 
 #[cfg(test)]

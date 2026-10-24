@@ -128,7 +128,7 @@ impl Env {
             dir,
             check_updates: false,
             tray_app: cfg!(windows),
-            version: Version(1, 2, 3),
+            version: Version::new(1, 2, 3),
             ocr: Some(ocr),
             read_words: Some(read_words),
             settings: Store::Memory(RefCell::default(), RefCell::default()),
@@ -294,8 +294,9 @@ impl Env {
             }
             None => {
                 let ctx = ctx.clone();
+                let release_candidates = crate::options::RELEASE_CANDIDATES.read(|n| self.setting(n));
                 std::thread::spawn(move || {
-                    let _ = tx.send(crate::update::check());
+                    let _ = tx.send(crate::update::check(release_candidates));
                     ctx.request_repaint();
                 });
             }
