@@ -27,6 +27,10 @@ pub const SHOW_MAGNIFIER: Flag = Flag { name: "ShowMagnifier", default: true };
 pub const HIDE_WHILE_CAPTURING: Flag = Flag { name: "HideWhileCapturing", default: true };
 /// Keep an icon in the top bar or panel when the library closes (Linux).
 pub const RUN_IN_BACKGROUND: Flag = Flag { name: "RunInBackground", default: true };
+/// Move new screenshots from the desktop's screenshot tool into RSnip's folder (Linux; see
+/// `gallery::bring_in`), and since when (seconds since 1970).
+pub const BRING_IN_SCREENSHOTS: Flag = Flag { name: "BringInScreenshots", default: true };
+pub const BRING_IN_SINCE: &str = "BringInSince";
 pub const OPEN_LIBRARY_ON_LAUNCH: Flag = Flag { name: "OpenLibraryOnLaunch", default: false };
 pub const RECORD_GIF: Flag = Flag { name: "RecordGif", default: false };
 /// Record MP4s as H.265 (HEVC) rather than H.264.

@@ -101,6 +101,8 @@ pub struct Sandbox {
     pub opened: Vec<PathBuf>,
     /// Files shown in their folder in the file manager.
     pub shown_in_folder: Vec<PathBuf>,
+    /// Where the desktop's screenshot tool saves (Linux), if anywhere.
+    pub desktop_screenshots: Option<PathBuf>,
 }
 
 enum Store {
@@ -215,6 +217,23 @@ impl Env {
             (None, None) => Some(platform::legacy_save_folder()).filter(|d| crate::options::saved_to_by_rsnip(d)),
         };
         previous.filter(|d| *d != self.dir)
+    }
+
+    /// Where the desktop's own screenshot tool saves, when screenshots come from it (Linux).
+    pub fn desktop_screenshots(&self) -> Option<PathBuf> {
+        match &self.sandbox {
+            Some(s) => s.borrow().desktop_screenshots.clone(),
+            None if cfg!(windows) => None,
+            None => Some(platform::legacy_save_folder()),
+        }
+    }
+
+    /// Moves new screenshots from the desktop's screenshot tool into this folder, if it's another
+    /// (Linux; see `bring_in`); how many moved.
+    #[cfg(not(windows))]
+    pub fn bring_in_screenshots(&self) -> usize {
+        let Some(from) = self.desktop_screenshots() else { return 0 };
+        super::bring_in::run(&from, &self.dir, |name| self.setting(name), |name, value| self.set_setting(name, value))
     }
 
     /// Moves the screenshots and recordings in `from` to `to`, with their edits and search data;

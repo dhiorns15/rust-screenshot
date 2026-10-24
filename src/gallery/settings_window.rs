@@ -520,6 +520,19 @@ impl SettingsApp {
                     }
                 });
             }
+            // On Linux, screenshots come from the desktop's own tool, which keeps to its folder.
+            if let Some(desktop) = self.env.desktop_screenshots().filter(|d| *d != env_dir) {
+                ui.separator();
+                let title = "Bring in the desktop's screenshots";
+                let detail = format!("Moves new ones here from {}, where the desktop's screenshot tool saves them", system_info::tidy_path(&desktop, home.as_deref()));
+                let mut on = self.get(options::BRING_IN_SCREENSHOTS);
+                if row(ui, title, &detail, |ui| theme::switch(ui, &mut on, title)).changed() {
+                    self.set(options::BRING_IN_SCREENSHOTS.name, on as u32);
+                    // What's taken from now on; what's there already is for Move them here.
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                    self.env.set_setting(options::BRING_IN_SINCE, now as u32);
+                }
+            }
         });
     }
 

@@ -4,6 +4,8 @@
 mod app_tests;
 #[cfg(not(windows))]
 mod background;
+#[cfg(not(windows))]
+mod bring_in;
 #[cfg(all(test, target_os = "linux"))]
 mod desktop_tests;
 #[cfg(not(windows))]
@@ -606,6 +608,8 @@ impl App {
             self.dock = Dock::from_setting(self.env.setting(Dock::SETTING));
             self.effects = load_effects(&self.env);
             self.env.refresh_dir();
+            #[cfg(not(windows))]
+            self.env.bring_in_screenshots();
             self.rescan();
         }
         if let Ok(request) = std::fs::read_to_string(&self.env.request_file) {
