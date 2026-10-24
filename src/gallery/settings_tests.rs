@@ -63,9 +63,9 @@ fn requests(h: &Harness<SettingsApp>) -> Vec<TrayRequest> {
 #[test]
 fn shows_the_tray_app_sections_only_where_there_is_one() {
     let h = settings("settings-sections", |_| {});
-    assert_eq!(h.state().sections().len(), 8);
+    assert_eq!(h.state().sections().len(), 9);
     let h = settings("settings-sections-linux", |env| env.tray_app = false);
-    assert_eq!(h.state().sections(), [Section::General, Section::Recording, Section::Library, Section::Updates, Section::SystemInfo, Section::About]);
+    assert_eq!(h.state().sections(), [Section::General, Section::Recording, Section::Library, Section::Destinations, Section::Updates, Section::SystemInfo, Section::About]);
     assert!(h.query_by_label("Start with Windows").is_none(), "only the theme in General");
     assert!(h.query_by_label_contains("Shortcuts").is_none());
 }
@@ -397,6 +397,155 @@ fn system_info_leaves_out_the_tray_app_where_there_is_none() {
     assert!(h.query_by_label("Theme").is_some());
 }
 
+/// Types `text` into the box labelled `label` (a password box too).
+fn type_into(h: &mut Harness<SettingsApp>, label: &str, text: &str) {
+    use eframe::egui::accesskit::Role;
+    let node = h.query_by_role_and_label(Role::TextInput, label).or_else(|| h.query_by_role_and_label(Role::PasswordInput, label));
+    let node = node.unwrap_or_else(|| panic!("no box labelled {label}"));
+    node.click();
+    node.type_text(text);
+    settle(h);
+}
+
+fn is_enabled(h: &Harness<SettingsApp>, label: &str) -> bool {
+    !h.get_by_label(label).accesskit_node().is_disabled()
+}
+
+fn destinations(h: &Harness<SettingsApp>) -> Vec<crate::push::Destination> {
+    crate::push::load(&h.state().env)
+}
+
+/// Adds a WebDAV destination called "WebDAV Cloud" (typed after the default name) with password "hunter2".
+fn add_webdav(h: &mut Harness<SettingsApp>) {
+    if h.state().section != Section::Destinations {
+        open(h, Section::Destinations);
+    }
+    click(h, "Add…");
+    click(h, "WebDAV");
+    type_into(h, "Name", " Cloud");
+    type_into(h, "Folder address", "https://dav.example.com/shots/");
+    type_into(h, "User", "me");
+    type_into(h, "Password", "hunter2");
+    click(h, "Save");
+}
+
+#[test]
+fn push_to_starts_empty() {
+    let mut h = settings("settings-push-empty", |_| {});
+    open(&mut h, Section::Destinations);
+    assert!(h.query_by_label("Nowhere yet. Add a place to push to.").is_some());
+    click(&mut h, "Add…");
+    for kind in ["SFTP", "WebDAV", "S3-compatible", "Discord", "Immich"] {
+        assert!(h.query_by_label(kind).is_some(), "{kind}");
+    }
+}
+
+#[test]
+fn adds_a_destination_and_keeps_its_secret_out_of_the_settings() {
+    let mut h = settings("settings-push-add", |_| {});
+    open(&mut h, Section::Destinations);
+    click(&mut h, "Add…");
+    click(&mut h, "WebDAV");
+    assert!(!is_enabled(&h, "Save"), "nothing filled in yet");
+    type_into(&mut h, "Name", " Cloud");
+    type_into(&mut h, "Folder address", "https://dav.example.com/shots/");
+    type_into(&mut h, "User", "me");
+    assert!(!is_enabled(&h, "Save"), "a new one needs its password");
+    type_into(&mut h, "Password", "hunter2");
+    assert!(is_enabled(&h, "Save"));
+    click(&mut h, "Save");
+
+    assert!(h.query_by_label("WebDAV Cloud").is_some());
+    assert!(h.query_by_label_contains("WebDAV · https://dav.example.com/shots/").is_some());
+    let saved = destinations(&h);
+    assert_eq!(saved.len(), 1);
+    let d = &saved[0];
+    assert_eq!((d.name.as_str(), d.auto, d.auto_since), ("WebDAV Cloud", false, None), "typed after the default name");
+    let json = h.state().env.text_setting(options::DESTINATIONS).unwrap();
+    assert!(!json.contains("hunter2"), "{json}");
+    assert_eq!(h.state().env.sandboxed().secrets.get(&d.id).map(String::as_str), Some("hunter2"));
+    assert!(requests(&h).contains(&TrayRequest::SettingsChanged));
+}
+
+#[test]
+fn a_destination_without_a_secret_needs_only_its_fields() {
+    let mut h = settings("settings-push-sftp", |_| {});
+    open(&mut h, Section::Destinations);
+    click(&mut h, "Add…");
+    click(&mut h, "SFTP");
+    type_into(&mut h, "Server", "nas.local");
+    assert!(!is_enabled(&h, "Save"), "needs a user");
+    type_into(&mut h, "User", "me");
+    assert!(is_enabled(&h, "Save"));
+    type_into(&mut h, "Port", "x");
+    assert!(!is_enabled(&h, "Save"), "22x isn't a port");
+    click(&mut h, "Cancel");
+    assert!(destinations(&h).is_empty());
+    assert!(h.state().env.sandboxed().secrets.is_empty());
+}
+
+#[test]
+fn editing_keeps_the_secret_unless_a_new_one_is_typed() {
+    let mut h = settings("settings-push-edit", |_| {});
+    add_webdav(&mut h);
+    let id = destinations(&h)[0].id.clone();
+
+    click(&mut h, "Edit");
+    type_into(&mut h, "User", "2");
+    click(&mut h, "Save");
+    assert_eq!(destinations(&h)[0].kind, crate::push::Kind::WebDav { url: "https://dav.example.com/shots/".into(), user: "me2".into(), public_url: String::new() });
+    assert_eq!(destinations(&h)[0].id, id, "the id stays");
+    assert_eq!(h.state().env.sandboxed().secrets.get(&id).map(String::as_str), Some("hunter2"), "kept");
+
+    click(&mut h, "Edit");
+    type_into(&mut h, "Password", "swordfish");
+    click(&mut h, "Save");
+    assert_eq!(h.state().env.sandboxed().secrets.get(&id).map(String::as_str), Some("swordfish"), "replaced");
+    assert_eq!(destinations(&h).len(), 1);
+}
+
+#[test]
+fn test_shows_what_was_found_or_what_went_wrong() {
+    let mut h = settings("settings-push-test", |_| {});
+    add_webdav(&mut h);
+    click(&mut h, "Test");
+    assert!(h.query_by_label("WebDAV Cloud: Connected").is_some());
+    h.state().env.sandboxed().test_result = Some(Err("Wrong password".into()));
+    click(&mut h, "Test");
+    assert!(h.query_by_label("WebDAV Cloud: Wrong password").is_some());
+    assert!(h.query_by_label("WebDAV Cloud: Connected").is_none());
+}
+
+#[test]
+fn automatically_and_by_hand_are_remembered_with_the_time() {
+    let mut h = settings("settings-push-auto", |_| {});
+    add_webdav(&mut h);
+    click(&mut h, "Automatically");
+    let d = destinations(&h).remove(0);
+    assert!(d.auto);
+    assert!(d.auto_since.is_some_and(|t| t > 1_700_000_000), "{:?}", d.auto_since);
+    click(&mut h, "By hand");
+    let d = destinations(&h).remove(0);
+    assert_eq!((d.auto, d.auto_since), (false, None));
+}
+
+#[test]
+fn removing_asks_first_and_forgets_the_secret() {
+    let mut h = settings("settings-push-remove", |_| {});
+    add_webdav(&mut h);
+    click(&mut h, "Remove");
+    assert!(h.query_by_label("Remove WebDAV Cloud?").is_some());
+    click(&mut h, "Cancel");
+    assert_eq!(destinations(&h).len(), 1);
+    assert_eq!(h.state().env.sandboxed().secrets.len(), 1);
+
+    click(&mut h, "Remove");
+    click(&mut h, "Remove");
+    assert!(destinations(&h).is_empty());
+    assert!(h.state().env.sandboxed().secrets.is_empty());
+    assert!(h.query_by_label("Nowhere yet. Add a place to push to.").is_some());
+}
+
 /// Pixel snapshots of the sections (Linux only, like the library's).
 #[cfg(target_os = "linux")]
 mod snapshots {
@@ -446,6 +595,38 @@ mod snapshots {
         ] {
             snapshot(&mut h, section, name);
         }
+    }
+
+    #[test]
+    fn push_to() {
+        let _gpu = super::super::tests::gpu();
+        let mut h = rendered("snap-settings-push", |_| {});
+        snapshot(&mut h, Section::Destinations, "settings_push_empty");
+
+        add_webdav(&mut h);
+        click(&mut h, "Automatically");
+        click(&mut h, "Add…");
+        click(&mut h, "Discord");
+        type_into(&mut h, "Webhook URL", "https://discord.com/api/webhooks/1/abc");
+        click(&mut h, "Save");
+        h.state().env.sandboxed().test_result = Some(Err("The server said no".into()));
+        h.get_all_by_label("Test").next().unwrap().click();
+        settle(&mut h);
+        snapshot(&mut h, Section::Destinations, "settings_push_list");
+
+    }
+
+    /// On its own, so the whole form fits in the window.
+    #[test]
+    fn push_to_form() {
+        let _gpu = super::super::tests::gpu();
+        let mut h = rendered("snap-settings-push-form", |_| {});
+        open(&mut h, Section::Destinations);
+        click(&mut h, "Add…");
+        click(&mut h, "Immich");
+        type_into(&mut h, "Server address", "https://photos.example.com");
+        type_into(&mut h, "API key", "secret-key");
+        snapshot(&mut h, Section::Destinations, "settings_push_form");
     }
 
     #[test]

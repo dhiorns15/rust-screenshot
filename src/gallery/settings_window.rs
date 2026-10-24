@@ -19,6 +19,8 @@ use crate::options::{self, Flag};
 use crate::shortcuts::{self, Action};
 use crate::update::Release;
 
+mod push;
+
 pub const TITLE: &str = "RSnip Settings";
 const REPO: &str = "https://github.com/dhiorns15/rust-screenshot";
 
@@ -57,18 +59,20 @@ pub enum Section {
     Shortcuts,
     Recording,
     Library,
+    Destinations,
     Updates,
     SystemInfo,
     About,
 }
 
 impl Section {
-    const ALL: [Section; 8] = [
+    const ALL: [Section; 9] = [
         Section::General,
         Section::Capture,
         Section::Shortcuts,
         Section::Recording,
         Section::Library,
+        Section::Destinations,
         Section::Updates,
         Section::SystemInfo,
         Section::About,
@@ -81,6 +85,7 @@ impl Section {
             Section::Shortcuts => "Shortcuts",
             Section::Recording => "Recording",
             Section::Library => "Library & editor",
+            Section::Destinations => "Push to",
             Section::Updates => "Updates",
             Section::SystemInfo => "System info",
             Section::About => "About",
@@ -94,6 +99,7 @@ impl Section {
             Section::Shortcuts => icon::KEYBOARD,
             Section::Recording => icon::VIDEO_CAMERA,
             Section::Library => icon::IMAGES,
+            Section::Destinations => icon::CLOUD_ARROW_UP,
             Section::Updates => icon::ARROWS_CLOCKWISE,
             Section::SystemInfo => icon::DESKTOP_TOWER,
             Section::About => icon::INFO,
@@ -137,6 +143,7 @@ pub struct SettingsApp {
     /// Moving them to the current folder, while it's under way.
     moving: Option<Receiver<Result<MoveReport, String>>>,
     installing: Installing,
+    push: push::PushState,
 }
 
 /// Installing an update from Settings → Updates.
@@ -153,7 +160,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, picking: None, left_behind: None, counted: None, moving: None, installing: Installing::Idle }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, picking: None, left_behind: None, counted: None, moving: None, installing: Installing::Idle, push: Default::default() }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -204,6 +211,7 @@ impl SettingsApp {
             Section::Shortcuts => self.shortcuts(ui),
             Section::Recording => self.recording(ui),
             Section::Library => self.library(ui),
+            Section::Destinations => self.destinations(ui),
             Section::Updates => self.updates(ui),
             Section::SystemInfo => self.system_info(ui),
             Section::About => self.about(ui),

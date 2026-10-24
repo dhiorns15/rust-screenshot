@@ -22,7 +22,7 @@ mod library;
 mod platform;
 mod player;
 mod editor;
-mod env;
+pub mod env;
 mod search;
 mod settings_window;
 mod system_info;

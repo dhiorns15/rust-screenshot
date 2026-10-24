@@ -14,6 +14,7 @@ use image::RgbaImage;
 use super::platform;
 use super::system_info::Host;
 use super::words::Word;
+use crate::push::Destination;
 use crate::shortcuts::Action;
 use crate::update::{Release, Version};
 
@@ -103,6 +104,8 @@ pub struct Sandbox {
     pub shown_in_folder: Vec<PathBuf>,
     /// The secrets saved for destinations, by id.
     pub secrets: BTreeMap<String, String>,
+    /// What testing a destination finds (`None`: it connects).
+    pub test_result: Option<Result<String, String>>,
 }
 
 enum Store {
@@ -396,7 +399,6 @@ impl Env {
     }
 
     /// Saves the secret for the destination `id`, replacing any; `label` names it for the user.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_secret(&self, id: &str, label: &str, secret: &str) -> Result<(), String> {
         match &self.sandbox {
             Some(s) => {
@@ -408,7 +410,6 @@ impl Env {
     }
 
     /// Forgets the secret for the destination `id`.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn delete_secret(&self, id: &str) -> Result<(), String> {
         match &self.sandbox {
             Some(s) => {
@@ -417,6 +418,56 @@ impl Env {
             }
             None => crate::secrets::delete(id),
         }
+    }
+
+    /// Saves a secret as `set_secret` does, but off the UI thread, as the keyring can wait for the
+    /// user to unlock it; the answer arrives on the channel, and `ctx` repaints when it does.
+    pub fn save_secret(&self, ctx: &eframe::egui::Context, id: &str, label: &str, secret: &str) -> Receiver<Result<(), String>> {
+        let (tx, rx) = channel();
+        if self.sandbox.is_some() {
+            let _ = tx.send(self.set_secret(id, label, secret));
+        } else {
+            let (ctx, id, label, secret) = (ctx.clone(), id.to_owned(), label.to_owned(), secret.to_owned());
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::secrets::set(&id, &label, &secret));
+                ctx.request_repaint();
+            });
+        }
+        rx
+    }
+
+    /// Forgets a secret as `delete_secret` does, but off the UI thread (see `save_secret`).
+    pub fn forget_secret(&self, ctx: &eframe::egui::Context, id: &str) -> Receiver<Result<(), String>> {
+        let (tx, rx) = channel();
+        if self.sandbox.is_some() {
+            let _ = tx.send(self.delete_secret(id));
+        } else {
+            let (ctx, id) = (ctx.clone(), id.to_owned());
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::secrets::delete(&id));
+                ctx.request_repaint();
+            });
+        }
+        rx
+    }
+
+    /// Checks that `destination` can be reached (see `push::test`), with `secret` if given, else the
+    /// one saved for it; the answer arrives on the channel, and `ctx` repaints when it does.
+    pub fn test_destination(&self, ctx: &eframe::egui::Context, destination: &Destination, secret: Option<String>) -> Receiver<Result<String, String>> {
+        let (tx, rx) = channel();
+        match &self.sandbox {
+            Some(s) => {
+                let _ = tx.send(s.borrow().test_result.clone().unwrap_or_else(|| Ok("Connected".to_owned())));
+            }
+            None => {
+                let (ctx, destination) = (ctx.clone(), destination.clone());
+                std::thread::spawn(move || {
+                    let _ = tx.send(saved_secret(&destination, secret).and_then(|secret| crate::push::test(&destination, secret.as_deref())));
+                    ctx.request_repaint();
+                });
+            }
+        }
+        rx
     }
 
     /// This copy came from the installer, so it can update itself.
@@ -471,6 +522,19 @@ impl Env {
             #[cfg(windows)]
             None => {}
         }
+    }
+}
+
+/// The secret to test `destination` with: the one given, else the one saved for it (which may
+/// wait for the keyring), or an error if it needs one and has none.
+fn saved_secret(destination: &Destination, given: Option<String>) -> Result<Option<String>, String> {
+    let Some(label) = destination.kind.secret_label() else { return Ok(None) };
+    match given {
+        Some(secret) => Ok(Some(secret)),
+        None => match crate::secrets::get(&destination.id)? {
+            Some(secret) => Ok(Some(secret)),
+            None => Err(format!("No {} is saved; choose Edit to enter it", label.to_lowercase())),
+        },
     }
 }
 

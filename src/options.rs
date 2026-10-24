@@ -53,6 +53,9 @@ pub const SAVE_FOLDER: &str = "SaveFolder";
 /// The folder they were saved to before it was last changed in Settings, so what's still there
 /// can be moved to the new one; the new one again once that's done or declined.
 pub const PREVIOUS_SAVE_FOLDER: &str = "PreviousSaveFolder";
+/// The places to push screenshots and recordings to, as a JSON list (a text setting); see `push`.
+/// Their secrets are in the system's credential store, never here.
+pub const DESTINATIONS: &str = "Destinations";
 
 /// Where screenshots and recordings are saved: the folder chosen in Settings, else `RSnip` in the
 /// home folder. Before there was a choice, RSnip saved to the Pictures folder's `Screenshots`

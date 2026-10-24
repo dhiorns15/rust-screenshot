@@ -7,14 +7,13 @@
 
 mod crash;
 mod gallery;
-// Used by src/push (coming next).
+// Used by src/push (in a later step).
 #[cfg_attr(not(test), allow(dead_code))]
 mod http;
 mod icon_art;
 mod mp4;
 mod options;
-// Used by src/push (coming next).
-#[cfg_attr(not(test), allow(dead_code))]
+mod push;
 mod secrets;
 mod shortcuts;
 mod update;

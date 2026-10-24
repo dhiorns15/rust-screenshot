@@ -1,0 +1,399 @@
+//! Settings → Push to: the places screenshots and recordings are sent to, and the form for adding
+//! or changing one. Testing a destination and saving or forgetting its secret happen off the UI
+//! thread (the keyring can wait for the user to unlock it); each answer arrives on a channel that
+//! is polled every frame, like the folder chooser's.
+
+use std::collections::BTreeMap;
+use std::sync::mpsc::Receiver;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use eframe::egui::{self, Color32, RichText, Ui};
+
+use super::{row, SettingsApp};
+use crate::gallery::env::TrayRequest;
+use crate::gallery::theme;
+use crate::push::{self, Destination, Kind};
+
+type Answer<T> = Receiver<Result<T, String>>;
+
+#[derive(Default)]
+pub struct PushState {
+    /// The form for a new or changed destination, while it's open.
+    form: Option<Form>,
+    /// The latest test of each destination, by id.
+    tests: BTreeMap<String, Test>,
+    /// The destination being asked "Remove it?", by id.
+    removing: Option<String>,
+    /// Removed destinations' secrets being forgotten.
+    forgetting: Vec<Answer<()>>,
+}
+
+enum Test {
+    Running(Answer<String>),
+    Done(Result<String, String>),
+}
+
+struct Form {
+    /// Changing a saved destination (rather than adding one), whose secret may be kept.
+    editing: bool,
+    destination: Destination,
+    /// The port as typed.
+    port: String,
+    /// The secret as typed.
+    secret: String,
+    /// Saving the secret, before the destination is saved.
+    saving: Option<Answer<()>>,
+    /// Why it couldn't be saved.
+    error: Option<String>,
+}
+
+impl Form {
+    fn new(destination: Destination, editing: bool) -> Form {
+        let port = match &destination.kind {
+            Kind::Sftp { port, .. } => port.to_string(),
+            _ => String::new(),
+        };
+        Form { editing, destination, port, secret: String::new(), saving: None, error: None }
+    }
+
+    /// What must be fixed before it can be saved.
+    fn problem(&self) -> Option<String> {
+        self.destination.problems().or_else(|| {
+            let label = self.destination.kind.secret_label()?;
+            (!self.editing && self.secret.is_empty()).then(|| format!("Enter the {}", lowercase_first(label)))
+        })
+    }
+}
+
+/// What a click in the list asks for.
+enum Action {
+    Auto(String, bool),
+    Test(Destination),
+    Edit(Destination),
+    AskRemove(String),
+    Remove(String),
+    CancelRemove,
+}
+
+/// One text box in the form.
+struct Field<'a> {
+    label: &'static str,
+    hint: &'static str,
+    value: &'a mut String,
+}
+
+fn fields(kind: &mut Kind) -> Vec<Field<'_>> {
+    let field = |label, hint, value| Field { label, hint, value };
+    match kind {
+        Kind::Sftp { host, user, folder, public_url, .. } => vec![
+            field("Server", "nas.example.com", host),
+            field("User", "", user),
+            field("Folder", "Empty for your home folder on the server", folder),
+            field("Link to share", "Optional: where the pushed files can be opened, e.g. https://img.example.com/", public_url),
+        ],
+        Kind::WebDav { url, user, public_url } => vec![
+            field("Folder address", "https://cloud.example.com/remote.php/dav/files/me/Screenshots/", url),
+            field("User", "", user),
+            field("Link to share", "Optional: where the pushed files can be opened, e.g. https://img.example.com/", public_url),
+        ],
+        Kind::S3 { endpoint, region, bucket, prefix, access_key, public_url } => vec![
+            field("Endpoint", "https://s3.us-east-1.amazonaws.com", endpoint),
+            field("Region", "us-east-1 (auto for Cloudflare R2)", region),
+            field("Bucket", "", bucket),
+            field("Folder in the bucket", "Optional", prefix),
+            field("Access key", "", access_key),
+            field("Link to share", "Optional: where the pushed files can be opened, e.g. https://img.example.com/", public_url),
+        ],
+        Kind::Discord {} => vec![],
+        Kind::Immich { server } => vec![field("Server address", "https://photos.example.com", server)],
+    }
+}
+
+fn help(kind: &Kind) -> &'static str {
+    match kind {
+        Kind::Sftp { .. } => "Uses your SSH keys and settings (ssh-agent, ~/.ssh/config); RSnip never stores an SSH password.",
+        Kind::WebDav { .. } => "Works with Nextcloud, ownCloud and other WebDAV servers.",
+        Kind::S3 { .. } => "Works with AWS, Cloudflare R2, Backblaze B2, Wasabi and MinIO.",
+        Kind::Discord { .. } => "Server Settings > Integrations > Webhooks > Copy Webhook URL",
+        Kind::Immich { .. } => "Account Settings > API Keys",
+    }
+}
+
+fn lowercase_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map(|c| c.to_lowercase().chain(chars).collect()).unwrap_or_default()
+}
+
+fn now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Trims a pasted secret: a webhook address or key often comes with a stray space or newline, but
+/// a password's spaces are its own.
+fn tidy_secret(secret: &str, password: bool) -> String {
+    if password { secret.trim_matches(['\r', '\n']).to_owned() } else { secret.trim().to_owned() }
+}
+
+fn error_color() -> Color32 {
+    Color32::from_rgb(255, 120, 110)
+}
+
+impl SettingsApp {
+    pub(super) fn destinations(&mut self, ui: &mut Ui) {
+        self.poll_push();
+        let list = push::load(&self.env);
+        let muted = theme::palette(ui).muted;
+        ui.label(RichText::new("Send screenshots and recordings to other places, as they're saved or when you choose.").small().color(muted));
+        if list.is_empty() && self.push.form.is_none() {
+            theme::card(ui, |ui| {
+                row(ui, "Nowhere yet. Add a place to push to.", "", |ui| {
+                    if let Some(kind) = add_menu(ui) {
+                        self.push.form = Some(Form::new(Destination::new(kind), false));
+                    }
+                });
+            });
+        }
+        let mut action = None;
+        for d in &list {
+            let editing_this = self.push.form.as_ref().is_some_and(|f| f.editing && f.destination.id == d.id);
+            if editing_this {
+                self.form_card(ui);
+            } else {
+                action = self.destination_card(ui, d).or(action);
+            }
+        }
+        if self.push.form.as_ref().is_some_and(|f| !f.editing) {
+            self.form_card(ui);
+        } else if self.push.form.is_none() && !list.is_empty() {
+            if let Some(kind) = add_menu(ui) {
+                self.push.form = Some(Form::new(Destination::new(kind), false));
+            }
+        }
+        if let Some(action) = action {
+            self.apply(ui, list, action);
+        }
+    }
+
+    /// Picks up the answers that have arrived.
+    fn poll_push(&mut self) {
+        for test in self.push.tests.values_mut() {
+            if let Test::Running(rx) = test {
+                if let Ok(result) = rx.try_recv() {
+                    *test = Test::Done(result);
+                }
+            }
+        }
+        let mut failed = None;
+        self.push.forgetting.retain(|rx| match rx.try_recv() {
+            Ok(result) => {
+                failed = failed.take().or(result.err());
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(_) => false,
+        });
+        if let Some(e) = failed {
+            self.note = Some(format!("Removed, but couldn't delete its saved password or key: {e}"));
+        }
+        let saved = self.push.form.as_mut().and_then(|form| {
+            let result = form.saving.as_ref()?.try_recv().ok()?;
+            form.saving = None;
+            match result {
+                Ok(()) => Some(form.destination.clone()),
+                Err(e) => {
+                    form.error = Some(format!("Couldn't save the {}: {e}", lowercase_first(form.destination.kind.secret_label().unwrap_or("secret"))));
+                    None
+                }
+            }
+        });
+        if let Some(destination) = saved {
+            self.commit(destination);
+        }
+    }
+
+    /// Writes `destination` to the list, replacing the one with its id, and closes the form.
+    fn commit(&mut self, destination: Destination) {
+        let mut list = push::load(&self.env);
+        match list.iter_mut().find(|d| d.id == destination.id) {
+            // Whether it pushes automatically is changed in the list, not here.
+            Some(existing) => (existing.name, existing.kind) = (destination.name, destination.kind),
+            None => list.push(destination),
+        }
+        self.save_destinations(&list);
+        self.push.form = None;
+    }
+
+    fn save_destinations(&self, list: &[Destination]) {
+        push::save(&self.env, list);
+        self.env.tell_tray(TrayRequest::SettingsChanged);
+    }
+
+    fn apply(&mut self, ui: &Ui, mut list: Vec<Destination>, action: Action) {
+        match action {
+            Action::Auto(id, auto) => {
+                if let Some(d) = list.iter_mut().find(|d| d.id == id) {
+                    d.auto = auto;
+                    d.auto_since = auto.then(now);
+                }
+                self.save_destinations(&list);
+            }
+            Action::Test(d) => {
+                let rx = self.env.test_destination(ui.ctx(), &d, None);
+                self.push.tests.insert(d.id, Test::Running(rx));
+            }
+            Action::Edit(d) => self.push.form = Some(Form::new(d, true)),
+            Action::AskRemove(id) => self.push.removing = Some(id),
+            Action::CancelRemove => self.push.removing = None,
+            Action::Remove(id) => {
+                list.retain(|d| d.id != id);
+                self.save_destinations(&list);
+                self.push.forgetting.push(self.env.forget_secret(ui.ctx(), &id));
+                self.push.tests.remove(&id);
+                self.push.removing = None;
+            }
+        }
+    }
+
+    fn destination_card(&mut self, ui: &mut Ui, d: &Destination) -> Option<Action> {
+        let muted = theme::palette(ui).muted;
+        let mut action = None;
+        theme::card(ui, |ui| {
+            if self.push.removing.as_deref() == Some(&d.id) {
+                let detail = if d.kind.secret_label().is_some() { "Its saved password or key is deleted too" } else { "" };
+                row(ui, &format!("Remove {}?", d.name), detail, |ui| {
+                    if ui.button("Cancel").clicked() {
+                        action = Some(Action::CancelRemove);
+                    }
+                    if ui.add(theme::primary_button("Remove")).clicked() {
+                        action = Some(Action::Remove(d.id.clone()));
+                    }
+                });
+                return;
+            }
+            let target = d.kind.target();
+            let detail = if target.is_empty() { d.kind.name().to_owned() } else { format!("{} · {target}", d.kind.name()) };
+            let testing = matches!(self.push.tests.get(&d.id), Some(Test::Running(_)));
+            row(ui, &d.name, &detail, |ui| {
+                if ui.button("Remove").clicked() {
+                    action = Some(Action::AskRemove(d.id.clone()));
+                }
+                if ui.button("Edit").clicked() {
+                    action = Some(Action::Edit(d.clone()));
+                }
+                if ui.add_enabled(!testing, egui::Button::new(if testing { "Testing…" } else { "Test" })).clicked() {
+                    action = Some(Action::Test(d.clone()));
+                }
+            });
+            ui.separator();
+            let detail = if d.auto { "Pushed as soon as they're saved" } else { "Only pushed when you choose" };
+            row(ui, "New screenshots and recordings", detail, |ui| {
+                theme::group(ui, |ui| {
+                    // Right to left, so they read Automatically, By hand.
+                    for (label, value) in [("By hand", false), ("Automatically", true)] {
+                        if ui.add(egui::Button::selectable(d.auto == value, label)).clicked() && d.auto != value {
+                            action = Some(Action::Auto(d.id.clone(), value));
+                        }
+                    }
+                })
+            });
+        });
+        match self.push.tests.get(&d.id) {
+            Some(Test::Done(Ok(found))) => {
+                ui.label(RichText::new(format!("{}: {found}", d.name)).small().color(muted));
+            }
+            Some(Test::Done(Err(e))) => {
+                ui.label(RichText::new(format!("{}: {e}", d.name)).small().color(error_color()));
+            }
+            _ => {}
+        }
+        action
+    }
+
+    fn form_card(&mut self, ui: &mut Ui) {
+        let Some(mut form) = self.push.form.take() else { return };
+        let muted = theme::palette(ui).muted;
+        let (mut save, mut cancel) = (false, false);
+        theme::card(ui, |ui| {
+            let kind_name = form.destination.kind.name();
+            let title = if form.editing { format!("Edit {}", form.destination.name) } else { format!("Add {kind_name}") };
+            ui.label(RichText::new(title).strong());
+            ui.label(RichText::new(help(&form.destination.kind)).small().color(muted));
+            ui.add_space(4.0);
+            let busy = form.saving.is_some();
+            ui.add_enabled_ui(!busy, |ui| {
+                egui::Grid::new("destination-form").num_columns(2).spacing([16.0, 8.0]).min_col_width(130.0).show(ui, |ui| {
+                    text_row(ui, "Name", "", &mut form.destination.name, false);
+                    let sftp = matches!(form.destination.kind, Kind::Sftp { .. });
+                    for (i, f) in fields(&mut form.destination.kind).into_iter().enumerate() {
+                        text_row(ui, f.label, f.hint, f.value, false);
+                        // The port follows the server.
+                        if sftp && i == 0 {
+                            text_row(ui, "Port", "22", &mut form.port, false);
+                        }
+                    }
+                    if let Some(label) = form.destination.kind.secret_label() {
+                        let hint = if form.editing { "Leave empty to keep the saved one" } else { "" };
+                        text_row(ui, label, hint, &mut form.secret, true);
+                    }
+                });
+            });
+            if let Kind::Sftp { port, .. } = &mut form.destination.kind {
+                *port = form.port.trim().parse().unwrap_or(0);
+            }
+            if let Some(e) = &form.error {
+                ui.label(RichText::new(e).color(error_color()));
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let problem = form.problem();
+                let button = ui.add_enabled(problem.is_none() && !busy, theme::primary_button(if busy { "Saving…" } else { "Save" }));
+                let button = match &problem {
+                    Some(problem) => button.on_disabled_hover_text(problem),
+                    None => button,
+                };
+                save = button.clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        if cancel {
+            return;
+        }
+        if save {
+            form.error = None;
+            for f in fields(&mut form.destination.kind) {
+                *f.value = f.value.trim().to_owned();
+            }
+            form.destination.name = form.destination.name.trim().to_owned();
+            let secret = tidy_secret(&form.secret, form.destination.kind.secret_label() == Some("Password"));
+            if secret.is_empty() {
+                let destination = form.destination.clone();
+                return self.commit(destination);
+            }
+            let d = &form.destination;
+            form.saving = Some(self.env.save_secret(ui.ctx(), &d.id, &d.name, &secret));
+        }
+        self.push.form = Some(form);
+    }
+}
+
+/// A label and a single-line text box for it, as a row of the form's grid.
+fn text_row(ui: &mut Ui, label: &str, hint: &str, value: &mut String, password: bool) {
+    let text = ui.label(label);
+    ui.add(egui::TextEdit::singleline(value).hint_text(hint).password(password).desired_width(360.0)).labelled_by(text.id);
+    ui.end_row();
+}
+
+/// The Add… button, a menu of the kinds of place; the one chosen.
+fn add_menu(ui: &mut Ui) -> Option<Kind> {
+    let mut chosen = None;
+    ui.menu_button("Add…", |ui| {
+        for make in Kind::ALL {
+            let kind = make();
+            if ui.button(kind.name()).clicked() {
+                chosen = Some(kind);
+                ui.close();
+            }
+        }
+    });
+    chosen
+}
