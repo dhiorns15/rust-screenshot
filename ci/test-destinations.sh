@@ -17,7 +17,9 @@ chmod 777 "$tmp/s3" "$tmp/s3/shots" "$tmp/dav" "$tmp/sftp"
 cleanup() {
     docker rm -f "$net-s3" "$net-dav" "$net-sftp" >/dev/null 2>&1 || true
     docker network rm "$net" >/dev/null 2>&1 || true
-    rm -rf "$tmp"
+    # What the servers wrote belongs to their users, so it goes from a container too.
+    docker run --rm -v "$(host "$tmp"):/t" --entrypoint rm rclone/rclone -rf /t/s3 /t/dav /t/sftp >/dev/null 2>&1 || true
+    rm -rf "$tmp" 2>/dev/null || true
 }
 trap cleanup EXIT
 
