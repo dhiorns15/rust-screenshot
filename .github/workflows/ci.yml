@@ -57,6 +57,28 @@ jobs:
             tests/snapshots/*.diff.png
           if-no-files-found: ignore
 
+  # The desktop tests again, against what Ubuntu 24.04 LTS ships: PipeWire 1.0 and GStreamer 1.24,
+  # where the linux job has Debian 13's PipeWire 1.4 and GStreamer 1.26. They behave differently
+  # enough that passing on one says little about the other.
+  desktop-ubuntu:
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a C linker, GStreamer, the desktop services and rustup
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential curl ca-certificates \
+            gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-pipewire \
+            dbus pipewire pipewire-bin wireplumber xdg-desktop-portal
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: ci/desktop-test.sh
+
   # The .deb and .rpm build, install with what they depend on and recommend on Ubuntu, Fedora and
   # openSUSE, and run (installer/linux/build-packages.sh, ci/test-packages.sh).
   packages:
