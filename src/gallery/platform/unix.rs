@@ -101,7 +101,7 @@ pub fn start_tray() {
 pub fn spawn_self(args: &[&str]) {
     use std::os::unix::process::CommandExt;
     if let Ok(exe) = std::env::current_exe() {
-        let _ = Command::new(exe).args(args).process_group(0).spawn();
+        reap(Command::new(exe).args(args).process_group(0).spawn());
     }
 }
 
@@ -109,7 +109,15 @@ pub fn spawn_self(args: &[&str]) {
 pub fn open_settings(system_info: bool) {
     if let Ok(exe) = std::env::current_exe() {
         let args: &[&str] = if system_info { &["--settings", "--system-info"] } else { &["--settings"] };
-        let _ = Command::new(exe).args(args).spawn();
+        reap(Command::new(exe).args(args).spawn());
+    }
+}
+
+/// Waits for a process RSnip started, in the background, so it doesn't stay a zombie after it ends
+/// while RSnip runs on (which `relaunch_when_closed` would take for still running).
+fn reap(child: std::io::Result<std::process::Child>) {
+    if let Ok(mut child) = child {
+        std::thread::spawn(move || child.wait());
     }
 }
 
@@ -138,9 +146,21 @@ pub fn package() -> Option<Package> {
 /// update.
 pub fn relaunch_when_closed() {
     use std::os::unix::process::CommandExt;
-    let program = if package().is_some() { PathBuf::from(PACKAGED) } else { std::env::current_exe().unwrap_or_else(|_| PACKAGED.into()) };
     let wait = r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec "$2""#;
-    let _ = Command::new("sh").args(["-c", wait, "sh", &std::process::id().to_string()]).arg(program).process_group(0).spawn();
+    let _ = Command::new("sh").args(["-c", wait, "sh", &std::process::id().to_string()]).arg(updated_program()).process_group(0).spawn();
+}
+
+/// Starts the library from the newly installed program, after an update (from Settings, when the
+/// library isn't open: it needn't wait for Settings to close).
+pub fn start_updated_library() {
+    use std::os::unix::process::CommandExt;
+    reap(Command::new(updated_program()).process_group(0).spawn());
+}
+
+/// The program an update installed. This copy's own path reads as "/usr/bin/rsnip (deleted)" once
+/// the package manager has replaced it.
+fn updated_program() -> PathBuf {
+    if package().is_some() { PathBuf::from(PACKAGED) } else { std::env::current_exe().unwrap_or_else(|_| PACKAGED.into()) }
 }
 
 pub fn shortcut_name(key: u32) -> String {
@@ -269,7 +289,7 @@ pub fn copy_files(_paths: &[PathBuf]) -> Result<(), String> {
 }
 
 pub fn open(path: &Path) {
-    let _ = Command::new("xdg-open").arg(path).spawn();
+    reap(Command::new("xdg-open").arg(path).spawn());
 }
 
 pub fn show_in_folder(path: &Path) {

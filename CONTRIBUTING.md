@@ -147,6 +147,10 @@ offered it like any update:
 3. If something's wrong, fix it and tag `vX.Y.Z-rc2` (the version stays X.Y.Z). When it's right,
    tag `vX.Y.Z` on the same commit as the last candidate.
 
+A candidate's Linux packages are version `X.Y.Z~rcN`, which apt and rpm put before `X.Y.Z`, so
+each candidate and then the release install over the one before (`build-packages.sh` reads the
+tag from `RSNIP_VERSION`).
+
 The workflow refuses a tag that doesn't match the version in `Cargo.toml`. A candidate's notes, and
 the release's, list everything since the previous release, not since the last candidate.
 

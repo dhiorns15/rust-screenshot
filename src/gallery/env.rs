@@ -382,7 +382,7 @@ impl Env {
                 let _ = std::fs::write(&self.request_file, "--restart");
             }
             #[cfg(not(windows))]
-            None => platform::relaunch_when_closed(),
+            None => platform::start_updated_library(),
             #[cfg(windows)]
             None => {}
         }

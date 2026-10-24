@@ -357,7 +357,9 @@ pub mod package {
         let _ = std::fs::remove_file(&path);
         let status = status.map_err(|e| format!("Couldn't ask for permission to install it (pkexec): {e}"))?;
         match status.code() {
-            Some(0) => Ok(()),
+            Some(0) if replaced() => Ok(()),
+            // apt and dnf skip a package with the version that's installed, and still succeed.
+            Some(0) => Err(format!("The package manager says the package of RSnip {} is installed already", release.version)),
             // pkexec's: the password prompt was dismissed, or the user isn't allowed.
             Some(126) => Err("Cancelled".into()),
             Some(127) => Err("This account isn't allowed to install software".into()),
@@ -376,6 +378,12 @@ pub mod package {
             Package::Rpm => &["rpm", "-U"],
         };
         words.iter().map(OsString::from).chain([path.as_os_str().to_owned()]).collect()
+    }
+
+    /// Whether this copy's program has been replaced, as installing the package does: its path
+    /// then reads as "/usr/bin/rsnip (deleted)".
+    fn replaced() -> bool {
+        std::fs::read_link("/proc/self/exe").is_ok_and(|p| p.to_string_lossy().ends_with(" (deleted)"))
     }
 
     fn on_path(program: &str) -> bool {
