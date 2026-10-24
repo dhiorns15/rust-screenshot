@@ -101,6 +101,8 @@ pub struct Sandbox {
     pub opened: Vec<PathBuf>,
     /// Files shown in their folder in the file manager.
     pub shown_in_folder: Vec<PathBuf>,
+    /// The secrets saved for destinations, by id.
+    pub secrets: BTreeMap<String, String>,
 }
 
 enum Store {
@@ -384,6 +386,39 @@ impl Env {
         }
     }
 
+    /// The secret saved in the system's credential store for the destination `id`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn secret(&self, id: &str) -> Result<Option<String>, String> {
+        match &self.sandbox {
+            Some(s) => Ok(s.borrow().secrets.get(id).cloned()),
+            None => crate::secrets::get(id),
+        }
+    }
+
+    /// Saves the secret for the destination `id`, replacing any; `label` names it for the user.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_secret(&self, id: &str, label: &str, secret: &str) -> Result<(), String> {
+        match &self.sandbox {
+            Some(s) => {
+                s.borrow_mut().secrets.insert(id.to_owned(), secret.to_owned());
+                Ok(())
+            }
+            None => crate::secrets::set(id, label, secret),
+        }
+    }
+
+    /// Forgets the secret for the destination `id`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn delete_secret(&self, id: &str) -> Result<(), String> {
+        match &self.sandbox {
+            Some(s) => {
+                s.borrow_mut().secrets.remove(id);
+                Ok(())
+            }
+            None => crate::secrets::delete(id),
+        }
+    }
+
     /// This copy came from the installer, so it can update itself.
     pub fn installed(&self) -> bool {
         self.sandbox.is_none() && platform::installed()
@@ -442,4 +477,24 @@ impl Env {
 /// Where a second `--gallery` launch leaves its request for the running library.
 pub fn request_file() -> PathBuf {
     std::env::temp_dir().join("rsnip-gallery-request.txt")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sandbox_keeps_secrets_in_memory() {
+        let env = Env::sandbox(std::env::temp_dir());
+        assert_eq!(env.secret("a"), Ok(None));
+        env.set_secret("a", "Home server", "one").unwrap();
+        env.set_secret("b", "Discord", "two").unwrap();
+        env.set_secret("a", "Home server", "three").unwrap();
+        assert_eq!(env.secret("a"), Ok(Some("three".to_owned())), "replaced");
+        assert_eq!(env.secret("b"), Ok(Some("two".to_owned())));
+        env.delete_secret("a").unwrap();
+        env.delete_secret("a").unwrap();
+        assert_eq!(env.secret("a"), Ok(None));
+        assert_eq!(env.secret("b"), Ok(Some("two".to_owned())), "others stay");
+    }
 }
