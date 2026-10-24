@@ -31,6 +31,17 @@ pub fn claim_single_instance(name: &str, _title: &str) -> bool {
     true
 }
 
+/// True if no other RSnip process holds the lock `name` (with no window, unlike
+/// `claim_single_instance`); this one then holds it until it exits.
+pub fn claim_lock(name: &str) -> bool {
+    static HELD: std::sync::Mutex<Vec<File>> = std::sync::Mutex::new(Vec::new());
+    let Ok(file) = File::options().create(true).truncate(false).write(true).open(lock_path(name)) else { return false };
+    if file.try_lock().is_err() {
+        return false;
+    }
+    HELD.lock().map(|mut held| held.push(file)).is_ok()
+}
+
 // There's no tray app here: no startup entry, global shortcuts or installer.
 /// The autostart entry that starts RSnip's background icon when you sign in (freedesktop's
 /// autostart, which GNOME, KDE and the rest follow).

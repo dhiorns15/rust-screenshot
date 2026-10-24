@@ -108,6 +108,10 @@ pub fn run(first: Option<Command>) {
     }
     // Otherwise it's here for `first` only, and goes once that's done.
     let stay = wanted && icon.is_some();
+    if stay {
+        // Pushing new screenshots and recordings by themselves (see `auto_push`).
+        super::auto_push::start(notify);
+    }
     let mut active: Option<Active> = None;
     let mut shown_recording = false;
     let mut brought_in = Instant::now();
@@ -246,7 +250,7 @@ fn tell_library(request: &str) {
 }
 
 /// A desktop notification; nothing if the desktop has none.
-fn notify(summary: &str, body: &str) {
+pub(super) fn notify(summary: &str, body: &str) {
     let Ok(conn) = zbus::blocking::Connection::session() else { return };
     let hints: HashMap<&str, zbus::zvariant::Value> = HashMap::new();
     let _ = conn.call_method(

@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod app_tests;
+mod auto_push;
 #[cfg(not(windows))]
 mod background;
 #[cfg(not(windows))]
@@ -32,6 +33,8 @@ mod system_info;
 mod theme;
 pub(crate) mod words;
 
+#[cfg(windows)]
+pub use auto_push::start as start_auto_push;
 pub use settings_window::run as run_settings;
 #[cfg(not(windows))]
 pub use background::{quit as quit_background, record, run as run_background};
@@ -98,6 +101,11 @@ pub fn run(file: Option<PathBuf>) {
     if crate::options::RUN_IN_BACKGROUND.read(platform::setting) {
         platform::start_tray();
     }
+    // Here only while the tray app or background icon doesn't (see `auto_push`).
+    #[cfg(not(windows))]
+    auto_push::start(background::notify);
+    #[cfg(windows)]
+    auto_push::start(|_, _| {});
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

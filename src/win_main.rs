@@ -74,6 +74,9 @@ pub const WM_APP_UPDATE_NOW: u32 = WM_APP + 13;
 pub const WM_APP_SETTINGS_CHANGED: u32 = WM_APP + 14;
 /// The Settings window wants a new shortcut for the action with index `wparam`.
 pub const WM_APP_RECORD_SHORTCUT: u32 = WM_APP + 15;
+/// Something to tell the user from another thread; `lparam` is a `Box<(String, String)>`, the
+/// title and text.
+const WM_APP_NOTICE: u32 = WM_APP + 16;
 
 const TIMER_REGION: usize = 1;
 const TIMER_FULL: usize = 2;
@@ -284,6 +287,14 @@ unsafe fn run_tray(mode: Option<Mode>, delay: Option<u32>, update_now: bool) {
     }
 
     SetTimer(hwnd, TIMER_UPDATE, UPDATE_FIRST_CHECK_MS, None);
+    // Pushing new captures by themselves (see gallery's `auto_push`); it tells of failures here.
+    let window = hwnd as isize;
+    gallery::start_auto_push(move |title, text| {
+        let notice = Box::into_raw(Box::new((title.to_owned(), text.to_owned())));
+        if PostMessageW(window as HWND, WM_APP_NOTICE, 0, notice as LPARAM) == 0 {
+            drop(Box::from_raw(notice));
+        }
+    });
     match (delay, mode) {
         _ if update_now => start_check(hwnd, Check::Install),
         (Some(secs), _) => start_countdown(hwnd, secs),
@@ -436,6 +447,11 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
         }
         WM_APP_UPDATE_NOW => {
             start_check(hwnd, Check::Install);
+            0
+        }
+        WM_APP_NOTICE => {
+            let (title, text) = *Box::from_raw(lparam as *mut (String, String));
+            notify(hwnd, &title, &text);
             0
         }
         WM_APP_DELAYED => {

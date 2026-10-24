@@ -6,7 +6,7 @@ use std::ptr::{null, null_mut};
 use std::time::SystemTime;
 
 use image::RgbaImage;
-use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, FILETIME, SYSTEMTIME};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, FILETIME, SYSTEMTIME};
 use windows_sys::Win32::Storage::FileSystem::{GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, INVALID_FILE_ATTRIBUTES};
 use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows_sys::Win32::System::Threading::CreateMutexW;
@@ -42,6 +42,22 @@ pub fn claim_single_instance(name: &str, title: &str) -> bool {
         }
     }
     false
+}
+
+/// True if no other RSnip process holds the lock `name` (with no window, unlike
+/// `claim_single_instance`); this one then holds it until it exits.
+pub fn claim_lock(name: &str) -> bool {
+    let name = wide(&format!("Local\\RSnip.{name}"));
+    let mutex = unsafe { CreateMutexW(null(), 0, name.as_ptr()) };
+    if mutex.is_null() {
+        return false;
+    }
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        // Not kept: it would keep the lock there after its holder ends.
+        unsafe { CloseHandle(mutex) };
+        return false;
+    }
+    true
 }
 
 pub fn start_with_windows() -> bool {
