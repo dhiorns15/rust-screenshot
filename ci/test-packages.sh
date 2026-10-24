@@ -14,8 +14,9 @@ test -f /usr/share/applications/rsnip.desktop
 command -v tesseract
 gst-inspect-1.0 --exists pipewiresrc
 rsnip --check-recording | tee /tmp/check'
-# As H.264 MP4: x264 on Ubuntu, OpenH264 on Fedora (openSUSE's come from Packman, so it's WebM there).
-h264='grep -q "H.264 MP4" /tmp/check'
+# As H.264 MP4: x264 on Ubuntu, OpenH264 on Fedora (openSUSE's come from Packman, so it's WebM
+# there); and it plays back in the library.
+h264='grep -q "H.264 MP4" /tmp/check && grep -q "Playback works" /tmp/check'
 
 run() {
     echo "== $1"

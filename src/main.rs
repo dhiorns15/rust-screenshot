@@ -8,6 +8,7 @@
 mod crash;
 mod gallery;
 mod icon_art;
+mod mp4;
 mod options;
 mod shortcuts;
 mod update;

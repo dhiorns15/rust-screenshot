@@ -88,6 +88,10 @@ package() {
     dnf:h264parse) echo gstreamer1-plugins-bad-free ;;
     pacman:h264parse) echo gst-plugins-bad ;;
     zypper:h264parse) echo gstreamer-plugins-bad ;;
+    apt:avdec_h264) echo gstreamer1.0-libav ;;
+    dnf:avdec_h264) echo gstreamer1-plugin-libav ;;
+    pacman:avdec_h264) echo gst-libav ;;
+    zypper:avdec_h264) echo gstreamer-plugins-libav ;;
     *) echo "$2" ;;
     esac
 }
@@ -133,8 +137,10 @@ check() {
         gst-inspect-1.0 --exists pipewiresrc || recommended="$recommended $(package "$pm" pipewiresrc)"
         gst-inspect-1.0 --exists x264enc || gst-inspect-1.0 --exists openh264enc || recommended="$recommended $(package "$pm" x264enc)"
         gst-inspect-1.0 --exists h264parse || recommended="$recommended $(package "$pm" h264parse)"
+        # Playing recordings in the library.
+        gst-inspect-1.0 --exists avdec_h264 || gst-inspect-1.0 --exists openh264dec || recommended="$recommended $(package "$pm" avdec_h264)"
     else
-        recommended="$recommended $(package "$pm" gst-launch-1.0) $(package "$pm" pipewiresrc) $(package "$pm" x264enc) $(package "$pm" h264parse)"
+        recommended="$recommended $(package "$pm" gst-launch-1.0) $(package "$pm" pipewiresrc) $(package "$pm" x264enc) $(package "$pm" h264parse) $(package "$pm" avdec_h264)"
     fi
     # Checking for updates.
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then

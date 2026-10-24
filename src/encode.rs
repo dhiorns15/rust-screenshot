@@ -6,7 +6,7 @@ use std::io::BufWriter;
 use std::path::Path;
 use std::time::Duration;
 
-use windows::core::HSTRING;
+use windows::core::{Interface, HSTRING};
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
@@ -97,6 +97,13 @@ impl Mp4 {
         // A positive stride means top-down rows, as captured.
         input.SetUINT32(&MF_MT_DEFAULT_STRIDE, (width * 4) as u32)?;
         writer.SetInputMediaType(stream, &input, None)?;
+        // A keyframe every second, so trimming and seeking land within a second of where asked
+        // (see mp4.rs). Not every encoder takes it; those keep their own spacing.
+        let mut codec: *mut std::ffi::c_void = std::ptr::null_mut();
+        if writer.GetServiceForStream(stream, &windows::core::GUID::zeroed(), &ICodecAPI::IID, &mut codec).is_ok() && !codec.is_null() {
+            let codec = ICodecAPI::from_raw(codec);
+            let _ = codec.SetValue(&CODECAPI_AVEncMPVGOPSize, &windows::core::VARIANT::from(fps));
+        }
         writer.BeginWriting()?;
         Ok(Mp4 { writer, stream, width, height, frame_time: 10_000_000 / fps as i64, last: None })
     }

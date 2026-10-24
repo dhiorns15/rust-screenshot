@@ -20,6 +20,7 @@ mod doc;
 mod dragout;
 mod library;
 mod platform;
+mod player;
 mod editor;
 mod env;
 mod search;
@@ -109,7 +110,7 @@ pub fn run(file: Option<PathBuf>) {
 /// A screenshot or recording the library lists.
 fn is_library_file(path: &Path) -> bool {
     let ext = path.extension().map(|x| x.to_ascii_lowercase());
-    matches!(ext.as_deref().and_then(|x| x.to_str()), Some("png" | "jpg" | "jpeg" | "gif" | "mp4"))
+    matches!(ext.as_deref().and_then(|x| x.to_str()), Some("png" | "jpg" | "jpeg" | "gif" | "mp4" | "webm"))
 }
 
 struct Entry {
@@ -162,6 +163,8 @@ struct App {
     thumb_tx: Sender<(PathBuf, SystemTime)>,
     thumb_rx: Receiver<(PathBuf, SystemTime, Option<ColorImage>)>,
     editor: Option<Editor>,
+    /// The recording open in the viewer, instead of an editor.
+    player: Option<player::Player>,
     tools: ToolState,
     font: Option<FontVec>,
     /// Action waiting on the "unsaved changes" dialog.
@@ -215,10 +218,15 @@ impl App {
         let repaint = ctx.clone();
         std::thread::spawn(move || {
             for (path, modified) in jobs {
-                let thumb = image::open(&path).ok().map(|img| {
-                    let t = img.thumbnail(THUMB.x as u32 * 2, THUMB.y as u32 * 2).to_rgba8();
-                    ColorImage::from_rgba_unmultiplied([t.width() as usize, t.height() as usize], t.as_raw())
-                });
+                let size = (THUMB.x as u32 * 2, THUMB.y as u32 * 2);
+                let thumb = match player::Kind::of(&path) {
+                    // Recordings show their first frame.
+                    Some(player::Kind::Mp4 | player::Kind::WebM) => player::first_frame(&path, size),
+                    _ => image::open(&path).ok().map(|img| {
+                        let t = img.thumbnail(size.0, size.1).to_rgba8();
+                        ColorImage::from_rgba_unmultiplied([t.width() as usize, t.height() as usize], t.as_raw())
+                    }),
+                };
                 if results.send((path, modified, thumb)).is_err() {
                     break;
                 }
@@ -235,6 +243,7 @@ impl App {
             thumb_tx,
             thumb_rx,
             editor: None,
+            player: None,
             tools: ToolState::default(),
             font: font_bytes.and_then(|b| FontVec::try_from_vec(b).ok()),
             pending: None,
@@ -332,7 +341,7 @@ impl App {
 
     /// Opens a file, asking first if the current one has unsaved edits.
     fn request_open(&mut self, path: PathBuf) {
-        if self.editor.as_ref().is_some_and(|e| e.doc.path == path) {
+        if self.editor.as_ref().is_some_and(|e| e.doc.path == path) || self.player.as_ref().is_some_and(|p| p.path == path) {
             return;
         }
         // Text stays selected until committed; don't lose it when switching files.
@@ -347,13 +356,36 @@ impl App {
     }
 
     fn open(&mut self, path: &Path) {
+        if is_video(path) {
+            self.editor = None;
+            self.player = player::Player::open(path);
+            return;
+        }
         match Doc::open(path) {
             Ok(doc) => {
                 let mut editor = Editor::new(doc);
                 editor.reader = self.env.read_words.clone();
                 self.editor = Some(editor);
+                self.player = None;
             }
             Err(e) => self.set_status(e),
+        }
+    }
+
+    /// Saves `from`..`to` of the open recording as a new one beside it, and opens that.
+    fn trim(&mut self, from: Duration, to: Duration) {
+        let Some(src) = self.player.as_ref().map(|p| p.path.clone()) else { return };
+        let dst = player::trimmed_path(&src);
+        match player::trim(&src, &dst, from, to) {
+            Ok((kept_from, kept_to)) => {
+                self.rescan();
+                self.selected = [dst.clone()].into();
+                self.open(&dst);
+                let name = dst.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                let moved = if kept_from + Duration::from_millis(20) < from { ", from the keyframe before the start" } else { "" };
+                self.set_status(format!("Saved {name}: {} long{moved}", player::clock(kept_to.saturating_sub(kept_from))));
+            }
+            Err(e) => self.set_status(format!("Couldn't trim it: {e}")),
         }
     }
 
@@ -480,6 +512,9 @@ impl App {
             doc::remove_layers(path);
             if self.editor.as_ref().is_some_and(|e| &e.doc.path == path) {
                 self.editor = None;
+            }
+            if self.player.as_ref().is_some_and(|p| &p.path == path) {
+                self.player = None;
             }
             self.thumbs.remove(path);
             self.selected.remove(path);
@@ -1000,10 +1035,15 @@ impl eframe::App for App {
             }
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(p.canvas)).show(ui, |ui| {
-            match &mut self.editor {
-                Some(editor) => editor.ui(ui, &mut self.tools, self.font.as_ref()),
-                None => {
-                    ui.centered_and_justified(|ui| ui.label("Select a screenshot from the library."));
+            match (&mut self.editor, &mut self.player) {
+                (Some(editor), _) => editor.ui(ui, &mut self.tools, self.font.as_ref()),
+                (None, Some(player)) => {
+                    if let Some(player::Request::Trim(from, to)) = player.ui(ui) {
+                        self.trim(from, to);
+                    }
+                }
+                (None, None) => {
+                    ui.centered_and_justified(|ui| ui.label("Select a screenshot or recording from the library."));
                 }
             }
         });
@@ -1114,9 +1154,9 @@ fn save_jpg(img: &image::RgbaImage, path: &Path) -> Result<(), String> {
     image::codecs::jpeg::JpegEncoder::new_with_quality(file, 90).encode_image(&rgb).map_err(|e| e.to_string())
 }
 
-/// Screen recordings; they open in the default player.
+/// Screen recordings; they open in the player.
 fn is_video(path: &Path) -> bool {
-    matches!(path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(), Some("gif" | "mp4"))
+    player::Kind::of(path).is_some()
 }
 
 fn open_with_shell(path: &Path) {

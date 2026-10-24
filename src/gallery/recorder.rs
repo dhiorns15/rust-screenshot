@@ -43,8 +43,9 @@ pub struct Encoder {
     /// The element, as `gst-inspect-1.0` knows it.
     pub element: &'static str,
     pub codec: &'static str,
-    /// The encoder's settings, given the bitrate in kbit/s.
-    settings: fn(u32) -> String,
+    /// The encoder's settings, given the bitrate in kbit/s and the frame rate (a keyframe every
+    /// second, so trimming and seeking land within a second; see mp4.rs).
+    settings: fn(u32, u32) -> String,
     /// The parser and muxer after it.
     tail: &'static str,
     pub extension: &'static str,
@@ -53,18 +54,18 @@ pub struct Encoder {
 /// Software encoders first: they work everywhere they're installed, where the graphics card's
 /// (VA-API) may be listed but fail.
 const H264: [Encoder; 4] = [
-    Encoder { element: "x264enc", codec: "H.264", settings: |k| format!("x264enc speed-preset=veryfast tune=zerolatency bitrate={k} key-int-max=120"), tail: "h264parse ! mp4mux", extension: "mp4" },
-    Encoder { element: "openh264enc", codec: "H.264", settings: |k| format!("openh264enc bitrate={}", k * 1000), tail: "h264parse ! mp4mux", extension: "mp4" },
-    Encoder { element: "vah264lpenc", codec: "H.264", settings: |k| format!("vah264lpenc bitrate={k}"), tail: "h264parse ! mp4mux", extension: "mp4" },
-    Encoder { element: "vah264enc", codec: "H.264", settings: |k| format!("vah264enc bitrate={k}"), tail: "h264parse ! mp4mux", extension: "mp4" },
+    Encoder { element: "x264enc", codec: "H.264", settings: |k, fps| format!("x264enc speed-preset=veryfast tune=zerolatency bitrate={k} key-int-max={fps}"), tail: "h264parse ! mp4mux", extension: "mp4" },
+    Encoder { element: "openh264enc", codec: "H.264", settings: |k, fps| format!("openh264enc bitrate={} gop-size={fps}", k * 1000), tail: "h264parse ! mp4mux", extension: "mp4" },
+    Encoder { element: "vah264lpenc", codec: "H.264", settings: |k, fps| format!("vah264lpenc bitrate={k} key-int-max={fps}"), tail: "h264parse ! mp4mux", extension: "mp4" },
+    Encoder { element: "vah264enc", codec: "H.264", settings: |k, fps| format!("vah264enc bitrate={k} key-int-max={fps}"), tail: "h264parse ! mp4mux", extension: "mp4" },
 ];
 const H265: [Encoder; 3] = [
-    Encoder { element: "x265enc", codec: "H.265", settings: |k| format!("x265enc speed-preset=veryfast tune=zerolatency bitrate={k} key-int-max=120"), tail: "h265parse ! mp4mux", extension: "mp4" },
-    Encoder { element: "vah265lpenc", codec: "H.265", settings: |k| format!("vah265lpenc bitrate={k}"), tail: "h265parse ! mp4mux", extension: "mp4" },
-    Encoder { element: "vah265enc", codec: "H.265", settings: |k| format!("vah265enc bitrate={k}"), tail: "h265parse ! mp4mux", extension: "mp4" },
+    Encoder { element: "x265enc", codec: "H.265", settings: |k, fps| format!("x265enc speed-preset=veryfast tune=zerolatency bitrate={k} key-int-max={fps}"), tail: "h265parse ! mp4mux", extension: "mp4" },
+    Encoder { element: "vah265lpenc", codec: "H.265", settings: |k, fps| format!("vah265lpenc bitrate={k} key-int-max={fps}"), tail: "h265parse ! mp4mux", extension: "mp4" },
+    Encoder { element: "vah265enc", codec: "H.265", settings: |k, fps| format!("vah265enc bitrate={k} key-int-max={fps}"), tail: "h265parse ! mp4mux", extension: "mp4" },
 ];
 const WEBM: Encoder =
-    Encoder { element: "vp8enc", codec: "VP8", settings: |k| format!("vp8enc deadline=1 cpu-used=8 target-bitrate={}", k * 1000), tail: "webmmux", extension: "webm" };
+    Encoder { element: "vp8enc", codec: "VP8", settings: |k, fps| format!("vp8enc deadline=1 cpu-used=8 target-bitrate={} keyframe-max-dist={fps}", k * 1000), tail: "webmmux", extension: "webm" };
 
 impl Encoder {
     /// The GStreamer elements it needs: itself, then the parser and muxer after it. They're often in
@@ -167,10 +168,19 @@ pub fn check(hevc: bool) -> Result<String, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
     let path = dir.join(format!("check.{}", encoder.extension));
     let recorded = record_test_picture(&encoder, &path);
+    // And plays back in the library, which needs a decoder as well.
+    let played = recorded.is_ok().then(|| super::player::can_play(&path));
     let _ = std::fs::remove_dir_all(&dir);
     recorded?;
-    let made = format!("Recording works: {} {} with {}.", encoder.codec, encoder.extension.to_uppercase(), encoder.element);
-    Ok(note.map_or(made.clone(), |note| format!("{made}\n{note}")))
+    let mut made = format!("Recording works: {} {} with {}.", encoder.codec, encoder.extension.to_uppercase(), encoder.element);
+    if let Some(note) = note {
+        made = format!("{made}\n{note}");
+    }
+    match played {
+        Some(Err(e)) => made.push_str(&format!("\nPlayback doesn't work: {e}")),
+        _ => made.push_str("\nPlayback works."),
+    }
+    Ok(made)
 }
 
 /// Records a test picture to `path` through `encoder`, with the pipeline a recording uses.
@@ -238,7 +248,7 @@ fn video_pipeline(node: u32, frame: (u32, u32), area: Option<Area>, fps: u32, en
         "{}{} ! videoscale add-borders=true ! videorate ! video/x-raw,format=I420,width={w},height={h},framerate={fps}/1 ! queue ! {} ! {} ! filesink",
         source(node),
         crop(area, frame.0, frame.1),
-        (encoder.settings)(bitrate(encoder, w, h, fps)),
+        (encoder.settings)(bitrate(encoder, w, h, fps), fps),
         encoder.tail,
     );
     args(&["-q", "-e"], &pipeline, Some(path))

@@ -333,11 +333,10 @@ impl App {
             }
             _ => {
                 painter.rect_filled(thumb_area, 4.0, theme::palette(ui).raised);
-                // MP4s have no thumbnail; GIFs show their first frame.
-                let mp4 = entry.video && !entry.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("gif"));
-                if mp4 {
+                if entry.video {
                     painter.text(thumb_area.center(), Align2::CENTER_CENTER, "▶", egui::FontId::proportional(36.0), Color32::from_gray(170));
-                } else if self.requested.insert(entry.path.clone()) {
+                }
+                if self.requested.insert(entry.path.clone()) {
                     let _ = self.thumb_tx.send((entry.path.clone(), entry.modified));
                 }
             }
@@ -396,11 +395,7 @@ impl App {
         } else {
             self.selected = [path.clone()].into();
             self.anchor = Some(path.clone());
-            if super::is_video(&path) {
-                open_with_shell(&path);
-            } else {
-                self.request_open(path);
-            }
+            self.request_open(path);
         }
     }
 
