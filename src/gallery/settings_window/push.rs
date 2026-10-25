@@ -51,10 +51,8 @@ struct Form {
 
 impl Form {
     fn new(destination: Destination, editing: bool) -> Form {
-        let port = match &destination.kind {
-            Kind::Sftp { port, .. } => port.to_string(),
-            _ => String::new(),
-        };
+        let mut kind = destination.kind.clone();
+        let port = kind.port_mut().map(|p| p.to_string()).unwrap_or_default();
         Form { editing, destination, port, secret: String::new(), saving: None, error: None }
     }
 
@@ -117,6 +115,12 @@ fn fields(kind: &mut Kind) -> Vec<Field<'_>> {
             field("Server address", "https://photos.example.com", server),
             field("Album", "Optional: made if it isn't there", album),
         ],
+        Kind::Ftps { host, user, folder, public_url, .. } => vec![
+            field("Server", "nas.example.com", host),
+            field("User", "", user),
+            field("Folder", "Empty for the folder the server starts in", folder),
+            field("Link to share", "Optional: where the pushed files can be opened, e.g. https://img.example.com/", public_url),
+        ],
         Kind::Custom { url, method, file_field, fields, headers, link } => vec![
             field("Upload address", "https://i.example.com/api/upload", url),
             field("Method", "POST", method),
@@ -137,6 +141,7 @@ fn help(kind: &Kind) -> &'static str {
         Kind::Immich { .. } => "Account Settings > API Keys",
         Kind::Slack { .. } => "Your Slack app's Bot User OAuth Token (xoxb-…), with the files:write scope; invite the app to the channel. The README has an app manifest to start from.",
         Kind::PhotoPrism { .. } => "Settings > Account > Apps and Devices: an app password with full access, or the files and sessions scopes (and albums, for an album).",
+        Kind::Ftps { .. } => "FTP over TLS, through the system's curl: port 21 for explicit TLS, 990 for implicit. Plain FTP isn't offered, as it sends the password unencrypted.",
         Kind::Custom { .. } => "Any upload API, like ShareX's custom uploaders. {secret} is replaced by the token, {filename} by the file's name.",
     }
 }
@@ -377,7 +382,8 @@ impl SettingsApp {
             ui.add_enabled_ui(!busy, |ui| {
                 egui::Grid::new("destination-form").num_columns(2).spacing([16.0, 8.0]).min_col_width(130.0).show(ui, |ui| {
                     text_row(ui, "Name", "", &mut form.destination.name, false);
-                    let sftp = matches!(form.destination.kind, Kind::Sftp { .. });
+                    let has_port = form.destination.kind.port_mut().is_some();
+                    let default_port = if matches!(form.destination.kind, Kind::Ftps { .. }) { "21" } else { "22" };
                     for (i, f) in fields(&mut form.destination.kind).into_iter().enumerate() {
                         if f.multiline {
                             lines_row(ui, f.label, f.hint, f.value);
@@ -385,8 +391,8 @@ impl SettingsApp {
                             text_row(ui, f.label, f.hint, f.value, false);
                         }
                         // The port follows the server.
-                        if sftp && i == 0 {
-                            text_row(ui, "Port", "22", &mut form.port, false);
+                        if has_port && i == 0 {
+                            text_row(ui, "Port", default_port, &mut form.port, false);
                         }
                     }
                     if let Some(label) = form.destination.kind.secret_label() {
@@ -402,7 +408,7 @@ impl SettingsApp {
                     }
                 });
             });
-            if let Kind::Sftp { port, .. } = &mut form.destination.kind {
+            if let Some(port) = form.destination.kind.port_mut() {
                 *port = form.port.trim().parse().unwrap_or(0);
             }
             if let Some(e) = &form.error {

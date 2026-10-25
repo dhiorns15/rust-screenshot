@@ -6,6 +6,7 @@
 
 mod custom;
 mod discord;
+mod ftps;
 mod immich;
 mod photoprism;
 mod s3;
@@ -85,6 +86,16 @@ pub enum Kind {
         #[serde(default)]
         album: String,
     },
+    /// A folder on an FTP server, over TLS (curl). Secret: the password.
+    Ftps {
+        host: String,
+        #[serde(default = "default_ftps_port")]
+        port: u16,
+        user: String,
+        folder: String,
+        #[serde(default)]
+        public_url: String,
+    },
     /// Any HTTP upload API, described as ShareX's custom uploaders are (see `custom`). Secret, if it
     /// needs one: a token, put wherever `{secret}` is written.
     Custom {
@@ -110,9 +121,13 @@ fn default_port() -> u16 {
     22
 }
 
+fn default_ftps_port() -> u16 {
+    21
+}
+
 impl Kind {
     /// An empty one of each kind, in the order they're offered.
-    pub const ALL: [fn() -> Kind; 8] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::discord, Kind::slack, Kind::immich, Kind::photoprism, Kind::custom];
+    pub const ALL: [fn() -> Kind; 9] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::ftps, Kind::discord, Kind::slack, Kind::immich, Kind::photoprism, Kind::custom];
 
     pub fn sftp() -> Kind {
         Kind::Sftp { host: String::new(), port: default_port(), user: String::new(), folder: String::new(), public_url: String::new() }
@@ -149,6 +164,10 @@ impl Kind {
         Kind::PhotoPrism { server: String::new(), album: String::new() }
     }
 
+    pub fn ftps() -> Kind {
+        Kind::Ftps { host: String::new(), port: default_ftps_port(), user: String::new(), folder: String::new(), public_url: String::new() }
+    }
+
     pub fn custom() -> Kind {
         Kind::Custom {
             url: String::new(),
@@ -169,6 +188,7 @@ impl Kind {
             Kind::Immich { .. } => "Immich",
             Kind::Slack { .. } => "Slack",
             Kind::PhotoPrism { .. } => "PhotoPrism",
+            Kind::Ftps { .. } => "FTPS",
             Kind::Custom { .. } => "Custom uploader",
         }
     }
@@ -183,7 +203,16 @@ impl Kind {
             Kind::Immich { .. } => Some("API key"),
             Kind::Slack { .. } => Some("Bot token"),
             Kind::PhotoPrism { .. } => Some("App password"),
+            Kind::Ftps { .. } => Some("Password"),
             Kind::Custom { .. } => Some("Token"),
+        }
+    }
+
+    /// The port, for kinds that have one.
+    pub fn port_mut(&mut self) -> Option<&mut u16> {
+        match self {
+            Kind::Sftp { port, .. } | Kind::Ftps { port, .. } => Some(port),
+            _ => None,
         }
     }
 
@@ -208,6 +237,7 @@ impl Kind {
             Kind::Immich { server } => server.clone(),
             Kind::Slack { channel } => channel.clone(),
             Kind::PhotoPrism { server, .. } => server.clone(),
+            Kind::Ftps { host, user, folder, .. } => format!("{user}@{host}{}{folder}", if folder.is_empty() { "" } else { ":" }),
             // Without the query, which may carry a key.
             Kind::Custom { url, .. } => url.split('?').next().unwrap_or_default().to_owned(),
         }
@@ -257,6 +287,10 @@ impl Destination {
             Kind::Slack { channel } if channel.trim().starts_with('#') => Some("Use the channel's ID, from its details (like C0123ABCDEF), not its name".into()),
             Kind::Slack { channel } => required(channel, "the channel's ID"),
             Kind::PhotoPrism { server, .. } => address(server, "the server's address"),
+            Kind::Ftps { host, port, user, public_url, .. } => required(host, "the server's address")
+                .or_else(|| (*port == 0).then(|| "Enter a port from 1 to 65535".to_owned()))
+                .or_else(|| required(user, "the user name"))
+                .or_else(|| public(public_url)),
             Kind::Custom { url, .. } => address(url, "the upload address").or_else(|| custom::problems(&uploader(&self.kind, ""))),
         }
     }
@@ -307,6 +341,7 @@ pub fn test(destination: &Destination, secret: Option<&str>) -> Result<String, S
         Kind::Immich { server } => immich::test(server, secret),
         Kind::Slack { .. } => slack::test(secret),
         Kind::PhotoPrism { server, .. } => photoprism::test(server, secret),
+        Kind::Ftps { host, port, user, folder, .. } => ftps::test(&ftps::Server { host, port: *port, user, password: secret, folder }),
         Kind::Custom { .. } => custom::test(&uploader(&destination.kind, secret)),
     }
 }
@@ -334,6 +369,10 @@ pub fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Res
         Kind::Immich { server } => immich::upload(server, secret, file),
         Kind::Slack { channel } => slack::post(secret, channel, file),
         Kind::PhotoPrism { server, album } => photoprism::upload(server, secret, album, file),
+        Kind::Ftps { host, port, user, folder, public_url } => {
+            ftps::put(&ftps::Server { host, port: *port, user, password: secret, folder }, &name, file)?;
+            Ok(link(public_url, &name))
+        }
         Kind::Custom { .. } => custom::upload(&uploader(&destination.kind, secret), file),
     }
 }
@@ -525,6 +564,7 @@ mod tests {
             Kind::Immich { .. } => Kind::Immich { server: "https://photos.example.com".into() },
             Kind::Slack { .. } => Kind::Slack { channel: "C0123ABCDEF".into() },
             Kind::PhotoPrism { .. } => Kind::PhotoPrism { server: "https://pp.example.com".into(), album: "Screenshots".into() },
+            Kind::Ftps { port, .. } => Kind::Ftps { host: "nas.local".into(), port, user: "me".into(), folder: "shots".into(), public_url: String::new() },
             Kind::Custom { .. } => Kind::Custom {
                 url: "https://i.example.com/api/upload".into(),
                 method: "POST".into(),
@@ -567,7 +607,8 @@ mod tests {
     }
 
     /// Against real servers, as ci/test-destinations.sh starts them: rclone's S3 and WebDAV at
-    /// `RSNIP_TEST_S3` and `RSNIP_TEST_WEBDAV`, and OpenSSH's SFTP at the host `RSNIP_TEST_SFTP`.
+    /// `RSNIP_TEST_S3` and `RSNIP_TEST_WEBDAV`, OpenSSH's SFTP at the host `RSNIP_TEST_SFTP` and
+    /// vsftpd's FTPS at `RSNIP_TEST_FTPS`.
     /// What each keeps shows here in the folder `RSNIP_TEST_<KIND>_DIR`.
     #[test]
     #[ignore = "needs the servers ci/test-destinations.sh starts"]
@@ -621,6 +662,16 @@ mod tests {
         let stranger = to(Kind::Sftp { host: var("RSNIP_TEST_SFTP"), port: 22, user: "nobody".into(), folder: String::new(), public_url: String::new() });
         assert!(test(&stranger, None).unwrap_err().contains("didn't accept your SSH keys"));
         println!("SFTP: pushed, making the folders");
+
+        let d = to(Kind::Ftps { host: var("RSNIP_TEST_FTPS"), port: 21, user: "rsnip".into(), folder: "shots/today".into(), public_url: String::new() });
+        assert_eq!(test(&d, Some("rsnip-secret")), Ok("Connected. The folder will be made with the first push".into()));
+        assert_eq!(test(&d, Some("wrong")), Err("The server didn't accept the user name or password".into()));
+        for file in [&png, &mp4] {
+            assert_eq!(push(&d, Some("rsnip-secret"), file), Ok(None));
+            check(&Path::new(&var("RSNIP_TEST_FTPS_DIR")).join("shots/today"), file);
+        }
+        assert_eq!(test(&d, Some("rsnip-secret")), Ok("Connected".into()));
+        println!("FTPS: pushed over TLS, making the folders");
     }
 
     /// Against a PhotoPrism server at `RSNIP_TEST_PHOTOPRISM`, with the app password
@@ -655,6 +706,7 @@ mod tests {
                 ("SFTP", None),
                 ("WebDAV", Some("Password")),
                 ("S3-compatible", Some("Secret access key")),
+                ("FTPS", Some("Password")),
                 ("Discord", Some("Webhook URL")),
                 ("Slack", Some("Bot token")),
                 ("Immich", Some("API key")),

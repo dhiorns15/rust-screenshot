@@ -457,7 +457,7 @@ fn push_to_starts_empty() {
     open(&mut h, Section::Destinations);
     assert!(h.query_by_label("Nowhere yet. Add a place to push to.").is_some());
     click(&mut h, "Add…");
-    for kind in ["SFTP", "WebDAV", "S3-compatible", "Discord", "Slack", "Immich", "PhotoPrism", "Custom uploader", "Custom uploader from a ShareX file (.sxcu)…"] {
+    for kind in ["SFTP", "WebDAV", "S3-compatible", "FTPS", "Discord", "Slack", "Immich", "PhotoPrism", "Custom uploader", "Custom uploader from a ShareX file (.sxcu)…"] {
         assert!(h.query_by_label(kind).is_some(), "{kind}");
     }
 }
