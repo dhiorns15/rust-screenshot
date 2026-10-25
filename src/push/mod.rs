@@ -466,7 +466,7 @@ fn link(public_url: &str, path: &str) -> Option<String> {
 }
 
 /// Percent-encodes all but the unreserved characters (RFC 3986), for a name in an address.
-fn encode(s: &str) -> String {
+pub fn encode(s: &str) -> String {
     let mut out = String::new();
     for &b in s.as_bytes() {
         if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {

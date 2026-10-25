@@ -23,6 +23,18 @@ mod push;
 
 pub const TITLE: &str = "RSnip Settings";
 const REPO: &str = "https://github.com/dhiorns15/rust-screenshot";
+/// How long an address GitHub takes, with room to spare (it refuses one of about 8 KB).
+const MAX_URL: usize = 7500;
+
+/// GitHub's bug form (`.github/ISSUE_TEMPLATE/bug_report.yml`) with its System info field, and its
+/// crash report field if there's one, filled in: the crash report is left out if both don't fit,
+/// then System info.
+pub(super) fn issue_url(system_info: &str, crash: Option<&str>) -> String {
+    let form = format!("{REPO}/issues/new?template=bug_report.yml");
+    let with_info = format!("{form}&system-info={}", crate::push::encode(system_info));
+    let with_crash = crash.map(|crash| format!("{with_info}&crash={}", crate::push::encode(crash)));
+    [with_crash, Some(with_info)].into_iter().flatten().find(|url| url.len() <= MAX_URL).unwrap_or(form)
+}
 
 pub fn run() {
     if !platform::claim_single_instance("Settings", TITLE) {
@@ -639,15 +651,13 @@ impl SettingsApp {
             }
         }
         let text = system_info::text(self.report.as_deref().unwrap_or_default());
-        let new_issue = format!("{REPO}/issues/new");
         if let Some(c) = self.crash.clone() {
             warning(ui, &format!("RSnip closed unexpectedly ({}).", crash::utc(c.time)), |ui| {
                 ui.label(RichText::new(&c.summary).monospace().small());
                 ui.horizontal(|ui| {
                     if ui.button(theme::label(icon::BUG, "Report this crash")).clicked() {
                         let report = std::fs::read_to_string(&c.path).unwrap_or_default();
-                        self.copy(&format!("{report}\n{text}"), "Copied the crash report; paste it into the issue.");
-                        self.env.open(Path::new(&new_issue));
+                        self.report_problem(&text, Some(&report));
                     }
                     if ui.button(theme::label(icon::FOLDER_OPEN, "Open folder")).clicked() {
                         self.env.open(&self.env.crash_dir);
@@ -658,8 +668,7 @@ impl SettingsApp {
         theme::card(ui, |ui| {
             row(ui, "Include this when you report a problem", "It has no screenshots or file names, and your home folder shows as ~", |ui| {
                 if ui.button(theme::label(icon::WARNING, "Report a problem")).clicked() {
-                    self.copy(&text, "Copied; paste it into the issue.");
-                    self.env.open(Path::new(&new_issue));
+                    self.report_problem(&text, None);
                 }
                 if ui.button(theme::label(icon::COPY, "Copy")).clicked() {
                     self.copy(&text, "Copied to the clipboard.");
@@ -685,21 +694,36 @@ impl SettingsApp {
         }
     }
 
+    /// Opens GitHub's bug form with System info (`text`) and the crash report filled in, as far as
+    /// they fit in an address; they're copied too, for what didn't.
+    fn report_problem(&mut self, text: &str, crash: Option<&str>) {
+        let url = issue_url(text, crash);
+        let note = match (url.contains("&crash="), url.contains("&system-info="), crash.is_some()) {
+            (true, _, _) => "Opened the bug form with the crash report and System info filled in.",
+            (false, true, true) => "Opened the bug form with System info filled in; paste the crash report from the clipboard.",
+            (false, true, false) => "Opened the bug form with System info filled in.",
+            (false, false, _) => "Copied; paste it into the bug form.",
+        };
+        let copied = crash.map_or_else(|| text.to_owned(), |crash| format!("{crash}\n{text}"));
+        self.copy(&copied, note);
+        self.env.open(Path::new(&url));
+    }
+
     fn about(&mut self, ui: &mut Ui) {
         theme::card(ui, |ui| {
             ui.label(RichText::new(format!("RSnip {}", self.env.version)).size(18.0).strong());
             ui.label(RichText::new("A small, open-source screenshot tool, written in Rust.").color(theme::palette(ui).muted));
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
-                let links = [
-                    (icon::GITHUB_LOGO, "GitHub", REPO.to_string()),
-                    (icon::WARNING, "Report a problem", format!("{REPO}/issues/new")),
-                    (icon::INFO, "Contributing", format!("{REPO}/blob/main/CONTRIBUTING.md")),
-                ];
-                for (icon, label, url) in links {
-                    if ui.button(theme::label(icon, label)).clicked() {
-                        platform::open(Path::new(&url));
-                    }
+                if ui.button(theme::label(icon::GITHUB_LOGO, "GitHub")).clicked() {
+                    platform::open(Path::new(REPO));
+                }
+                if ui.button(theme::label(icon::WARNING, "Report a problem")).clicked() {
+                    let report = system_info::report(&self.env, &self.env.host(), self.gpu.as_ref(), Some(ui.ctx()));
+                    self.report_problem(&system_info::text(&report), None);
+                }
+                if ui.button(theme::label(icon::INFO, "Contributing")).clicked() {
+                    platform::open(Path::new(&format!("{REPO}/blob/main/CONTRIBUTING.md")));
                 }
             });
             ui.label(RichText::new("MIT License").small().color(theme::palette(ui).muted));

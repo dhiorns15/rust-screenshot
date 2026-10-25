@@ -364,10 +364,23 @@ fn system_info_reports_the_machine_and_copies_it() {
     h.state().env.sandboxed().copied = None;
     h.get_by_label_contains("Report a problem").click();
     settle(&mut h);
-    assert!(h.state().env.sandboxed().copied.is_some(), "copied, ready to paste");
-    assert_eq!(h.state().env.sandboxed().opened, [Path::new("https://github.com/dhiorns15/rust-screenshot/issues/new")]);
+    assert!(h.state().env.sandboxed().copied.is_some(), "copied too");
+    let opened = h.state().env.sandboxed().opened.clone();
+    let form = "https://github.com/dhiorns15/rust-screenshot/issues/new?template=bug_report.yml&system-info=RSnip%20System%20Info%0A";
+    assert!(opened.len() == 1 && opened[0].to_string_lossy().starts_with(form), "the bug form, filled in: {opened:?}");
+    assert!(h.query_by_label("Opened the bug form with System info filled in.").is_some());
     assert!(h.query_by_label("none").is_some(), "no crashes");
     assert!(h.query_by_label_contains("Report this crash").is_none());
+}
+
+#[test]
+fn the_bug_form_takes_what_fits_in_an_address() {
+    use super::settings_window::issue_url;
+    let form = "https://github.com/dhiorns15/rust-screenshot/issues/new?template=bug_report.yml";
+    assert_eq!(issue_url("A b\n", Some("crash")), format!("{form}&system-info=A%20b%0A&crash=crash"));
+    let long = "x".repeat(8000);
+    assert_eq!(issue_url("info", Some(&long)), format!("{form}&system-info=info"), "the crash report stays on the clipboard");
+    assert_eq!(issue_url(&"é".repeat(2000), None), form, "nor System info, if it's too long (é is 6 characters encoded)");
 }
 
 #[test]
@@ -393,7 +406,9 @@ fn system_info_shows_the_last_crash_and_reports_it() {
     let copied = h.state().env.sandboxed().copied.clone().expect("copied");
     assert!(copied.starts_with("RSnip crash report\n"), "the crash first: {copied}");
     assert!(copied.contains("\nRSnip System Info\n"), "then the system");
-    assert_eq!(h.state().env.sandboxed().opened.len(), 1, "the new issue page");
+    let opened = h.state().env.sandboxed().opened.clone();
+    assert!(opened.len() == 1 && opened[0].to_string_lossy().contains("&crash=RSnip%20crash%20report%0A"), "the crash in its field: {opened:?}");
+    assert!(h.query_by_label("Opened the bug form with the crash report and System info filled in.").is_some());
 
     h.get_by_label_contains("Open folder").click();
     settle(&mut h);
