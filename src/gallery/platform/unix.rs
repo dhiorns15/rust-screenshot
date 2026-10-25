@@ -314,8 +314,12 @@ pub fn copy_text(text: &str) -> Result<(), String> {
     with_clipboard(|c| c.set_text(text))
 }
 
-/// Puts files on the clipboard (as `text/uri-list`), to paste into a folder, chat or email.
+/// Puts files on the clipboard, to paste into a folder, chat or email: as GNOME's Files does where
+/// that reaches the apps, else as `text/uri-list`.
 pub fn copy_files(paths: &[PathBuf]) -> Result<(), String> {
+    if super::super::file_clipboard::usable() && super::super::file_clipboard::copy(paths).is_ok() {
+        return Ok(());
+    }
     with_clipboard(|c| c.set().file_list(paths))
 }
 
@@ -339,7 +343,7 @@ pub fn show_in_folder(path: &Path) {
 }
 
 /// `path` as a file:// URI, with anything but letters, digits and `/-._~` percent-encoded.
-fn file_uri(path: &Path) -> String {
+pub(in crate::gallery) fn file_uri(path: &Path) -> String {
     use std::os::unix::ffi::OsStrExt;
     let mut uri = String::from("file://");
     for &b in path.as_os_str().as_bytes() {

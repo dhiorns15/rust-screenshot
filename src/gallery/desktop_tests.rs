@@ -440,3 +440,36 @@ fn desktop_icon_records_from_its_menu() {
         std::thread::sleep(Duration::from_millis(100));
     }
 }
+
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_copies_files_for_file_managers() {
+    struct Server(Child);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            std::env::remove_var("DISPLAY");
+        }
+    }
+    let _server = Server(Command::new("Xvfb").args([":71", "-nolisten", "tcp"]).stderr(Stdio::null()).spawn().expect("couldn't start Xvfb"));
+    std::env::set_var("DISPLAY", ":71");
+    std::env::remove_var("WAYLAND_DISPLAY");
+    wait_for(|| Path::new("/tmp/.X11-unix/X71").exists(), "the X server");
+    let dir = temp_dir("copy-files");
+    let files = [dir.join("Shot 1.png"), dir.join("b.mp4")];
+    for f in &files {
+        std::fs::write(f, b"x").unwrap();
+    }
+    super::platform::copy_files(&files).unwrap();
+    let paste = |target: &str| {
+        let out = Command::new("xclip").args(["-selection", "clipboard", "-t", target, "-o"]).output().expect("couldn't run xclip");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let uri = |f: &PathBuf| format!("file://{}", f.display()).replace(' ', "%20");
+    let targets = paste("TARGETS");
+    assert!(targets.lines().any(|t| t == "x-special/gnome-copied-files") && targets.lines().any(|t| t == "text/uri-list"), "{targets}");
+    assert_eq!(paste("x-special/gnome-copied-files"), format!("copy\n{}\n{}", uri(&files[0]), uri(&files[1])));
+    assert_eq!(paste("text/uri-list"), format!("{}\r\n{}\r\n", uri(&files[0]), uri(&files[1])));
+    assert_eq!(paste("UTF8_STRING"), format!("{}\n{}", files[0].display(), files[1].display()));
+    let _ = std::fs::remove_dir_all(dir);
+}

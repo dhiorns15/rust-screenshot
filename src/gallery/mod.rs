@@ -12,6 +12,8 @@ mod desktop_tests;
 #[cfg(not(windows))]
 mod pick_area;
 #[cfg(not(windows))]
+mod file_clipboard;
+#[cfg(not(windows))]
 mod portal;
 #[cfg(not(windows))]
 mod recorder;

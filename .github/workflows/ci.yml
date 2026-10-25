@@ -37,13 +37,13 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 fonts-dejavu-core fontconfig tesseract-ocr \
             gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-pipewire \
-            dbus pipewire pipewire-bin wireplumber xdg-desktop-portal
+            dbus pipewire pipewire-bin wireplumber xdg-desktop-portal xvfb xclip
           rustup component add clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      # Recording and the background icon against real desktop services (xdg-desktop-portal,
-      # PipeWire), with stand-ins for GNOME's picker, the panel and notifications.
+      # Recording, the background icon and copying files against real desktop services
+      # (xdg-desktop-portal, PipeWire, Xvfb), with stand-ins for GNOME's picker, the panel and notifications.
       - run: ci/desktop-test.sh
       # Random input against the editor for a while; the log prints the seed to replay a failure.
       - run: cargo test panic_hunt_long -- --ignored --nocapture
@@ -72,7 +72,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends build-essential curl ca-certificates \
             gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-pipewire \
-            dbus pipewire pipewire-bin wireplumber xdg-desktop-portal
+            dbus pipewire pipewire-bin wireplumber xdg-desktop-portal xvfb xclip
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - run: rustup show active-toolchain || rustup toolchain install
