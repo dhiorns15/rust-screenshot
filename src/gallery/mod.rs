@@ -190,7 +190,8 @@ struct App {
     last_scan: Instant,
     filter: String,
     thumbs: HashMap<PathBuf, (SystemTime, TextureHandle)>,
-    requested: HashSet<PathBuf>,
+    /// Thumbnails asked for, as of the file's modified time.
+    requested: HashMap<PathBuf, SystemTime>,
     thumb_tx: Sender<(PathBuf, SystemTime)>,
     thumb_rx: Receiver<(PathBuf, SystemTime, Option<ColorImage>)>,
     editor: Option<Editor>,
@@ -222,6 +223,9 @@ struct App {
     dock: Dock,
     /// What's known about each listed screenshot for search (see `search`).
     metas: HashMap<PathBuf, search::Meta>,
+    /// When each one's meta file last changed, so a change made elsewhere (the automatic pusher
+    /// noting a link) is read again.
+    meta_times: HashMap<PathBuf, Option<SystemTime>>,
     /// Screenshots waiting for their text to be read, and the reader's channels.
     reading: HashSet<PathBuf>,
     read_tx: Option<Sender<PathBuf>>,
@@ -274,7 +278,7 @@ impl App {
             last_scan: Instant::now(),
             filter: String::new(),
             thumbs: HashMap::new(),
-            requested: HashSet::new(),
+            requested: HashMap::new(),
             thumb_tx,
             thumb_rx,
             editor: None,
@@ -295,6 +299,7 @@ impl App {
             anchor: None,
             dock: Dock::from_setting(env.setting(Dock::SETTING)),
             metas: HashMap::new(),
+            meta_times: HashMap::new(),
             reading: HashSet::new(),
             read_tx: None,
             read_rx: None,
@@ -341,8 +346,13 @@ impl App {
             doc::prune_layers(&self.env.dir);
         }
         self.metas.retain(|path, _| listed.contains(path.as_path()));
+        self.meta_times.retain(|path, _| listed.contains(path.as_path()));
         for e in &entries {
-            self.metas.entry(e.path.clone()).or_insert_with(|| search::load(&e.path));
+            let changed = search::meta_path(&e.path).and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+            if !self.metas.contains_key(&e.path) || self.meta_times.get(&e.path) != Some(&changed) {
+                self.metas.insert(e.path.clone(), search::load(&e.path));
+                self.meta_times.insert(e.path.clone(), changed);
+            }
         }
         self.entries = entries;
         self.read_new_text();
@@ -581,7 +591,8 @@ impl App {
             }
         }
         while let Ok((path, modified, thumb)) = self.thumb_rx.try_recv() {
-            // Files that can't be read stay "requested", so they aren't retried every frame.
+            // Files that can't be read stay "requested", so they're retried only once they change
+            // (a recording caught while it was still being written), not every frame.
             if let Some(thumb) = thumb {
                 self.requested.remove(&path);
                 let tex = ctx.load_texture(path.to_string_lossy(), thumb, TextureOptions::LINEAR);

@@ -418,6 +418,19 @@ fn pushes_the_open_screenshot_and_copies_its_link() {
 }
 
 #[test]
+fn shows_links_pushed_by_the_automatic_pusher() {
+    let (mut h, immich) = with_destination("kittest-push-elsewhere");
+    let b = h.state().env.dir.join("Screenshot b.png");
+    // As the automatic pusher does, from the tray app, after the library has listed it.
+    super::search::record_push(&b, &immich.id, Some("https://example.com/b".into())).unwrap();
+    h.state_mut().rescan();
+    h.get_by_label("Screenshot b").click_secondary();
+    settle(&mut h);
+    click(&mut h, &format!("{}  Copy link (Immich)", icon::LINK));
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some("https://example.com/b"));
+}
+
+#[test]
 fn pushes_the_selected_ones_and_says_what_failed() {
     let (mut h, _) = with_destination("kittest-push-several");
     click(&mut h, "Screenshot a");

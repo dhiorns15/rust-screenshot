@@ -353,7 +353,7 @@ impl App {
                 if entry.video {
                     painter.text(thumb_area.center(), Align2::CENTER_CENTER, "▶", egui::FontId::proportional(36.0), Color32::from_gray(170));
                 }
-                if self.requested.insert(entry.path.clone()) {
+                if self.requested.insert(entry.path.clone(), entry.modified) != Some(entry.modified) {
                     let _ = self.thumb_tx.send((entry.path.clone(), entry.modified));
                 }
             }
