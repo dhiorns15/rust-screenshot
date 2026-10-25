@@ -452,9 +452,35 @@ fn push_waits_for_edits_to_be_saved() {
     let (mut h, _) = with_destination("kittest-push-edited");
     drag_on_canvas(&mut h, (0.3, 0.3), (0.6, 0.6));
     assert!(h.state().dirty());
+    let open = h.state().editor.as_ref().unwrap().doc.path.file_stem().unwrap().to_string_lossy().into_owned();
     h.get_by_label_contains("Export").click();
     settle(&mut h);
     assert!(h.get_by_label_contains("Push to").accesskit_node().is_disabled());
+    h.key_press(egui::Key::Escape);
+    settle(&mut h);
+
+    // Nor from the library's menu, for it alone or with others.
+    h.get_by_label(&open).click_secondary();
+    settle(&mut h);
+    assert!(h.get_by_label_contains("Push to").accesskit_node().is_disabled());
+    h.key_press(egui::Key::Escape);
+    settle(&mut h);
+    let other = if open == "Screenshot b" { "Screenshot c" } else { "Screenshot b" };
+    click(&mut h, &open);
+    h.get_by_label(other).click_modifiers(Modifiers::COMMAND);
+    settle(&mut h);
+    h.get_by_label(other).click_secondary();
+    settle(&mut h);
+    assert!(h.get_by_label_contains("Push to (2)").accesskit_node().is_disabled());
+    h.key_press(egui::Key::Escape);
+    settle(&mut h);
+
+    // Another one, not open, can still go.
+    h.get_by_label(other).click_modifiers(Modifiers::COMMAND);
+    settle(&mut h);
+    h.get_by_label(other).click_secondary();
+    settle(&mut h);
+    assert!(!h.get_by_label_contains("Push to").accesskit_node().is_disabled());
 }
 
 /// The library with a 2-second GIF recording, the newest file, besides the screenshots.

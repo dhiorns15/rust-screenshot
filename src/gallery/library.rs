@@ -397,7 +397,10 @@ impl App {
             }
             ui.separator();
             let push = if many { format!("Push to ({})", self.selected.len()) } else { "Push to".into() };
-            ui.menu_button(theme::label(icon::CLOUD_ARROW_UP, &push), |ui| {
+            // What's pushed is the file, so the open one waits for its edits to be saved, as in Export.
+            let open = self.editor.as_ref().filter(|e| e.doc.dirty()).map(|e| &e.doc.path);
+            let unsaved = open.is_some_and(|open| *open == path || (many && self.selected.contains(open)));
+            ui.add_enabled_ui(!unsaved, |ui| ui.menu_button(theme::label(icon::CLOUD_ARROW_UP, &push), |ui| {
                 let destinations = crate::push::load(&self.env);
                 if destinations.is_empty() && ui.button("Set up places to push to…").clicked() {
                     self.env.open_settings();
@@ -409,7 +412,9 @@ impl App {
                         ui.close();
                     }
                 }
-            });
+            }))
+            .response
+            .on_disabled_hover_text("Save your edits first, so they go too");
             if !many {
                 for (name, link) in self.links(&path) {
                     if ui.button(theme::label(icon::LINK, &format!("Copy link ({name})"))).clicked() {
