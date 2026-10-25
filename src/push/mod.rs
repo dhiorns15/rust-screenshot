@@ -179,8 +179,8 @@ impl Destination {
             Kind::WebDav { url, user, public_url } => {
                 address(url, "the folder's address").or_else(|| required(user, "the user name")).or_else(|| public(public_url))
             }
-            Kind::S3 { endpoint, region, bucket, access_key, public_url, .. } => address(endpoint, "the endpoint")
-                .or_else(|| required(region, "the region"))
+            // No region is fine: it's worked out from the endpoint (s3::region).
+            Kind::S3 { endpoint, bucket, access_key, public_url, .. } => address(endpoint, "the endpoint")
                 .or_else(|| required(bucket, "the bucket's name"))
                 .or_else(|| required(access_key, "the access key"))
                 .or_else(|| public(public_url)),
@@ -229,7 +229,7 @@ pub fn test(destination: &Destination, secret: Option<&str>) -> Result<String, S
         Kind::Sftp { host, port, user, folder, .. } => sftp::test(&sftp::Server { host, port: *port, user, folder }),
         Kind::WebDav { url, user, .. } => webdav::test(&webdav::Folder { url, user, password: secret }),
         Kind::S3 { endpoint, region, bucket, access_key, .. } => {
-            s3::test(&s3::Bucket { endpoint, region, bucket, access_key, secret_key: secret })
+            s3::test(&s3::Bucket { endpoint, region: &s3::region(endpoint, region), bucket, access_key, secret_key: secret })
         }
         Kind::Discord {} => discord::test(secret),
         Kind::Immich { server } => immich::test(server, secret),
@@ -252,7 +252,7 @@ pub fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Res
         Kind::S3 { endpoint, region, bucket, prefix, access_key, public_url } => {
             let prefix = prefix.trim_matches('/');
             let key = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
-            s3::put(&s3::Bucket { endpoint, region, bucket, access_key, secret_key: secret }, &key, file)?;
+            s3::put(&s3::Bucket { endpoint, region: &s3::region(endpoint, region), bucket, access_key, secret_key: secret }, &key, file)?;
             Ok(link(public_url, &key))
         }
         Kind::Discord {} => discord::post(secret, file),
@@ -555,7 +555,9 @@ mod tests {
 
         let mut d = filled(Kind::s3());
         d.kind = Kind::S3 { endpoint: "https://e".into(), region: "".into(), bucket: "b".into(), prefix: "".into(), access_key: "k".into(), public_url: "".into() };
-        assert_eq!(d.problems().as_deref(), Some("Enter the region"));
+        assert_eq!(d.problems(), None, "the region comes from the endpoint");
+        d.kind = Kind::S3 { endpoint: "https://e".into(), region: "".into(), bucket: "".into(), prefix: "".into(), access_key: "k".into(), public_url: "".into() };
+        assert_eq!(d.problems().as_deref(), Some("Enter the bucket's name"));
     }
 
     #[test]

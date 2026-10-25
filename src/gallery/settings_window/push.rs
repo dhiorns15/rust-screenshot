@@ -98,7 +98,7 @@ fn fields(kind: &mut Kind) -> Vec<Field<'_>> {
         ],
         Kind::S3 { endpoint, region, bucket, prefix, access_key, public_url } => vec![
             field("Endpoint", "https://s3.us-east-1.amazonaws.com", endpoint),
-            field("Region", "us-east-1 (auto for Cloudflare R2)", region),
+            field("Region", "Optional: taken from the endpoint", region),
             field("Bucket", "", bucket),
             field("Folder in the bucket", "Optional", prefix),
             field("Access key", "", access_key),
@@ -349,13 +349,12 @@ impl SettingsApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let problem = form.problem();
-                let button = ui.add_enabled(problem.is_none() && !busy, theme::primary_button(if busy { "Saving…" } else { "Save" }));
-                let button = match &problem {
-                    Some(problem) => button.on_disabled_hover_text(problem),
-                    None => button,
-                };
-                save = button.clicked();
+                save = ui.add_enabled(problem.is_none() && !busy, theme::primary_button(if busy { "Saving…" } else { "Save" })).clicked();
                 cancel = ui.button("Cancel").clicked();
+                // Why Save can't be pressed yet, where it's seen rather than only on hover.
+                if let Some(problem) = problem {
+                    ui.label(RichText::new(problem).small().color(muted));
+                }
             });
         });
         if cancel {

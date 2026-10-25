@@ -313,7 +313,7 @@ tried again after a minute, five minutes and half an hour, then reported with a 
 |---|---|---|
 | SFTP | The server, its port and the folder; a user name unless `~/.ssh/config` gives one. It signs in with your SSH keys and ssh-agent, through the system's OpenSSH (built into Windows 10 and 11; `openssh-client` on Linux), so RSnip never stores an SSH password. A server it hasn't met is remembered; one whose key has changed is refused | With a public address for the folder |
 | WebDAV | The folder's address (Nextcloud: `https://<server>/remote.php/dav/files/<user>/<folder>`), user name and password (an app password, where the server has them). Missing folders are made | With a public address for the folder |
-| S3-compatible | Endpoint (`https://s3.<region>.amazonaws.com`, `https://<account>.r2.cloudflarestorage.com`, Backblaze B2's or Wasabi's S3 endpoint, MinIO's address), region (`auto` for R2), bucket, an optional folder in it, and an access key ID and secret | With a public address for the bucket |
+| S3-compatible | Endpoint (`https://s3.<region>.amazonaws.com`, `https://<account>.r2.cloudflarestorage.com`, Backblaze B2's or Wasabi's S3 endpoint, MinIO's address), region (optional: taken from the endpoint, `auto` for R2), bucket, an optional folder in it, and an access key ID and secret | With a public address for the bucket |
 | Discord | A channel's webhook: *Server Settings → Integrations → Webhooks → Copy Webhook URL*. Files up to Discord's limit (10 MB without a server boost) | The attachment |
 | Immich | The server's address and an API key (*Account Settings → API Keys*; it needs to upload, and to read the user for *Test*) | The photo in Immich |
 

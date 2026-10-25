@@ -20,6 +20,24 @@ pub struct Bucket<'a> {
     pub secret_key: &'a str,
 }
 
+/// The region to sign for: the one given, else the one in the endpoint's name
+/// ("s3.us-east-005.backblazeb2.com", "s3.eu-west-1.amazonaws.com"), "auto" for Cloudflare R2, and
+/// otherwise "us-east-1", which MinIO and most others take.
+pub fn region(endpoint: &str, given: &str) -> String {
+    if !given.trim().is_empty() {
+        return given.trim().to_owned();
+    }
+    let host = authority(endpoint.trim()).unwrap_or_default().split(':').next().unwrap_or_default().to_ascii_lowercase();
+    let labels: Vec<&str> = host.split('.').collect();
+    if host.ends_with(".r2.cloudflarestorage.com") {
+        "auto".into()
+    } else if labels.len() >= 4 && labels[0] == "s3" {
+        labels[1].into()
+    } else {
+        "us-east-1".into()
+    }
+}
+
 /// The SHA-256 of nothing, for requests without a body.
 const EMPTY: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -154,6 +172,18 @@ mod tests {
             authorization(&b, "GET", "/test.txt", "", &headers, EMPTY, "20130524T000000Z"),
             "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, SignedHeaders=host;range;x-amz-content-sha256;x-amz-date, Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"
         );
+    }
+
+    #[test]
+    fn region_comes_from_the_endpoint_unless_given() {
+        assert_eq!(region("https://s3.us-east-005.backblazeb2.com", ""), "us-east-005");
+        assert_eq!(region("https://s3.eu-west-1.amazonaws.com/", " "), "eu-west-1");
+        assert_eq!(region("https://S3.EU-Central-1.wasabisys.com", ""), "eu-central-1");
+        assert_eq!(region("https://abc123.r2.cloudflarestorage.com", ""), "auto");
+        assert_eq!(region("https://s3.amazonaws.com", ""), "us-east-1");
+        assert_eq!(region("http://192.168.1.5:9000", ""), "us-east-1");
+        assert_eq!(region("http://minio:9000", ""), "us-east-1");
+        assert_eq!(region("https://s3.us-east-005.backblazeb2.com", " eu-west-2 "), "eu-west-2");
     }
 
     #[test]
