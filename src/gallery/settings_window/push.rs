@@ -5,13 +5,14 @@
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::Receiver;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{self, Color32, RichText, Ui};
 
 use super::{row, SettingsApp};
 use crate::gallery::env::{PickedFolder, TrayRequest};
 use crate::gallery::theme;
+use crate::push::history::{self, Entry};
 use crate::push::{self, Destination, Kind};
 
 type Answer<T> = Receiver<Result<T, String>>;
@@ -28,6 +29,8 @@ pub struct PushState {
     forgetting: Vec<Answer<()>>,
     /// A ShareX uploader file being chosen, to import.
     importing: Option<PickedFolder>,
+    /// The push history, and when it was read.
+    history: Option<(Instant, Vec<Entry>)>,
 }
 
 enum Test {
@@ -206,6 +209,37 @@ impl SettingsApp {
         if let Some(action) = action {
             self.apply(ui, list, action);
         }
+        self.recent(ui);
+    }
+
+    /// The latest pushes, by hand and automatic, read again every few seconds while shown: the
+    /// automatic pusher may be in another process.
+    fn recent(&mut self, ui: &mut Ui) {
+        if self.push.history.as_ref().is_none_or(|(read, _)| read.elapsed() > Duration::from_secs(2)) {
+            self.push.history = Some((Instant::now(), history::load(&self.env.history_file)));
+        }
+        ui.ctx().request_repaint_after(Duration::from_secs(2));
+        let Some((_, entries)) = &self.push.history else { return };
+        if entries.is_empty() {
+            return;
+        }
+        let (muted, now) = (theme::palette(ui).muted, history::now());
+        ui.add_space(6.0);
+        ui.label(RichText::new("Recent pushes").strong());
+        theme::card(ui, |ui| {
+            for (i, e) in entries.iter().take(10).enumerate() {
+                if i > 0 {
+                    ui.separator();
+                }
+                ui.label(format!("{} to {}", e.file, e.name));
+                let how = if e.auto { "automatically" } else { "by hand" };
+                let (text, color) = match &e.error {
+                    None => (format!("Pushed {how}, {}", history::ago(e.at, now)), muted),
+                    Some(error) => (format!("Failed {}: {error}", history::ago(e.at, now)), error_color()),
+                };
+                ui.add(egui::Label::new(RichText::new(text).small().color(color)).wrap());
+            }
+        });
     }
 
     /// Opens the form for a new destination, or asks for the ShareX file to make it from.

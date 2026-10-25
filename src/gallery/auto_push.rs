@@ -79,6 +79,7 @@ fn run_once(tries: &mut Tries, now: SystemTime, notify: &dyn Fn(&str, &str)) {
         for file in due {
             let result = secret.clone().and_then(|secret| push::push(destination, secret.as_deref(), &file));
             let result = result.and_then(|link| search::record_push(&file, &destination.id, link));
+            push::history::record(&push::history::file(), &push::history::Entry::new(destination, &file, true, result.clone().err()));
             match result {
                 Ok(()) => {
                     tries.0.remove(&(destination.id.clone(), file));

@@ -7,6 +7,7 @@
 mod custom;
 mod discord;
 mod ftps;
+pub mod history;
 mod immich;
 mod photoprism;
 mod s3;

@@ -41,6 +41,8 @@ pub struct Env {
     pub read_words: Option<ReadWords>,
     /// Where crash reports are written (see `crash`).
     pub crash_dir: PathBuf,
+    /// What was pushed where (see `push::history`).
+    pub history_file: PathBuf,
     settings: Store,
     #[cfg_attr(not(test), allow(dead_code))]
     sandbox: Option<RefCell<Sandbox>>,
@@ -147,6 +149,7 @@ impl Env {
             ocr: platform::ocr(),
             read_words: platform::read_words(),
             crash_dir: crate::crash::dir(),
+            history_file: crate::push::history::file(),
             settings: Store::Platform,
             sandbox: None,
         }
@@ -166,6 +169,7 @@ impl Env {
         Env {
             request_file: dir.join("request.txt"),
             crash_dir: dir.join("crashes"),
+            history_file: dir.join("push-history.jsonl"),
             dir,
             check_updates: false,
             tray_app: cfg!(windows),
@@ -518,12 +522,12 @@ impl Env {
                     s.borrow_mut().pushed.push((destination.name.clone(), file.clone()));
                     let name = file.file_name().unwrap_or_default().to_string_lossy();
                     let result = s.borrow().push_result.clone().unwrap_or_else(|| Ok(Some(format!("https://example.com/{name}"))));
-                    let _ = tx.send(outcome(&destination.id, file, result));
+                    let _ = tx.send(outcome(destination, &self.history_file, file, result));
                 }
                 let _ = tx.send(PushEvent::Done);
             }
             None => {
-                let (ctx, destination) = (ctx.clone(), destination.clone());
+                let (ctx, destination, history) = (ctx.clone(), destination.clone(), self.history_file.clone());
                 std::thread::spawn(move || {
                     // The keyring may ask to be unlocked first, here rather than on the UI thread.
                     let secret = saved_secret(&destination, None);
@@ -531,7 +535,7 @@ impl Env {
                         let _ = tx.send(PushEvent::Pushing(i));
                         ctx.request_repaint();
                         let result = secret.clone().and_then(|secret| crate::push::push(&destination, secret.as_deref(), &file));
-                        let _ = tx.send(outcome(&destination.id, file, result));
+                        let _ = tx.send(outcome(&destination, &history, file, result));
                     }
                     let _ = tx.send(PushEvent::Done);
                     ctx.request_repaint();
@@ -615,9 +619,12 @@ impl Env {
     }
 }
 
-/// What pushing `file` to the destination `id` came to, noted in its search data if it went.
-fn outcome(id: &str, file: PathBuf, result: Result<Option<String>, String>) -> PushEvent {
-    match result.and_then(|link| super::search::record_push(&file, id, link.clone()).map(|()| link)) {
+/// What pushing `file` to `destination` came to, noted in its search data if it went, and in the
+/// push history either way.
+fn outcome(destination: &Destination, history: &Path, file: PathBuf, result: Result<Option<String>, String>) -> PushEvent {
+    let result = result.and_then(|link| super::search::record_push(&file, &destination.id, link.clone()).map(|()| link));
+    crate::push::history::record(history, &crate::push::history::Entry::new(destination, &file, false, result.clone().err()));
+    match result {
         Ok(link) => PushEvent::Pushed(file, link),
         Err(e) => PushEvent::Failed(file, e),
     }

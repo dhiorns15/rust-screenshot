@@ -596,6 +596,20 @@ fn a_custom_uploader_may_have_no_token() {
 }
 
 #[test]
+fn recent_pushes_say_what_went_and_what_failed() {
+    use crate::push::history::{self, Entry};
+    let mut h = settings("settings-push-recent", |_| {});
+    let file = h.state().env.history_file.clone();
+    let d = crate::push::Destination { name: "Photos".into(), ..crate::push::Destination::new(crate::push::Kind::immich()) };
+    history::record(&file, &Entry::new(&d, Path::new("/s/a.png"), true, None));
+    history::record(&file, &Entry::new(&d, Path::new("/s/b.png"), false, Some("Immich didn't accept the API key".into())));
+    open(&mut h, Section::Destinations);
+    assert!(h.query_by_label("Recent pushes").is_some());
+    assert!(h.query_by_label("a.png to Photos").is_some() && h.query_by_label("Pushed automatically, just now").is_some());
+    assert!(h.query_by_label("Failed just now: Immich didn't accept the API key").is_some());
+}
+
+#[test]
 fn removing_asks_first_and_forgets_the_secret() {
     let mut h = settings("settings-push-remove", |_| {});
     add_webdav(&mut h);

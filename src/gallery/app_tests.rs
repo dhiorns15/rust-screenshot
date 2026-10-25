@@ -408,6 +408,8 @@ fn pushes_the_open_screenshot_and_copies_its_link() {
     assert!(h.query_by_label_contains("Pushed to Immich, link copied").is_some());
     let pushed = &super::search::load(&open).pushed[&immich.id];
     assert_eq!(pushed.link.as_deref(), Some("https://example.com/Screenshot a.png"), "noted beside it");
+    let recent = crate::push::history::load(&h.state().env.history_file);
+    assert_eq!((recent[0].file.as_str(), recent[0].auto, recent[0].error.as_deref()), ("Screenshot a.png", false, None), "and in the history");
 
     // And its link can be copied again later, from the library.
     h.state().env.sandboxed().copied = None;
@@ -458,6 +460,8 @@ fn pushes_the_selected_ones_and_says_what_failed() {
     assert!(h.query_by_label_contains("Couldn't push to Immich: Immich didn't accept the API key").is_some());
     let b = h.state().env.dir.join("Screenshot b.png");
     assert!(super::search::load(&b).pushed.is_empty());
+    let recent = crate::push::history::load(&h.state().env.history_file);
+    assert_eq!(recent[0].error.as_deref(), Some("Immich didn't accept the API key"), "the history says why");
 }
 
 #[test]
