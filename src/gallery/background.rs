@@ -235,7 +235,10 @@ fn finish(active: Option<Active>) {
         Ok(recorded) => {
             let name = recorded.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let note = recorded.note.map_or(String::new(), |n| format!(" {n}"));
-            notify("Recording saved", &format!("{name} is in your screenshots folder.{note}"));
+            // Copied as a file, as on Windows, to paste straight into a chat or email. This thread
+            // lasts as long as the icon, so the clipboard has it to give.
+            let detail = if super::platform::copy_files(std::slice::from_ref(&recorded.path)).is_ok() { "copied as a file" } else { "in your screenshots folder" };
+            notify("Recording saved", &format!("{name}: {detail}.{note}"));
         }
         Err(e) => notify("Couldn't save the recording", &e),
     }

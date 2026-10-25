@@ -58,8 +58,9 @@ The desktop's tool keeps saving to the Pictures folder's `Screenshots`, so RSnip
 screenshot from there into its folder as it's taken (*Bring in the desktop's screenshots*, in the
 same place; the background icon or the library does it). Reading the text in screenshots (to copy it, or
 to search by it) uses [Tesseract](https://github.com/tesseract-ocr/tesseract) when it's installed
-(`tesseract-ocr` on Debian and Ubuntu; the installer's check recommends it). Pinning, copying as
-files and dragging files out are Windows-only.
+(`tesseract-ocr` on Debian and Ubuntu; the installer's check recommends it). Copying as files
+(screenshots, recordings, several from the library) works as on Windows, to paste into a folder,
+chat or email; pinning and dragging files out are Windows-only.
 
 **Recording on Linux**: from RSnip's icon in the top bar or panel, choose *Record an area…* or
 *Record screen or window…* (or the same from RSnip's app-menu entry, or run `rsnip --record` /
@@ -67,7 +68,8 @@ files and dragging files out are Windows-only.
 Your desktop asks which screen or window to share, as it does for screen sharing in a browser; for
 an area, RSnip then shows that screen to drag over. The icon gets a red dot while recording: click
 it (or *Stop recording*, or run the command again) to finish. The recording is saved to RSnip's
-folder in the format set in Settings → Recording, and a notification says so. Recordings use
+folder in the format set in Settings → Recording and copied as a file, ready to paste, and a
+notification says so. Recordings use
 [GStreamer](https://gstreamer.freedesktop.org/) with its PipeWire plugin, as the desktop's own
 recorder does:
 

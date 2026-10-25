@@ -114,6 +114,8 @@ pub struct Sandbox {
     pub restarts: usize,
     /// The text last put on the clipboard.
     pub copied: Option<String>,
+    /// The files last put on the clipboard.
+    pub copied_files: Vec<PathBuf>,
     /// Files, folders and links opened in other apps.
     pub opened: Vec<PathBuf>,
     /// Files shown in their folder in the file manager.
@@ -432,6 +434,17 @@ impl Env {
                 Ok(())
             }
             None => platform::copy_text(text),
+        }
+    }
+
+    /// Puts files on the clipboard, to paste into a folder, chat or email.
+    pub fn copy_files(&self, paths: &[PathBuf]) -> Result<(), String> {
+        match &self.sandbox {
+            Some(s) => {
+                s.borrow_mut().copied_files = paths.to_vec();
+                Ok(())
+            }
+            None => platform::copy_files(paths),
         }
     }
 

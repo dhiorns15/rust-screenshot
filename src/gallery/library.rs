@@ -387,7 +387,7 @@ impl App {
             } else {
                 &["Open in default app", "Show in folder", "Pin to screen", "Copy as files", "Delete"]
             };
-            let windows_only = ["Copy as files", "Pin to screen"];
+            let windows_only = ["Pin to screen"];
             for &label in labels.iter().filter(|l| platform::EXTRAS || !windows_only.contains(l)) {
                 let text = if many && label != "Pin to screen" { format!("{label} ({})", self.selected.len()) } else { label.to_string() };
                 if ui.button(text).clicked() {
@@ -457,7 +457,7 @@ impl App {
         let paths: Vec<PathBuf> = self.entries.iter().map(|e| e.path.clone()).filter(|p| self.selected.contains(p)).collect();
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{} selected", paths.len())).strong());
-            if platform::EXTRAS && ui.small_button("Copy as files").on_hover_text("Paste them into a folder, chat or email").clicked() {
+            if ui.small_button("Copy as files").on_hover_text("Paste them into a folder, chat or email").clicked() {
                 self.copy_files(&paths);
             }
             if ui.small_button("Delete").on_hover_text("Move them to the Recycle Bin").clicked() {
@@ -470,7 +470,7 @@ impl App {
     }
 
     fn copy_files(&mut self, paths: &[PathBuf]) {
-        match platform::copy_files(paths) {
+        match self.env.copy_files(paths) {
             Ok(()) if paths.len() == 1 => self.set_status("Copied the file"),
             Ok(()) => self.set_status(format!("Copied {} files", paths.len())),
             Err(e) => self.set_status(e),

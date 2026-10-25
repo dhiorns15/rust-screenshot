@@ -12,7 +12,7 @@ use image::RgbaImage;
 
 use super::super::system_info::{self, Host};
 
-/// Pinning, copying as files and dragging files out are Windows-only.
+/// Pinning and dragging files out are Windows-only.
 pub const EXTRAS: bool = false;
 const NOT_HERE: &str = "Not available on this system";
 
@@ -314,8 +314,9 @@ pub fn copy_text(text: &str) -> Result<(), String> {
     with_clipboard(|c| c.set_text(text))
 }
 
-pub fn copy_files(_paths: &[PathBuf]) -> Result<(), String> {
-    Err(NOT_HERE.into())
+/// Puts files on the clipboard (as `text/uri-list`), to paste into a folder, chat or email.
+pub fn copy_files(paths: &[PathBuf]) -> Result<(), String> {
+    with_clipboard(|c| c.set().file_list(paths))
 }
 
 pub fn open(path: &Path) {

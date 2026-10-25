@@ -505,7 +505,7 @@ impl App {
         let result = std::fs::create_dir_all(&dir)
             .map_err(|e| e.to_string())
             .and_then(|()| img.save_with_format(&path, image::ImageFormat::Png).map_err(|e| e.to_string()))
-            .and_then(|()| platform::copy_files(&[path]));
+            .and_then(|()| self.env.copy_files(&[path]));
         match result {
             Ok(()) => self.set_status("Copied as a file — paste it into a folder, chat or email"),
             Err(e) => self.set_status(format!("Couldn't copy: {e}")),
@@ -814,10 +814,9 @@ impl App {
         });
         let save = theme::primary_button(theme::label(icon::FLOPPY_DISK, "Save"));
         ui.add_enabled(false, save).on_disabled_hover_text("Recordings aren't changed here. Trim saves the part you keep as a new recording");
-        let copy = ui.add_enabled(platform::EXTRAS, egui::Button::new(theme::label(icon::COPY, "Copy")));
-        let copy = copy.on_hover_text("Copy the recording as a file, to paste into a folder, chat or email").on_disabled_hover_text("Copying recordings isn't available on Linux yet; Export → Show in folder finds the file");
-        if copy.clicked() {
-            match platform::copy_files(&[path.to_owned()]) {
+        let copy = ui.button(theme::label(icon::COPY, "Copy"));
+        if copy.on_hover_text("Copy the recording as a file, to paste into a folder, chat or email").clicked() {
+            match self.env.copy_files(&[path.to_owned()]) {
                 Ok(()) => self.set_status("Copied as a file — paste it into a folder, chat or email"),
                 Err(e) => self.set_status(format!("Couldn't copy: {e}")),
             }
@@ -963,12 +962,10 @@ impl App {
             self.save_jpg();
             ui.close();
         }
-        if platform::EXTRAS {
-            let as_file = ui.button(theme::label(icon::PAPERCLIP, "Copy as file"));
-            if as_file.on_hover_text("Paste it into a folder, chat or email as an attachment").clicked() {
-                self.copy_as_file();
-                ui.close();
-            }
+        let as_file = ui.button(theme::label(icon::PAPERCLIP, "Copy as file"));
+        if as_file.on_hover_text("Paste it into a folder, chat or email as an attachment").clicked() {
+            self.copy_as_file();
+            ui.close();
         }
         if ui.button(theme::label(icon::FOLDER_OPEN, "Show in folder")).clicked() {
             if let Some(editor) = &self.editor {

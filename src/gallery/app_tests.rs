@@ -135,9 +135,13 @@ fn export_menu_offers_what_this_system_supports() {
     settle(&mut h);
     assert!(h.query_by_label_contains("Save copy…").is_some());
     assert!(h.query_by_label_contains("Save copy as JPG").is_some());
-    for windows_only in ["Copy as file", "Pin to screen"] {
-        assert_eq!(h.query_by_label_contains(windows_only).is_some(), cfg!(windows), "{windows_only}");
-    }
+    assert_eq!(h.query_by_label_contains("Pin to screen").is_some(), cfg!(windows), "Windows only");
+    h.get_by_label_contains("Copy as file").click();
+    settle(&mut h);
+    let copied = h.state().env.sandboxed().copied_files.clone();
+    assert!(copied.len() == 1 && copied[0].extension().is_some_and(|e| e == "png"), "the edited image as a PNG: {copied:?}");
+    h.get_by_label_contains("Export").click();
+    settle(&mut h);
     assert!(h.query_by_label_contains("Copy text (OCR)").is_some(), "wherever text can be read");
     h.get_by_label_contains("Show in folder").click();
     settle(&mut h);
@@ -540,6 +544,21 @@ fn recordings_play_in_the_library() {
 }
 
 #[test]
+fn the_library_copies_files_on_every_system() {
+    let mut h = harness("kittest-copy-files");
+    click(&mut h, "Screenshot a");
+    h.get_by_label("Screenshot c").click_modifiers(Modifiers::COMMAND);
+    settle(&mut h);
+    h.get_by_label("Screenshot c").click_secondary();
+    settle(&mut h);
+    h.get_by_label("Copy as files (2)").click();
+    settle(&mut h);
+    let names: Vec<String> = h.state().env.sandboxed().copied_files.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    assert_eq!(names, ["Screenshot a.png", "Screenshot c.png"]);
+    assert!(h.query_by_label("Copied 2 files").is_some());
+}
+
+#[test]
 fn recordings_are_saved_elsewhere_copied_and_shown_in_their_folder() {
     let (mut h, gif) = with_recording("kittest-recording-actions");
     click(&mut h, "Recording z");
@@ -548,7 +567,10 @@ fn recordings_are_saved_elsewhere_copied_and_shown_in_their_folder() {
     h.state().env.sandboxed().picked_folder = Some(elsewhere.clone());
     let off = |h: &Harness<App>, name: &str| h.get_by_label(name).accesskit_node().is_disabled();
     assert!(off(&h, &super::theme::label(icon::FLOPPY_DISK, "Save")), "nothing to save: Trim saves its own copy");
-    assert_eq!(off(&h, &super::theme::label(icon::COPY, "Copy")), cfg!(not(windows)), "copied as a file, where RSnip can");
+    h.get_by_label(&super::theme::label(icon::COPY, "Copy")).click();
+    settle(&mut h);
+    assert_eq!(h.state().env.sandboxed().copied_files, std::slice::from_ref(&gif), "copied as a file, on Linux too");
+    assert!(h.query_by_label_contains("Copied as a file").is_some());
 
     h.get_by_label_contains("Export").click();
     settle(&mut h);
