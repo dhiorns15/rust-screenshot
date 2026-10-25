@@ -12,7 +12,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Installs the toolchain pinned in rust-toolchain.toml.
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -27,18 +27,18 @@ jobs:
 
   # GitHub shows a blank issue, not the form, when it can't read an issue form.
   issue-forms:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: python3 -c 'import sys, yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' .github/ISSUE_TEMPLATE/*.yml
 
   # The library and editor build on Linux too. This job also runs the pixel snapshot tests, in the
   # same environment as ci/Dockerfile (a software GPU and the DejaVu font), so they match locally.
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: rust:1.97.1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install the software GPU, fonts, Tesseract, GStreamer and desktop services (as in ci/Dockerfile)
         run: |
           apt-get update
@@ -56,7 +56,7 @@ jobs:
       - run: cargo test panic_hunt_long -- --ignored --nocapture
       - name: Upload snapshot differences
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: snapshot-diffs
           path: |
@@ -68,12 +68,12 @@ jobs:
   # where the linux job has Debian 13's PipeWire 1.4 and GStreamer 1.26. They behave differently
   # enough that passing on one says little about the other.
   desktop-ubuntu:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: ubuntu:24.04
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install a C linker, GStreamer, the desktop services and rustup
         run: |
           apt-get update
@@ -89,17 +89,17 @@ jobs:
   # Pushing to real S3, WebDAV, SFTP, FTPS and SMB servers, in Docker (ci/test-destinations.sh); the linux
   # job's container can't start containers of its own.
   destinations:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: ci/test-destinations.sh
 
   # The .deb and .rpm build, install with what they depend on and recommend on Ubuntu, Fedora and
   # openSUSE, and run (installer/linux/build-packages.sh, ci/test-packages.sh).
   packages:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2

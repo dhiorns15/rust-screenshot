@@ -15,7 +15,7 @@ jobs:
   release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The release notes list every commit since the previous tag.
           fetch-depth: 0
@@ -63,9 +63,11 @@ jobs:
 
   linux:
     needs: release
-    runs-on: ubuntu-latest
+    # Built on the oldest Ubuntu it's for: a program built against glibc 2.39 runs on every later
+    # one, not on earlier ones (ubuntu-latest moves on to newer Ubuntus).
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
@@ -92,7 +94,7 @@ jobs:
     if: ${{ !contains(github.ref_name, '-') }}
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: installer/update-test.ps1
         shell: pwsh
         env:

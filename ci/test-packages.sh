@@ -23,10 +23,13 @@ run() {
     docker run --rm -v "$PWD/target:/target:ro" "$1" sh -euxc "$2"
 }
 
-run ubuntu:24.04 "apt-get update -qq
+# The oldest Ubuntu it's for (it's built there, for glibc 2.39) and the newest.
+for ubuntu in ubuntu:24.04 ubuntu:26.04; do
+    run $ubuntu "apt-get update -qq
 apt-get install -y -qq -o APT::Install-Recommends=true /target/debian/$deb >/dev/null
 $works
 $h264"
+done
 # The container images leave out recommended packages unless asked; a desktop installs them.
 run fedora:latest "dnf install -y -q --setopt=install_weak_deps=True /target/generate-rpm/$rpm
 $works
