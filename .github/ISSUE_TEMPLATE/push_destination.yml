@@ -5,10 +5,10 @@ body:
   - type: markdown
     attributes:
       value: |
-        Already planned: Dropbox, Google Drive, OneDrive, Imgur, Box, Slack, Teams, Mattermost, SMB
-        shares, FTPS, Imgbb, Catbox, Gyazo, Streamable, PhotoPrism, Synology Photos and a custom
-        uploader (see the Roadmap in the README). A thumbs-up on an existing issue for one of these
-        helps us choose what's next.
+        Already planned: Dropbox, Google Drive, OneDrive, Imgur, Box, Teams, Gyazo, Streamable and
+        Synology Photos (see "Coming later" in the README). A thumbs-up on an existing issue for one
+        of these helps us choose what's next. Many hosts with an upload API already work as a custom
+        uploader (Settings → Push to → Add… → Custom uploader), or from their ShareX `.sxcu` file.
   - type: input
     id: service
     attributes:

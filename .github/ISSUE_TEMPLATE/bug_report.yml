@@ -35,7 +35,7 @@ body:
         - Editor
         - Video player and trimming
         - Library and search
-        - Push to (SFTP, WebDAV, S3, Discord, Immich)
+        - Push to other places (SFTP, S3, SMB, Slack, Immich, a custom uploader...)
         - Settings or shortcuts
         - Tray app or background icon
         - Updates or installing

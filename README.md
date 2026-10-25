@@ -16,6 +16,8 @@ your desktop's own tool (see [Linux](#linux)).
   ellipses, highlighter, blur, pixelate, redact, spotlight, pen, text, numbered steps and crop, with undo/redo. Everything stays
   selectable to move, resize, restyle or delete.
 - **Recordings play in the library**, and **trim** to a new file without re-encoding.
+- **Pushes to other places**, as they're saved or when you choose: SFTP, WebDAV, S3, SMB shares,
+  FTPS, Discord, Slack, Immich, PhotoPrism, or any upload API (ShareX `.sxcu` uploaders too).
 
 ## Download
 
@@ -216,7 +218,7 @@ Changes apply straight away.
 | Shortcuts | A shortcut for each action (region, all screens, last region, scrolling, record, text). *Change* asks you to press the new combination (Esc cancels); giving it a key another action has moves it. **Also take over Win+Shift+S** for a region capture. It warns if Windows' own Print Screen setting is on or two actions share a key |
 | Recording | MP4 or GIF; for MP4s, the frame rate (15, 24, 30 or 60) and codec (H.264 or H.265). On Linux: **Hide the library while recording**, and what's missing for recording |
 | Library & editor | **Save screenshots and recordings to**: RSnip's folder, which the library shows (`RSnip` in your user folder unless you choose another; copies of RSnip from before 0.5.3 keep the Pictures folder's `Screenshots`). After choosing another, Settings offers to move the screenshots and recordings in the previous folder there too, with their edits and search text. On Linux, **Bring in the desktop's screenshots** moves new ones from the desktop's screenshot tool into it; library on the left or along the bottom; **Read text in screenshots for search**; border and drop shadow on exports |
-| Push to | The places screenshots and recordings can be sent to: SFTP, WebDAV, S3-compatible storage, Discord and Immich. Each is pushed to **Automatically** as it's saved, or **By hand**; *Test* checks it, *Edit* changes it. Passwords, keys and webhook addresses are kept in Windows' Credential Manager, or the desktop's keyring on Linux, never in RSnip's settings |
+| Push to | The places screenshots and recordings can be sent to: SFTP, WebDAV, S3-compatible storage, SMB shares, FTPS, Discord, Slack, Immich, PhotoPrism and custom uploaders (any upload API; *Add… → Custom uploader from a ShareX file* imports a `.sxcu`). Each is pushed to **Automatically** as it's saved, or **By hand**; *Test* checks it, *Edit* changes it. Passwords, keys, tokens and webhook addresses are kept in Windows' Credential Manager, or the desktop's keyring on Linux, never in RSnip's settings |
 | Updates | **Check automatically** (on by default: shortly after RSnip starts, then daily, it asks GitHub for the latest release; nothing else is sent), **Get release candidates** (off by default: also offers versions to try before they're released), **Install automatically** (off by default; installed copies only: installs a new version as soon as it's found, unless you're in the middle of something), *Check now* |
 | System info | What a bug report needs: RSnip's version and install, the OS, CPU, memory, graphics driver, display scale, your settings, the last crash and where files are kept. *Copy* puts it on the clipboard; *Report a problem* copies it and opens a new GitHub issue to paste it into. It has no screenshots or file names, and your home folder shows as `~` |
 | About | Version and links |
@@ -307,8 +309,8 @@ pushed to **Automatically** (whatever's saved from then on, a few seconds after,
 edits to it are saved; what was there before isn't) or **By hand**: *Export → Push to* in the
 editor and player, or *Push to* in the library's right-click menu, for everything selected. When
 the place gives a link, it's copied, and the item's right-click menu has *Copy link* for each place
-it went; an edited one pushed again to SFTP, WebDAV or S3 replaces the file there, while Immich and
-Discord get a new copy, and *Copy link* gives the newest. A push that fails by itself is
+it went; an edited one pushed again to SFTP, WebDAV, S3, an SMB share or FTPS replaces the file
+there, while Discord, Slack, Immich and PhotoPrism get a new copy, and *Copy link* gives the newest. A push that fails by itself is
 tried again after a minute, five minutes and half an hour, then reported with a notification.
 
 | Place | What it needs | Link |
@@ -345,8 +347,9 @@ desktop's keyring (GNOME Keyring, KWallet: any Secret Service), never in RSnip's
 without a keyring, places that need one can't be saved.
 
 **Coming later:** Dropbox, Google Drive, OneDrive, Imgur (with albums) and Box (each needs RSnip
-registered with them), Microsoft Teams and Mattermost, Imgbb, Catbox,
-Gyazo and Streamable, and Synology Photos.
+registered with them), Microsoft Teams, Gyazo, Streamable and Synology Photos. Mattermost, Imgbb
+and Catbox if someone asks: [suggest a place](https://github.com/dhiorns15/rust-screenshot/issues/new?template=push_destination.yml),
+though many hosts with an upload API already work as a custom uploader.
 
 ### Command line
 
