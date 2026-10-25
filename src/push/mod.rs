@@ -243,6 +243,31 @@ impl Kind {
         matches!(self, Kind::Custom { .. } | Kind::Smb { .. })
     }
 
+    /// What says where it is or who signs in there (addresses, hosts, users, folders, keys' ids),
+    /// to keep out of a public report.
+    pub fn private_words(&self) -> Vec<String> {
+        let address = |url: &str| [url.trim().trim_end_matches('/').to_owned(), crate::http::host_of(url.trim()).to_owned()];
+        let words: Vec<String> = match self {
+            Kind::Sftp { host, user, folder, public_url, .. } | Kind::Ftps { host, user, folder, public_url, .. } => {
+                [host.clone(), user.clone(), folder.clone()].into_iter().chain(address(public_url)).collect()
+            }
+            Kind::WebDav { url, user, public_url } => address(url).into_iter().chain(address(public_url)).chain([user.clone()]).collect(),
+            Kind::S3 { endpoint, bucket, prefix, access_key, public_url, .. } => {
+                address(endpoint).into_iter().chain(address(public_url)).chain([bucket.clone(), prefix.clone(), access_key.clone()]).collect()
+            }
+            Kind::Smb { share, folder, user, public_url } => {
+                let (server, name, _) = smb::parse(share, "").unwrap_or_default();
+                [share.clone(), server, name, folder.clone(), user.clone()].into_iter().chain(address(public_url)).collect()
+            }
+            Kind::Discord {} => Vec::new(),
+            Kind::Slack { channel } => vec![channel.clone()],
+            Kind::Immich { server } => address(server).into(),
+            Kind::PhotoPrism { server, album } => address(server).into_iter().chain([album.clone()]).collect(),
+            Kind::Custom { url, .. } => address(url).into(),
+        };
+        words.into_iter().map(|w| w.trim().to_owned()).filter(|w| !w.is_empty()).collect()
+    }
+
     /// Where it is, for showing in a list; never the secret.
     pub fn target(&self) -> String {
         match self {

@@ -179,6 +179,15 @@ fn main() {
         Some("--gallery") => return gallery::run(args.get(1).map(PathBuf::from)),
         Some("--pin") => return args.get(1).map_or((), |file| pin::run(PathBuf::from(file))),
         Some("--settings") => return gallery::run_settings(),
+        Some("--system-info") => {
+            // A windowed program has no console of its own: write to the terminal it was run
+            // from, unless the output already goes somewhere (`> file`).
+            use windows_sys::Win32::System::Console::{AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE};
+            if unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }.is_null() {
+                unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+            }
+            return gallery::print_system_info();
+        }
         _ => {}
     }
     let mode = args.iter().find_map(|a| match a.as_str() {

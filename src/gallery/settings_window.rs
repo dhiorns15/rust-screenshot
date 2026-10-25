@@ -631,7 +631,7 @@ impl SettingsApp {
 
     fn system_info(&mut self, ui: &mut Ui) {
         if self.report.is_none() {
-            self.report = Some(system_info::report(&self.env, &self.env.host(), self.gpu.as_ref(), ui.ctx()));
+            self.report = Some(system_info::report(&self.env, &self.env.host(), self.gpu.as_ref(), Some(ui.ctx())));
             self.crash = crash::list(&self.env.crash_dir).into_iter().next();
             // Seen here, so the library and tray app stop mentioning it.
             if let Some(c) = crash::unseen(&self.env.crash_dir, self.env.setting(crash::SEEN_SETTING)) {

@@ -74,9 +74,10 @@ impl Section {
     }
 }
 
-/// The whole report. `ctx` adds what only the window knows (its display and scale).
-pub fn report(env: &Env, host: &Host, gpu: Option<&Gpu>, ctx: &egui::Context) -> Vec<Section> {
-    vec![application(env, host), system(host), graphics(gpu, ctx), settings(env), crashes(env, host), files(env, host)]
+/// The whole report. `ctx` adds what only the window knows (its display and scale); there's none
+/// from the command line (`rsnip --system-info`).
+pub fn report(env: &Env, host: &Host, gpu: Option<&Gpu>, ctx: Option<&egui::Context>) -> Vec<Section> {
+    vec![application(env, host), system(host), graphics(gpu, ctx), settings(env), push(env), crashes(env, host), files(env, host)]
 }
 
 /// The report as plain text: a title, then each section with its values in one column.
@@ -128,7 +129,7 @@ fn system(host: &Host) -> Section {
     s
 }
 
-fn graphics(gpu: Option<&Gpu>, ctx: &egui::Context) -> Section {
+fn graphics(gpu: Option<&Gpu>, ctx: Option<&egui::Context>) -> Section {
     let mut s = Section::new("Graphics");
     match gpu {
         Some(g) => {
@@ -137,6 +138,7 @@ fn graphics(gpu: Option<&Gpu>, ctx: &egui::Context) -> Section {
         }
         None => s.row("Renderer", "not reported"),
     }
+    let Some(ctx) = ctx else { return s };
     let ppp = ctx.pixels_per_point();
     let (monitor, native) = ctx.input(|i| (i.viewport().monitor_size, i.viewport().native_pixels_per_point));
     if let Some(m) = monitor.filter(|m| m.x > 0.0 && m.y > 0.0) {
@@ -197,6 +199,40 @@ fn settings(env: &Env) -> Section {
     }
     s.row("Updates", updates);
     s
+}
+
+/// Each place pushed to: its kind, how, and how its last push went. Not its name or where it is,
+/// and its last error with those taken out, as this goes into a public issue.
+fn push(env: &Env) -> Section {
+    let mut s = Section::new("Push to");
+    let destinations = crate::push::load(env);
+    if destinations.is_empty() {
+        s.row("Places", "none set up");
+        return s;
+    }
+    let (history, now) = (crate::push::history::load(&env.history_file), crate::push::history::now());
+    for d in &destinations {
+        let how = if d.auto { "automatically" } else { "by hand" };
+        let last = match history.iter().find(|e| e.id == d.id) {
+            None => "not pushed to yet".to_owned(),
+            Some(e) => match &e.error {
+                None => format!("last pushed {}", crate::push::history::ago(e.at, now)),
+                Some(error) => format!("last failed {}: {}", crate::push::history::ago(e.at, now), scrub(error, d, &e.file)),
+            },
+        };
+        s.row(d.kind.name(), format!("{how}, {last}"));
+    }
+    s
+}
+
+/// `error` without the file's name, or anything that says where the destination is or who signs
+/// in to it.
+fn scrub(error: &str, destination: &crate::push::Destination, file: &str) -> String {
+    let mut words = destination.kind.private_words();
+    words.push(file.to_owned());
+    // Longest first, so a server's address goes before the host name in it.
+    words.sort_by_key(|w| std::cmp::Reverse(w.len()));
+    words.iter().filter(|w| w.len() > 2).fold(error.to_owned(), |text, word| text.replace(word.as_str(), "…"))
 }
 
 fn crashes(env: &Env, host: &Host) -> Section {
@@ -388,6 +424,27 @@ mod tests {
         assert_eq!(helpers(&[("xdg-open", true), ("fc-match", true), ("curl", false)]), "xdg-open, fc-match; missing: curl");
         assert_eq!(helpers(&[("xdg-open", true)]), "xdg-open");
         assert_eq!(helpers(&[("curl", false)]), "missing: curl");
+    }
+
+    #[test]
+    fn push_says_how_each_went_but_not_where() {
+        use crate::push::history::{self, Entry};
+        use crate::push::{Destination, Kind};
+        let env = Env::sandbox(super::super::tests::sandbox_dir("system-info-push"));
+        assert_eq!(push(&env).rows, [("Places", "none set up".to_owned())]);
+
+        let share = Kind::Smb { share: r"\\nas.home\shots".into(), folder: "rsnip".into(), user: "dan".into(), public_url: String::new() };
+        let d = Destination { auto: true, ..Destination::new(share) };
+        crate::push::save(&env, &[d.clone(), Destination::new(Kind::immich())]);
+        let error = r"Couldn't copy Screenshot 1.png to \\nas.home\shots\rsnip as dan: access denied";
+        history::record(&env.history_file, &Entry::new(&d, Path::new("/s/Screenshot 1.png"), true, Some(error.into())));
+        assert_eq!(
+            push(&env).rows,
+            [
+                ("SMB share", r"automatically, last failed just now: Couldn't copy … to …\… as …: access denied".to_owned()),
+                ("Immich", "by hand, not pushed to yet".to_owned()),
+            ]
+        );
     }
 
     #[test]

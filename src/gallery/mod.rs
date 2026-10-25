@@ -1224,6 +1224,13 @@ fn window_icon() -> Arc<egui::IconData> {
     Arc::new(egui::IconData { rgba, width: size as u32, height: size as u32 })
 }
 
+/// `rsnip --system-info`: what Settings → System info shows, for a bug report when the window
+/// won't open (it can't say what only the window knows: the graphics driver and display).
+pub fn print_system_info() {
+    let env = Env::real();
+    print!("{}", system_info::text(&system_info::report(&env, &env.host(), None, None)));
+}
+
 /// Opens Settings on System info, for the tray app's crash notification.
 #[cfg(windows)]
 pub fn open_system_info() {

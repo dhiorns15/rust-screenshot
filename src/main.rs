@@ -37,6 +37,9 @@ fn main() {
     if let Some(frame) = std::env::args().skip_while(|a| a != "--pick-area").nth(1) {
         return gallery::pick_area(std::path::Path::new(&frame));
     }
+    if std::env::args().any(|a| a == "--system-info") {
+        return gallery::print_system_info();
+    }
     if std::env::args().any(|a| a == "--check-recording") {
         return gallery::check_recording();
     }
