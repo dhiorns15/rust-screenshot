@@ -97,7 +97,9 @@ A folder on a Windows share, a Samba server or a NAS.
 - **Errors:** *The server didn't accept the user name or password*. *The server has no share by
   that name*. *Windows is already connected to … as someone else*: Windows keeps one sign-in per
   server; leave the user empty to use that one, or disconnect it (`net use \\nas /delete`). *The
-  share didn't let RSnip in, or write there*: check the permissions.
+  share didn't let RSnip in, or write there*: check the permissions. *Lost touch with the server*
+  (Windows): the server went away mid-connection, or can't be reached: check that it's on.
+  Automatic pushes try again after a minute, 5 minutes and 30 minutes.
 - **Link:** with *Link to share* set, that plus the file's name.
 
 ## FTPS

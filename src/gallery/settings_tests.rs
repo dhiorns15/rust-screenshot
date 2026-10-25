@@ -669,7 +669,7 @@ fn recent_pushes_say_what_went_and_what_failed() {
     open(&mut h, Section::Destinations);
     assert!(h.query_by_label("Recent pushes").is_some());
     assert!(h.query_by_label("a.png to Photos").is_some() && h.query_by_label("Pushed automatically, just now").is_some());
-    assert!(h.query_by_label("Failed just now: Immich didn't accept the API key").is_some());
+    assert!(h.query_by_label("Failed by hand, just now: Immich didn't accept the API key").is_some());
 }
 
 #[test]

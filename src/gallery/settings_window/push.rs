@@ -240,7 +240,7 @@ impl SettingsApp {
                 let how = if e.auto { "automatically" } else { "by hand" };
                 let (text, color) = match &e.error {
                     None => (format!("Pushed {how}, {}", history::ago(e.at, now)), muted),
-                    Some(error) => (format!("Failed {}: {error}", history::ago(e.at, now)), error_color()),
+                    Some(error) => (format!("Failed {how}, {}: {error}", history::ago(e.at, now)), error_color()),
                 };
                 ui.add(egui::Label::new(RichText::new(text).small().color(color)).wrap());
             }

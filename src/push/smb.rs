@@ -97,6 +97,8 @@ mod platform {
             // ERROR_BAD_NETPATH, ERROR_BAD_NET_NAME
             Some(53) => "Couldn't reach the server: check its name, and that file sharing is on there".into(),
             Some(67) => "The server has no share by that name".into(),
+            // ERROR_NETNAME_DELETED, ERROR_UNEXP_NET_ERR, ERROR_SEM_TIMEOUT, ERROR_NETWORK_UNREACHABLE, ERROR_HOST_UNREACHABLE
+            Some(64 | 59 | 121 | 1231 | 1232) => "Lost touch with the server: check that it's on and reachable from this computer".into(),
             _ if e.kind() == std::io::ErrorKind::PermissionDenied => "The share didn't let RSnip in, or write there: check the user and what it may do".into(),
             _ => e.to_string(),
         }
@@ -226,6 +228,7 @@ mod tests {
         let error = |code| platform::explain(&std::io::Error::from_raw_os_error(code));
         assert_eq!(error(1326), "The server didn't accept the user name or password");
         assert_eq!(error(67), "The server has no share by that name");
+        assert!(error(64).starts_with("Lost touch with the server"));
         assert!(error(5).starts_with("The share didn't let RSnip in"));
     }
 }
