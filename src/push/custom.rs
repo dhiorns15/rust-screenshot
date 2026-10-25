@@ -307,8 +307,10 @@ mod tests {
         Uploader { url, method: "POST", file_field, fields, headers, link, secret: "s3cr3t" }
     }
 
-    fn shot() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("rsnip-custom-{}", std::process::id()));
+    /// A file to upload, one per test: tests run at once, and one rewriting a file another is
+    /// sending would cut its upload short.
+    fn shot(test: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("rsnip-custom-{test}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a b.png");
         std::fs::write(&file, b"png bytes").unwrap();
@@ -321,7 +323,7 @@ mod tests {
         let (server, requests) = serve_each(vec![("200 OK", "Content-Type: application/json\r\n", reply.to_owned())]);
         let url = format!("{server}/api/upload?name={{filename}}&k={{secret}}");
         let u = uploader(&url, "file", "folder: shots\nnote: {filename}", "Authorization: {secret}\nX-Basic: Basic {base64:me:{secret}}", "{json:files[0].url}");
-        assert_eq!(upload(&u, &shot()), Ok(Some("https://i.example.com/u/abc.png".into())));
+        assert_eq!(upload(&u, &shot("form")), Ok(Some("https://i.example.com/u/abc.png".into())));
         let request = requests.join().unwrap().remove(0);
         assert_eq!((request.method.as_str(), request.path.as_str()), ("POST", "/api/upload?name=a%20b.png&k=s3cr3t"));
         assert_eq!(request.header("Authorization"), Some("s3cr3t"));
@@ -337,23 +339,23 @@ mod tests {
         let (server, requests) = serve_each(vec![("201 Created", "Location: https://f.example.com/x\r\n", "https://f.example.com/raw/x\n".into())]);
         let url = format!("{server}/upload/{{filename}}");
         let u = Uploader { method: "put", ..uploader(&url, "", "", "", "{response}") };
-        assert_eq!(upload(&u, &shot()), Ok(Some("https://f.example.com/raw/x".into())));
+        assert_eq!(upload(&u, &shot("raw")), Ok(Some("https://f.example.com/raw/x".into())));
         let request = requests.join().unwrap().remove(0);
         assert_eq!((request.method.as_str(), request.path.as_str()), ("PUT", "/upload/a%20b.png"));
         assert_eq!((request.header("Content-Type"), request.body.as_slice()), (Some("image/png"), b"png bytes".as_slice()));
 
         let (server, _) = serve_each(vec![("200 OK", "Location: https://f.example.com/y\r\n", String::new())]);
         let u = uploader(&server, "", "", "", "{header:location}#{filename}");
-        assert_eq!(upload(&u, &shot()), Ok(Some("https://f.example.com/y#a%20b.png".into())));
+        assert_eq!(upload(&u, &shot("header")), Ok(Some("https://f.example.com/y#a%20b.png".into())));
     }
 
     #[test]
     fn says_what_the_server_said_and_needs_no_link() {
         let (server, _) = serve_each(vec![("401 Unauthorized", "", r#"{"error":"bad token"}"#.into())]);
-        let error = upload(&uploader(&server, "file", "", "", ""), &shot()).unwrap_err();
+        let error = upload(&uploader(&server, "file", "", "", ""), &shot("fails")).unwrap_err();
         assert!(error.starts_with("127.0.0.1:") && error.ends_with("replied 401: bad token"), "{error}");
         let (server, _) = serve_each(vec![("200 OK", "", r#"{"ok":true}"#.into())]);
-        assert_eq!(upload(&uploader(&server, "file", "", "", "{json:data.url}"), &shot()), Ok(None), "the reply has no link");
+        assert_eq!(upload(&uploader(&server, "file", "", "", "{json:data.url}"), &shot("nolink")), Ok(None), "the reply has no link");
         let (server, _) = serve_each(vec![("405 Method Not Allowed", "", String::new())]);
         assert!(test(&uploader(&server, "file", "", "", "")).unwrap().contains("replied 405"));
     }
