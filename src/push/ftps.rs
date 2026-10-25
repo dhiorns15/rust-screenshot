@@ -1,13 +1,21 @@
-//! FTPS (FTP over TLS): runs the system's `curl` (built into Windows 10 and 11, and on Linux
-//! desktops), as SFTP runs OpenSSH's `sftp`. The user name and password go to curl on its
-//! standard input, never on its command line where other programs could see them. Plain FTP,
+//! FTPS (FTP over TLS), with rustls as RSnip's HTTP is. The server's certificate is checked against
+//! the system's trusted authorities, or, for one the user chose to trust (a NAS's self-signed
+//! certificate, say), against its SHA-256 fingerprint. File transfers reuse the sign-in's TLS
+//! session, which vsftpd and ProFTPD require (Windows' own curl doesn't, so it isn't used). Plain FTP,
 //! which would send the password as it is, isn't offered.
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::net::ToSocketAddrs;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use super::encode;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::CryptoProvider;
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
+use sha2::{Digest, Sha256};
+use suppaftp::types::FileType;
+use suppaftp::{FtpError, RustlsConnector, RustlsFtpStream, Status};
 
 /// A folder on an FTPS server, and how to sign in.
 pub struct Server<'a> {
@@ -18,144 +26,246 @@ pub struct Server<'a> {
     pub password: &'a str,
     /// "uploads/shots", from the folder the server starts in, or "/srv/www/shots".
     pub folder: &'a str,
+    /// The SHA-256 fingerprint of the certificate the user chose to trust; empty to go by the
+    /// system's trusted authorities.
+    pub trusted: &'a str,
 }
 
-/// Signs in and lists the folder, without changing anything.
+/// Signs in and goes to the folder, without changing anything.
 pub fn test(s: &Server) -> Result<String, String> {
-    match run(s, &url(s, ""), None) {
-        Ok(()) => Ok("Connected".into()),
-        // The folder isn't there yet: it's made with the first push.
-        Err((9 | 78, _)) => Ok("Connected. The folder will be made with the first push".into()),
-        Err((code, stderr)) => Err(explain(code, &stderr)),
+    let mut ftp = sign_in(s)?;
+    let (start, levels) = levels(s.folder);
+    if let Some(start) = start {
+        ftp.cwd(start).map_err(|e| explain(&e))?;
     }
+    for level in &levels {
+        if ftp.cwd(level).is_err() {
+            let _ = ftp.quit();
+            return Ok("Connected. The folder will be made with the first push".into());
+        }
+    }
+    let _ = ftp.quit();
+    Ok("Connected".into())
 }
 
-/// Uploads `file` into the folder as `name`, making the folder if need be.
+/// Uploads `file` into the folder as `name`, making the folder (a level at a time) if need be.
 pub fn put(s: &Server, name: &str, file: &Path) -> Result<(), String> {
-    run(s, &url(s, name), Some(file)).map_err(|(code, stderr)| explain(code, &stderr))
+    let mut ftp = sign_in(s)?;
+    // As it is: the default (ASCII) would turn line endings in a PNG into CR LF.
+    ftp.transfer_type(FileType::Binary).map_err(|e| explain(&e))?;
+    let (start, levels) = levels(s.folder);
+    if let Some(start) = start {
+        ftp.cwd(start).map_err(|e| explain(&e))?;
+    }
+    for level in &levels {
+        if ftp.cwd(level).is_err() {
+            ftp.mkdir(level).and_then(|()| ftp.cwd(level)).map_err(|e| explain(&e))?;
+        }
+    }
+    let mut reader = std::fs::File::open(file).map_err(|e| format!("Couldn't read {name}: {e}"))?;
+    ftp.put_file(name, &mut reader).map_err(|e| explain(&e))?;
+    let _ = ftp.quit();
+    Ok(())
 }
 
-/// The address of `name` in the folder (the folder itself if `name` is empty, ending in "/").
-fn url(s: &Server, name: &str) -> String {
-    let scheme = if s.port == 990 { "ftps" } else { "ftp" };
-    let host = if s.host.contains(':') && !s.host.starts_with('[') { format!("[{}]", s.host) } else { s.host.trim().to_owned() };
-    let folder = s.folder.trim();
-    // A leading %2F makes the path start at the server's root rather than where it starts.
-    let mut path = if folder.starts_with('/') { "/%2F".to_owned() } else { "/".to_owned() };
-    for part in folder.split('/').filter(|p| !p.is_empty()) {
-        path.push_str(&encode(part));
-        path.push('/');
+/// The SHA-256 fingerprint of the certificate the server shows, for the user to compare with the
+/// one the server's settings show before trusting it. Nothing is signed in to.
+pub fn certificate(host: &str, port: u16) -> Result<String, String> {
+    let seen = Arc::new(Mutex::new(None));
+    let verifier = Trust::Note(seen.clone(), provider());
+    match connect(host, port, verifier) {
+        Ok(ftp) => drop(ftp),
+        // Noted before anything else could go wrong.
+        Err(_) if seen.lock().is_ok_and(|s| s.is_some()) => {}
+        Err(e) => return Err(e),
     }
-    path.push_str(&encode(name));
-    format!("{scheme}://{host}:{}{path}", s.port)
+    let fingerprint = seen.lock().ok().and_then(|s| s.clone());
+    fingerprint.ok_or_else(|| "The server didn't show a certificate".into())
 }
 
-/// curl's arguments: with `file`, an upload; without, a listing.
-fn args(s: &Server, file: Option<&Path>) -> Vec<String> {
-    let mut args: Vec<String> = ["--silent", "--show-error", "--connect-timeout", "15", "--config", "-"].map(String::from).to_vec();
-    if s.port != 990 {
-        // TLS or nothing: never the password in the clear.
-        args.push("--ssl-reqd".into());
-    }
-    if cfg!(windows) {
-        // Windows' TLS checks whether the certificate was revoked, which fails when it can't
-        // reach the authority that says so; this checks when it can.
-        args.push("--ssl-revoke-best-effort".into());
-    }
-    match file {
-        Some(file) => args.extend(["--ftp-create-dirs".into(), "--upload-file".into(), file.to_string_lossy().into_owned()]),
-        None => args.push("--list-only".into()),
-    }
-    args
+/// The folder's levels to go into: from the root first if it starts with "/" (`Some("/")`), else
+/// from where the server starts.
+fn levels(folder: &str) -> (Option<&str>, Vec<&str>) {
+    let folder = folder.trim();
+    let start = folder.starts_with('/').then_some("/");
+    (start, folder.split('/').filter(|p| !p.is_empty()).collect())
 }
 
-/// What curl reads on its standard input: the address and who to sign in as.
-fn config(s: &Server, url: &str) -> String {
-    let quoted = |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
-    format!("url = {}\nuser = {}\n", quoted(url), quoted(&format!("{}:{}", s.user, s.password)))
+/// Connects over TLS and signs in.
+fn sign_in(s: &Server) -> Result<RustlsFtpStream, String> {
+    let trust = if s.trusted.trim().is_empty() { Trust::System(system_verifier()?) } else { Trust::Pinned(s.trusted.trim().to_owned(), provider()) };
+    let mut ftp = connect(s.host, s.port, trust)?;
+    ftp.login(s.user, s.password).map_err(|e| match e {
+        FtpError::UnexpectedResponse(r) if r.status == Status::NotLoggedIn => "The server didn't accept the user name or password".into(),
+        e => explain(&e),
+    })?;
+    Ok(ftp)
 }
 
-/// Runs curl; on failure, its exit code and what it said.
-fn run(s: &Server, url: &str, file: Option<&Path>) -> Result<(), (i32, String)> {
-    let program = program().ok_or((-1, String::new()))?;
-    let mut command = Command::new(program);
-    command.args(args(s, file)).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW: no console flashing up from the tray app.
-        command.creation_flags(0x0800_0000);
-    }
-    let mut child = command.spawn().map_err(|e| (-2, e.to_string()))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(config(s, url).as_bytes());
-    }
-    let out = child.wait_with_output().map_err(|e| (-2, e.to_string()))?;
-    if out.status.success() {
-        return Ok(());
-    }
-    Err((out.status.code().unwrap_or(-2), String::from_utf8_lossy(&out.stderr).into_owned()))
+/// Connects and starts TLS, explicitly (AUTH TLS) or, on port 990, implicitly.
+fn connect(host: &str, port: u16, trust: Trust) -> Result<RustlsFtpStream, String> {
+    let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+    let address = (host, port).to_socket_addrs().ok().and_then(|mut a| a.next()).ok_or("Couldn't find that server: check its name")?;
+    let config = ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(trust))
+        .with_no_client_auth();
+    let tls = RustlsConnector::from(Arc::new(config));
+    let mut ftp = if port == 990 {
+        let mut ftp = RustlsFtpStream::connect_secure_implicit(address, tls, host).map_err(|e| explain(&e))?;
+        // Transfers encrypted too, as AUTH TLS (below) asks for itself.
+        for command in ["PBSZ 0", "PROT P"] {
+            ftp.custom_command(command, &[Status::CommandOk]).map_err(|e| explain(&e))?;
+        }
+        ftp
+    } else {
+        let plain = RustlsFtpStream::connect_timeout(address, Duration::from_secs(15)).map_err(|e| explain(&e))?;
+        plain.into_secure(tls, host).map_err(|e| match e {
+            FtpError::UnexpectedResponse(_) => "The server doesn't offer FTP over TLS. RSnip won't send your password unencrypted".into(),
+            e => explain(&e),
+        })?
+    };
+    let _ = ftp.get_ref().set_read_timeout(Some(Duration::from_secs(60)));
+    // A server behind a router may name its private address for transfers; the one connected to
+    // is used instead.
+    ftp.set_passive_nat_workaround(true);
+    Ok(ftp)
 }
 
-/// curl's exit code as advice, where it's a usual one.
-fn explain(code: i32, stderr: &str) -> String {
-    match code {
-        -1 => "FTPS needs curl: it's built into Windows 10 and 11; on Linux, install the curl package".into(),
-        6 => "Couldn't find that server: check its name".into(),
-        7 | 28 => "Couldn't connect to the server: check its name and port, and that FTPS is on there".into(),
-        67 => "The server didn't accept the user name or password".into(),
-        64 => "The server doesn't offer FTP over TLS. RSnip won't send your password unencrypted".into(),
-        60 => "The server's certificate isn't one this computer trusts (a self-signed one, say): give the server one from a known authority, or trust it in the system's settings".into(),
-        9 | 25 | 78 => "The server didn't let RSnip write there: check the folder and that the user may write to it".into(),
-        _ => match stderr.lines().map(str::trim).rfind(|l| !l.is_empty()) {
-            Some(line) => line.to_owned(),
-            None => format!("curl failed ({code})"),
-        },
+/// What went wrong, in words, where it's a usual thing.
+fn explain(e: &FtpError) -> String {
+    // A certificate turned down comes as a TLS error or, during the handshake, a connection one.
+    let tls = match e {
+        FtpError::ConnectionError(e) => e.to_string(),
+        FtpError::SecureError(e) => e.clone(),
+        _ => String::new(),
+    };
+    match e {
+        _ if tls.contains(CHANGED) => {
+            "The server's certificate has changed since you trusted it. If you changed it, trust the new one (Edit); if not, something may be in the way".into()
+        }
+        _ if UNTRUSTED.iter().any(|t| tls.to_ascii_lowercase().contains(t)) => {
+            "The server's certificate isn't one this computer trusts (a self-signed one, say): choose Edit, then Trust the server's certificate".into()
+        }
+        FtpError::ConnectionError(e) => format!("Couldn't connect to the server: check its name and port, and that FTPS is on there ({e})"),
+        FtpError::SecureError(e) => format!("Couldn't set up TLS with the server: {e}"),
+        FtpError::UnexpectedResponse(r) if matches!(r.status, Status::FileUnavailable | Status::BadFilename) => {
+            "The server didn't let RSnip write there: check the folder and that the user may write to it".into()
+        }
+        FtpError::UnexpectedResponse(r) => format!("The server said: {}", r.as_string().unwrap_or_default().trim()),
+        e => e.to_string(),
     }
 }
 
-/// curl: Windows' own, else on the PATH.
-fn program() -> Option<PathBuf> {
-    let name = if cfg!(windows) { "curl.exe" } else { "curl" };
-    let mut dirs = Vec::new();
-    if cfg!(windows) {
-        let root = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
-        dirs.push(root.join("System32"));
+const CHANGED: &str = "not the certificate that was trusted";
+/// How rustls says a certificate isn't trusted (in lower case): by no authority the system knows,
+/// for another name, expired, or an authority's own.
+const UNTRUSTED: [&str; 6] = ["unknownissuer", "unknown issuer", "not valid for name", "notvalidforname", "expired", "causedasendentity"];
+
+fn provider() -> Arc<CryptoProvider> {
+    Arc::new(rustls::crypto::ring::default_provider())
+}
+
+fn system_verifier() -> Result<rustls_platform_verifier::Verifier, String> {
+    rustls_platform_verifier::Verifier::new(provider()).map_err(|e| format!("Couldn't read this computer's trusted certificates: {e}"))
+}
+
+/// `AB:CD:…`: the SHA-256 of a certificate, as servers' settings show it.
+fn fingerprint(certificate: &[u8]) -> String {
+    Sha256::digest(certificate).iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")
+}
+
+/// How the server's certificate is checked.
+#[derive(Debug)]
+enum Trust {
+    /// By the system's trusted authorities.
+    System(rustls_platform_verifier::Verifier),
+    /// It's the one with this fingerprint (whoever signed it, whatever name it's for).
+    Pinned(String, Arc<CryptoProvider>),
+    /// Any, noting its fingerprint: only to show it, never to sign in.
+    Note(Arc<Mutex<Option<String>>>, Arc<CryptoProvider>),
+}
+
+impl Trust {
+    fn provider(&self) -> Option<&CryptoProvider> {
+        match self {
+            Trust::System(_) => None,
+            Trust::Pinned(_, p) | Trust::Note(_, p) => Some(p),
+        }
     }
-    dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
-    dirs.into_iter().map(|dir| dir.join(name)).find(|p| p.is_file())
+}
+
+impl ServerCertVerifier for Trust {
+    fn verify_server_cert(&self, end: &CertificateDer<'_>, others: &[CertificateDer<'_>], name: &ServerName<'_>, ocsp: &[u8], now: UnixTime) -> Result<ServerCertVerified, rustls::Error> {
+        match self {
+            Trust::System(v) => v.verify_server_cert(end, others, name, ocsp, now),
+            Trust::Pinned(trusted, _) if fingerprint(end).eq_ignore_ascii_case(trusted) => Ok(ServerCertVerified::assertion()),
+            Trust::Pinned(..) => Err(rustls::Error::General(CHANGED.into())),
+            Trust::Note(seen, _) => {
+                if let Ok(mut seen) = seen.lock() {
+                    *seen = Some(fingerprint(end));
+                }
+                Ok(ServerCertVerified::assertion())
+            }
+        }
+    }
+
+    // The server still has to prove it holds the certificate's key.
+    fn verify_tls12_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
+        match (self, self.provider()) {
+            (Trust::System(v), _) => v.verify_tls12_signature(message, cert, dss),
+            (_, Some(p)) => rustls::crypto::verify_tls12_signature(message, cert, dss, &p.signature_verification_algorithms),
+            _ => unreachable!(),
+        }
+    }
+
+    fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
+        match (self, self.provider()) {
+            (Trust::System(v), _) => v.verify_tls13_signature(message, cert, dss),
+            (_, Some(p)) => rustls::crypto::verify_tls13_signature(message, cert, dss, &p.signature_verification_algorithms),
+            _ => unreachable!(),
+        }
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        match (self, self.provider()) {
+            (Trust::System(v), _) => v.supported_verify_schemes(),
+            (_, Some(p)) => p.signature_verification_algorithms.supported_schemes(),
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn server<'a>(port: u16, folder: &'a str) -> Server<'a> {
-        Server { host: "nas.local", port, user: "me", password: "p\"w\\1", folder }
+    #[test]
+    fn folders_start_where_the_server_does_unless_absolute() {
+        assert_eq!(levels("shots/today/"), (None, vec!["shots", "today"]));
+        assert_eq!(levels(" /srv/www "), (Some("/"), vec!["srv", "www"]));
+        assert_eq!(levels(""), (None, vec![]));
     }
 
     #[test]
-    fn addresses_start_where_the_server_does_unless_absolute() {
-        assert_eq!(url(&server(21, "shots/today/"), "a b.png"), "ftp://nas.local:21/shots/today/a%20b.png");
-        assert_eq!(url(&server(2121, "/srv/www"), "a.png"), "ftp://nas.local:2121/%2Fsrv/www/a.png");
-        assert_eq!(url(&server(990, ""), ""), "ftps://nas.local:990/");
-        assert_eq!(url(&Server { host: "fe80::1", ..server(21, "") }, ""), "ftp://[fe80::1]:21/");
-    }
-
-    #[test]
-    fn tls_is_required_and_the_password_goes_on_stdin() {
-        let explicit = args(&server(21, ""), Some(Path::new("a.png")));
-        assert!(explicit.contains(&"--ssl-reqd".to_owned()) && explicit.ends_with(&["--ftp-create-dirs".into(), "--upload-file".into(), "a.png".into()]));
-        assert!(!explicit.iter().any(|a| a.contains("p\"w")), "never on the command line");
-        assert!(!args(&server(990, ""), None).contains(&"--ssl-reqd".to_owned()), "implicit TLS is TLS from the start");
-        assert!(args(&server(21, ""), None).ends_with(&["--list-only".into()]));
-        assert_eq!(config(&server(21, ""), "ftp://h:21/"), "url = \"ftp://h:21/\"\nuser = \"me:p\\\"w\\\\1\"\n");
+    fn fingerprints_read_as_servers_show_them() {
+        // SHA-256 of "abc" (FIPS 180-2).
+        assert_eq!(fingerprint(b"abc"), "BA:78:16:BF:8F:01:CF:EA:41:41:40:DE:5D:AE:22:23:B0:03:61:A3:96:17:7A:9C:B4:10:FF:61:F2:00:15:AD");
+        let pinned = Trust::Pinned(fingerprint(b"abc").to_lowercase(), provider());
+        let name = ServerName::try_from("nas").unwrap();
+        let now = UnixTime::now();
+        assert!(pinned.verify_server_cert(&CertificateDer::from(&b"abc"[..]), &[], &name, &[], now).is_ok(), "case doesn't matter");
+        let error = pinned.verify_server_cert(&CertificateDer::from(&b"abd"[..]), &[], &name, &[], now).unwrap_err();
+        assert!(explain(&FtpError::SecureError(error.to_string())).starts_with("The server's certificate has changed"));
     }
 
     #[test]
     fn explains_the_usual_failures() {
-        assert_eq!(explain(67, "curl: (67) Access denied: 530"), "The server didn't accept the user name or password");
-        assert!(explain(64, "").contains("won't send your password unencrypted"));
-        assert_eq!(explain(55, "curl: (55) Failed sending data\n"), "curl: (55) Failed sending data");
+        for untrusted in ["invalid peer certificate: UnknownIssuer", "invalid peer certificate: certificate not valid for name \"10.0.0.5\""] {
+            assert!(explain(&FtpError::SecureError(untrusted.into())).contains("Trust the server's certificate"), "{untrusted}");
+        }
+        assert!(explain(&FtpError::ConnectionError(std::io::ErrorKind::ConnectionRefused.into())).starts_with("Couldn't connect"));
     }
 }

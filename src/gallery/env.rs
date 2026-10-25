@@ -124,6 +124,8 @@ pub struct Sandbox {
     pub secrets: BTreeMap<String, String>,
     /// What testing a destination finds (`None`: it connects).
     pub test_result: Option<Result<String, String>>,
+    /// The fingerprint an FTPS server's certificate has (`None`: a made-up one).
+    pub certificate: Option<Result<String, String>>,
     /// Files pushed, with the destination's name.
     pub pushed: Vec<(String, PathBuf)>,
     /// What pushing a file gives (`None`: a link ending in its name).
@@ -538,6 +540,25 @@ impl Env {
                         let _ = tx.send(outcome(&destination, &history, file, result));
                     }
                     let _ = tx.send(PushEvent::Done);
+                    ctx.request_repaint();
+                });
+            }
+        }
+        rx
+    }
+
+    /// The SHA-256 fingerprint of an FTPS server's certificate (see `push::ftps_certificate`); the
+    /// answer arrives on the channel, and `ctx` repaints when it does.
+    pub fn fetch_certificate(&self, ctx: &eframe::egui::Context, host: &str, port: u16) -> Receiver<Result<String, String>> {
+        let (tx, rx) = channel();
+        match &self.sandbox {
+            Some(s) => {
+                let _ = tx.send(s.borrow().certificate.clone().unwrap_or_else(|| Ok("AB:CD:EF".to_owned())));
+            }
+            None => {
+                let (ctx, host) = (ctx.clone(), host.to_owned());
+                std::thread::spawn(move || {
+                    let _ = tx.send(crate::push::ftps_certificate(&host, port));
                     ctx.request_repaint();
                 });
             }

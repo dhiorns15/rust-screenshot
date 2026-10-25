@@ -50,13 +50,16 @@ struct Form {
     saving: Option<Answer<()>>,
     /// Why it couldn't be saved.
     error: Option<String>,
+    /// An FTPS server's certificate being fetched, then its fingerprint, for the user to trust or not.
+    fetching: Option<Answer<String>>,
+    offered: Option<String>,
 }
 
 impl Form {
     fn new(destination: Destination, editing: bool) -> Form {
         let mut kind = destination.kind.clone();
         let port = kind.port_mut().map(|p| p.to_string()).unwrap_or_default();
-        Form { editing, destination, port, secret: String::new(), saving: None, error: None }
+        Form { editing, destination, port, secret: String::new(), saving: None, error: None, fetching: None, offered: None }
     }
 
     /// What must be fixed before it can be saved.
@@ -152,7 +155,7 @@ fn help(kind: &Kind) -> &'static str {
         Kind::Immich { .. } => "Account Settings > API Keys",
         Kind::Slack { .. } => "Your Slack app's Bot User OAuth Token (xoxb-…), with the files:write scope; invite the app to the channel. The README has an app manifest to start from.",
         Kind::PhotoPrism { .. } => "Settings > Account > Apps and Devices: an app password with full access, or the files and sessions scopes (and albums, for an album).",
-        Kind::Ftps { .. } => "FTP over TLS, through the system's curl: port 21 for explicit TLS, 990 for implicit. Plain FTP isn't offered, as it sends the password unencrypted.",
+        Kind::Ftps { .. } => "FTP over TLS: port 21 for explicit TLS, 990 for implicit. Plain FTP isn't offered, as it sends the password unencrypted.",
         Kind::Smb { .. } => "A Windows or Samba share, a NAS's say. On Linux it needs Samba's smbclient.",
         Kind::Custom { .. } => "Any upload API, like ShareX's custom uploaders. {secret} is replaced by the token, {filename} by the file's name.",
     }
@@ -297,6 +300,15 @@ impl SettingsApp {
         if let Some(e) = failed {
             self.note = Some(format!("Removed, but couldn't delete its saved password or key: {e}"));
         }
+        if let Some(form) = self.push.form.as_mut() {
+            if let Some(Ok(fetched)) = form.fetching.as_ref().map(|rx| rx.try_recv()) {
+                form.fetching = None;
+                match fetched {
+                    Ok(fingerprint) => form.offered = Some(fingerprint),
+                    Err(e) => form.error = Some(format!("Couldn't get the server's certificate: {e}")),
+                }
+            }
+        }
         let saved = self.push.form.as_mut().and_then(|form| {
             let result = form.saving.as_ref()?.try_recv().ok()?;
             form.saving = None;
@@ -433,6 +445,7 @@ impl SettingsApp {
             ui.label(RichText::new(help(&form.destination.kind)).small().color(muted));
             ui.add_space(4.0);
             let busy = form.saving.is_some();
+            let mut fetch = false;
             ui.add_enabled_ui(!busy, |ui| {
                 egui::Grid::new("destination-form").num_columns(2).spacing([16.0, 8.0]).min_col_width(130.0).show(ui, |ui| {
                     text_row(ui, "Name", "", &mut form.destination.name, false);
@@ -460,8 +473,17 @@ impl SettingsApp {
                         let masked = !matches!(form.destination.kind, Kind::Discord { .. });
                         text_row(ui, label, hint, &mut form.secret, masked);
                     }
+                    if matches!(form.destination.kind, Kind::Ftps { .. }) {
+                        fetch = certificate_row(ui, &mut form);
+                    }
                 });
             });
+            if fetch {
+                form.error = None;
+                if let Kind::Ftps { host, port, .. } = &form.destination.kind {
+                    form.fetching = Some(self.env.fetch_certificate(ui.ctx(), host.trim(), *port));
+                }
+            }
             if let Some(port) = form.destination.kind.port_mut() {
                 *port = form.port.trim().parse().unwrap_or(0);
             }
@@ -505,6 +527,46 @@ fn text_row(ui: &mut Ui, label: &str, hint: &str, value: &mut String, password: 
     let text = ui.label(label);
     ui.add(egui::TextEdit::singleline(value).hint_text(hint).password(password).desired_width(360.0)).labelled_by(text.id);
     ui.end_row();
+}
+
+/// An FTPS server's certificate: checked by the computer, or one the user trusts (a NAS's
+/// self-signed one), with what's needed to trust it or stop. Whether to fetch the certificate.
+fn certificate_row(ui: &mut Ui, form: &mut Form) -> bool {
+    let Kind::Ftps { host, port, trusted, .. } = &mut form.destination.kind else { return false };
+    let mut fetch = false;
+    let text = ui.label("Certificate");
+    ui.vertical(|ui| {
+        let small = |text: &str| RichText::new(text).small();
+        if !trusted.is_empty() {
+            ui.label(small("Trusted, as this one:"));
+            ui.label(small(trusted).monospace());
+            if ui.button("Stop trusting it").clicked() {
+                trusted.clear();
+            }
+        } else if let Some(offered) = form.offered.clone() {
+            ui.label(small("The server shows this one. Trust it only if your server's settings show the same:"));
+            ui.label(small(&offered).monospace());
+            ui.horizontal(|ui| {
+                if ui.add(theme::primary_button("Trust it")).clicked() {
+                    *trusted = offered;
+                    form.offered = None;
+                }
+                if ui.button("Don't").clicked() {
+                    form.offered = None;
+                }
+            });
+        } else {
+            ui.label(small("Checked by this computer's trusted authorities"));
+            let fetching = form.fetching.is_some();
+            let ready = !host.trim().is_empty() && *port != 0;
+            let button = egui::Button::new(if fetching { "Getting it…" } else { "Trust the server's certificate…" });
+            fetch = ui.add_enabled(ready && !fetching, button).on_hover_text("For a self-signed one, a NAS's say: see it, then trust that one").clicked();
+        }
+    })
+    .response
+    .labelled_by(text.id);
+    ui.end_row();
+    fetch
 }
 
 /// Where docs/destinations.md says how to set up `kind`.

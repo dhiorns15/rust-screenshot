@@ -88,7 +88,7 @@ pub enum Kind {
         #[serde(default)]
         album: String,
     },
-    /// A folder on an FTP server, over TLS (curl). Secret: the password.
+    /// A folder on an FTP server, over TLS. Secret: the password.
     Ftps {
         host: String,
         #[serde(default = "default_ftps_port")]
@@ -97,6 +97,10 @@ pub enum Kind {
         folder: String,
         #[serde(default)]
         public_url: String,
+        /// The SHA-256 fingerprint of the server's certificate, when the user chose to trust it
+        /// (a self-signed one); empty to go by the system's trusted authorities.
+        #[serde(default)]
+        trusted: String,
     },
     /// A folder on an SMB share (Windows file sharing, Samba, a NAS). Secret, if a user is given:
     /// its password.
@@ -180,7 +184,7 @@ impl Kind {
     }
 
     pub fn ftps() -> Kind {
-        Kind::Ftps { host: String::new(), port: default_ftps_port(), user: String::new(), folder: String::new(), public_url: String::new() }
+        Kind::Ftps { host: String::new(), port: default_ftps_port(), user: String::new(), folder: String::new(), public_url: String::new(), trusted: String::new() }
     }
 
     pub fn smb() -> Kind {
@@ -400,7 +404,7 @@ pub fn test(destination: &Destination, secret: Option<&str>) -> Result<String, S
         Kind::Immich { server } => immich::test(server, secret),
         Kind::Slack { .. } => slack::test(secret),
         Kind::PhotoPrism { server, .. } => photoprism::test(server, secret),
-        Kind::Ftps { host, port, user, folder, .. } => ftps::test(&ftps::Server { host, port: *port, user, password: secret, folder }),
+        Kind::Ftps { host, port, user, folder, trusted, .. } => ftps::test(&ftps::Server { host, port: *port, user, password: secret, folder, trusted }),
         Kind::Smb { share, folder, user, .. } => smb::test(&smb::Share { share, folder, user, password: secret }),
         Kind::Custom { .. } => custom::test(&uploader(&destination.kind, secret)),
     }
@@ -429,8 +433,8 @@ pub fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Res
         Kind::Immich { server } => immich::upload(server, secret, file),
         Kind::Slack { channel } => slack::post(secret, channel, file),
         Kind::PhotoPrism { server, album } => photoprism::upload(server, secret, album, file),
-        Kind::Ftps { host, port, user, folder, public_url } => {
-            ftps::put(&ftps::Server { host, port: *port, user, password: secret, folder }, &name, file)?;
+        Kind::Ftps { host, port, user, folder, public_url, trusted } => {
+            ftps::put(&ftps::Server { host, port: *port, user, password: secret, folder, trusted }, &name, file)?;
             Ok(link(public_url, &name))
         }
         Kind::Smb { share, folder, user, public_url } => {
@@ -439,6 +443,11 @@ pub fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Res
         }
         Kind::Custom { .. } => custom::upload(&uploader(&destination.kind, secret), file),
     }
+}
+
+/// The SHA-256 fingerprint of an FTPS server's certificate, to show before it's trusted.
+pub fn ftps_certificate(host: &str, port: u16) -> Result<String, String> {
+    ftps::certificate(host, port)
 }
 
 /// A custom uploader's description, with `secret`.
@@ -628,7 +637,7 @@ mod tests {
             Kind::Immich { .. } => Kind::Immich { server: "https://photos.example.com".into() },
             Kind::Slack { .. } => Kind::Slack { channel: "C0123ABCDEF".into() },
             Kind::PhotoPrism { .. } => Kind::PhotoPrism { server: "https://pp.example.com".into(), album: "Screenshots".into() },
-            Kind::Ftps { port, .. } => Kind::Ftps { host: "nas.local".into(), port, user: "me".into(), folder: "shots".into(), public_url: String::new() },
+            Kind::Ftps { port, .. } => Kind::Ftps { host: "nas.local".into(), port, user: "me".into(), folder: "shots".into(), public_url: String::new(), trusted: String::new() },
             Kind::Smb { .. } => Kind::Smb { share: "\\\\nas\\shots".into(), folder: "rsnip".into(), user: String::new(), public_url: String::new() },
             Kind::Custom { .. } => Kind::Custom {
                 url: "https://i.example.com/api/upload".into(),
@@ -728,7 +737,8 @@ mod tests {
         assert!(test(&stranger, None).unwrap_err().contains("didn't accept your SSH keys"));
         println!("SFTP: pushed, making the folders");
 
-        let d = to(Kind::Ftps { host: var("RSNIP_TEST_FTPS"), port: 21, user: "rsnip".into(), folder: "shots/today".into(), public_url: String::new() });
+        let ftps = |host: String, trusted: &str| Kind::Ftps { host, port: 21, user: "rsnip".into(), folder: "shots/today".into(), public_url: String::new(), trusted: trusted.into() };
+        let d = to(ftps(var("RSNIP_TEST_FTPS"), ""));
         assert_eq!(test(&d, Some("rsnip-secret")), Ok("Connected. The folder will be made with the first push".into()));
         assert_eq!(test(&d, Some("wrong")), Err("The server didn't accept the user name or password".into()));
         for file in [&png, &mp4] {
@@ -736,7 +746,15 @@ mod tests {
             check(&Path::new(&var("RSNIP_TEST_FTPS_DIR")).join("shots/today"), file);
         }
         assert_eq!(test(&d, Some("rsnip-secret")), Ok("Connected".into()));
-        println!("FTPS: pushed over TLS, making the folders");
+        // By its address the certificate (for its name) isn't trusted, until it's trusted itself.
+        let ip = std::net::ToSocketAddrs::to_socket_addrs(&(var("RSNIP_TEST_FTPS"), 21)).unwrap().next().unwrap().ip().to_string();
+        let untrusted = test(&to(ftps(ip.clone(), "")), Some("rsnip-secret")).unwrap_err();
+        assert!(untrusted.contains("Trust the server's certificate"), "{untrusted}");
+        let fingerprint = ftps_certificate(&ip, 21).unwrap();
+        assert_eq!(push(&to(ftps(ip.clone(), &fingerprint)), Some("rsnip-secret"), &png), Ok(None));
+        let wrong = fingerprint.replace(|c: char| c.is_ascii_hexdigit(), "0");
+        assert!(test(&to(ftps(ip, &wrong)), Some("rsnip-secret")).unwrap_err().starts_with("The server's certificate has changed"));
+        println!("FTPS: pushed over TLS, making the folders, and to a trusted certificate");
 
         let share = |user: &str| to(Kind::Smb { share: var("RSNIP_TEST_SMB"), folder: "shots/today".into(), user: user.into(), public_url: String::new() });
         let d = share("rsnip");

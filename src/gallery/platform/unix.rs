@@ -392,7 +392,7 @@ fn font_path() -> Option<PathBuf> {
 }
 
 /// The programs RSnip runs: opening files and links, finding Pictures and the annotation font,
-/// checking for updates (curl or wget), and pushing over SFTP, FTPS (curl) and SMB.
+/// checking for updates (curl or wget), and pushing over SFTP and SMB.
 const HELPERS: [&str; 9] = ["xdg-open", "xdg-user-dir", "fc-match", "curl", "wget", "tesseract", "gst-launch-1.0", "sftp", "smbclient"];
 
 fn on_path(program: &str) -> bool {

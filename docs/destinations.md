@@ -106,15 +106,20 @@ A folder on an FTP server, over TLS (a NAS, most web hosts).
 
 - **Set up:** the server, its port (21 for explicit TLS, the usual; 990 for implicit), the user
   name, password and folder.
-- **Uses:** the system's `curl` (built into Windows 10 and 11; the `curl` package on Linux). The
-  password goes to curl through its input, never its command line. Plain FTP, which sends the
-  password unencrypted, isn't offered.
-- **Needs:** that user may write to the folder, and make it if it isn't there. The server's
-  certificate has to be one the computer trusts.
-- **Test:** signs in and lists the folder, changing nothing.
+- **TLS:** always; plain FTP, which sends the password unencrypted, isn't offered. File transfers
+  reuse the sign-in's TLS session, as vsftpd and ProFTPD (most NASes) require.
+- **Certificate:** one from an authority the computer trusts is used as it is. For a self-signed
+  one, which most NASes have, choose *Trust the server's certificate…* in the form: RSnip shows its
+  SHA-256 fingerprint; check it's the one your server's settings show (on a Synology, *Control
+  Panel → Security → Certificate*), then *Trust it*. From then on only that certificate is accepted,
+  whatever its name or issuer; *Stop trusting it* goes back to the computer's authorities.
+- **Needs:** that user may write to the folder, and make it if it isn't there.
+- **Test:** signs in and goes to the folder, changing nothing.
 - **Errors:** *The server didn't accept the user name or password*. *The server doesn't offer FTP
   over TLS*: turn on TLS (FTPS) on the server. *The server's certificate isn't one this computer
-  trusts*: a self-signed certificate, which most NASes have.
+  trusts*: trust it as above, after checking its fingerprint. *The server's certificate has changed
+  since you trusted it*: if you renewed it, trust the new one; if not, something may be between you
+  and the server.
 - **Link:** with *Link to share* set, that plus the file's name.
 
 ## Discord

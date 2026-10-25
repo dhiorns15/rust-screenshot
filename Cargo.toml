@@ -28,6 +28,11 @@ sha2 = "0.10"
 tiny-skia = "0.11"
 # Uploads to other places (see src/push): HTTP with rustls and the system's certificates.
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
+# FTPS (see src/push/ftps.rs), over the same rustls, with the system's certificates or a trusted one.
+# "deprecated" is for implicit TLS (port 990).
+suppaftp = { version = "12", default-features = false, features = ["rustls-ring", "deprecated"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7"
 
 # Capture, tray, OCR, pinning and recording: Windows only.
 [target.'cfg(windows)'.dependencies]

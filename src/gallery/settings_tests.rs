@@ -611,6 +611,36 @@ fn a_custom_uploader_may_have_no_token() {
 }
 
 #[test]
+fn an_ftps_servers_own_certificate_can_be_trusted() {
+    let mut h = settings("settings-push-ftps-trust", |_| {});
+    h.state().env.sandboxed().certificate = Some(Ok("12:34:AB".into()));
+    open(&mut h, Section::Destinations);
+    click(&mut h, "Add…");
+    click(&mut h, "FTPS");
+    assert!(!is_enabled(&h, "Trust the server's certificate…"), "needs the server first");
+    type_into(&mut h, "Server", "nas.local");
+    type_into(&mut h, "User", "me");
+    type_into(&mut h, "Password", "pw");
+    click(&mut h, "Trust the server's certificate…");
+    assert!(h.query_by_label("12:34:AB").is_some(), "shown to compare with the server's");
+    click(&mut h, "Trust it");
+    assert!(h.query_by_label("Trusted, as this one:").is_some());
+    click(&mut h, "Save");
+    assert!(matches!(&destinations(&h)[0].kind, crate::push::Kind::Ftps { trusted, .. } if trusted == "12:34:AB"));
+
+    click(&mut h, "Edit");
+    click(&mut h, "Stop trusting it");
+    click(&mut h, "Save");
+    assert!(matches!(&destinations(&h)[0].kind, crate::push::Kind::Ftps { trusted, .. } if trusted.is_empty()));
+
+    // One that can't be reached says so.
+    h.state().env.sandboxed().certificate = Some(Err("Couldn't find that server: check its name".into()));
+    click(&mut h, "Edit");
+    click(&mut h, "Trust the server's certificate…");
+    assert!(h.query_by_label("Couldn't get the server's certificate: Couldn't find that server: check its name").is_some());
+}
+
+#[test]
 fn the_question_mark_opens_how_to_set_it_up() {
     use crate::gallery::theme::icon;
     let docs = "https://github.com/dhiorns15/rust-screenshot/blob/main/docs/destinations.md";

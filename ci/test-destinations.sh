@@ -1,6 +1,7 @@
 #!/bin/sh
 # Pushes to real servers, in Docker: rclone's S3 and WebDAV servers, an OpenSSH SFTP server, a
-# vsftpd FTPS server (with a certificate made here, which the test container trusts) and Samba,
+# vsftpd FTPS server (with a certificate from an authority made here, which the test container
+# trusts) and Samba,
 # on a network of their own, then runs src/push's real_servers test against them from a Rust
 # container (the image CI's Linux job uses, or RSNIP_TEST_IMAGE). Each server keeps what it's sent
 # in a folder the test can look in. Needs Docker; works from Git Bash on Windows too.
@@ -26,10 +27,15 @@ trap cleanup EXIT
 
 # The key the test signs in to the SFTP server with (RSnip uses the user's own).
 ssh-keygen -q -t ed25519 -N "" -C rsnip-test -f "$tmp/ssh/id_ed25519"
-# The FTPS server's certificate, for its name on the network.
+# The FTPS server's certificate, for its name on the network, from a certificate authority of its
+# own that the test container trusts (as a server's certificate is, not itself an authority).
 # Readable by the server's user too; it's the container's to change, as it made it.
-docker run --rm -v "$(host "$tmp/tls"):/t" --entrypoint sh alpine/openssl -c "openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
-    -keyout /t/key.pem -out /t/cert.pem -subj /CN=$net-ftps -addext subjectAltName=DNS:$net-ftps && chmod 644 /t/key.pem" >/dev/null 2>&1
+docker run --rm -v "$(host "$tmp/tls"):/t" --entrypoint sh alpine/openssl -c "
+    openssl req -x509 -newkey rsa:2048 -nodes -days 2 -keyout /t/ca.key -out /t/ca.pem -subj /CN=rsnip-test-ca &&
+    openssl req -newkey rsa:2048 -nodes -keyout /t/key.pem -out /t/server.csr -subj /CN=$net-ftps &&
+    printf 'subjectAltName=DNS:$net-ftps\nbasicConstraints=CA:FALSE\n' > /t/server.ext &&
+    openssl x509 -req -in /t/server.csr -CA /t/ca.pem -CAkey /t/ca.key -CAcreateserial -days 2 -out /t/cert.pem -extfile /t/server.ext &&
+    chmod 644 /t/*" >/dev/null 2>&1
 
 docker network create "$net" >/dev/null
 docker run -d --name "$net-s3" --network "$net" -v "$(host "$tmp/s3"):/data" \
@@ -45,7 +51,7 @@ docker run -d --name "$net-smb" --network "$net" -v "$(host "$tmp/smb"):/share" 
 
 docker run --rm --network "$net" -v "$(host "$PWD"):/work" -w /work -v "$(host "$tmp/ssh"):/keys:ro" \
     -v "$(host "$tmp/s3"):/s3" -v "$(host "$tmp/dav"):/dav" -v "$(host "$tmp/sftp"):/sftp" -v "$(host "$tmp/ftps"):/ftps" -v "$(host "$tmp/smb"):/smb" \
-    -v "$(host "$tmp/tls/cert.pem"):/usr/local/share/ca-certificates/rsnip-ftps.crt:ro" -e CARGO_TARGET_DIR=/work/target/destinations \
+    -v "$(host "$tmp/tls/ca.pem"):/usr/local/share/ca-certificates/rsnip-test-ca.crt:ro" -e CARGO_TARGET_DIR=/work/target/destinations \
     -e RSNIP_TEST_S3="http://$net-s3:9000" -e RSNIP_TEST_S3_DIR=/s3 -e RSNIP_TEST_WEBDAV="http://$net-dav:8080" -e RSNIP_TEST_WEBDAV_DIR=/dav \
     -e RSNIP_TEST_SFTP="$net-sftp" -e RSNIP_TEST_SFTP_DIR=/sftp -e RSNIP_TEST_FTPS="$net-ftps" -e RSNIP_TEST_FTPS_DIR=/ftps \
     -e RSNIP_TEST_SMB="//$net-smb/shots" -e RSNIP_TEST_SMB_DIR=/smb \

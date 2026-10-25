@@ -322,7 +322,7 @@ went wrong when one didn't.
 | WebDAV | The folder's address, a user name and (app) password | With a public address for the folder |
 | S3-compatible | Endpoint, bucket, an access key ID and secret (AWS, R2, B2, Wasabi, MinIO) | With a public address for the bucket |
 | SMB share | The share (`\\nas\shots`), and a user and password or none; Samba's `smbclient` on Linux | With a public address for the folder |
-| FTPS | The server, user, password and folder; FTP over TLS only, through the system's `curl` | With a public address for the folder |
+| FTPS | The server, user, password and folder; FTP over TLS only, and a NAS's self-signed certificate can be trusted by its fingerprint | With a public address for the folder |
 | Discord | A channel's webhook address | The attachment |
 | Slack | A bot token from a Slack app of your own (`files:write`) and the channel's ID | The file in Slack |
 | Immich | The server's address and an API key (`asset.upload`, `user.read`) | The photo in Immich |
