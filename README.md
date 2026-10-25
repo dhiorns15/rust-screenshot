@@ -303,10 +303,12 @@ recommends). For a recording, *Copy* copies the file, to paste into a folder, ch
 
 RSnip can send screenshots and recordings to other places as they're saved, or when you choose.
 Set them up in *Settings → Push to* (*Add…*); *Test* checks one without sending anything. Each is
-pushed to **Automatically** (whatever's saved from then on, a few seconds after; what was there
-before isn't) or **By hand**: *Export → Push to* in the editor and player, or *Push to* in the
-library's right-click menu, for everything selected. When the place gives a link, it's copied, and
-the item's right-click menu has *Copy link* for each place it went. A push that fails by itself is
+pushed to **Automatically** (whatever's saved from then on, a few seconds after, and again when
+edits to it are saved; what was there before isn't) or **By hand**: *Export → Push to* in the
+editor and player, or *Push to* in the library's right-click menu, for everything selected. When
+the place gives a link, it's copied, and the item's right-click menu has *Copy link* for each place
+it went; an edited one pushed again to SFTP, WebDAV or S3 replaces the file there, while Immich and
+Discord get a new copy, and *Copy link* gives the newest. A push that fails by itself is
 tried again after a minute, five minutes and half an hour, then reported with a notification.
 
 | Place | What it needs | Link |

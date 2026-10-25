@@ -2,7 +2,8 @@
 //! Automatically in Settings → Push to. One RSnip process does it: the tray app on Windows, the
 //! background icon on Linux, else the library (whichever claims it first). Every few seconds it
 //! looks in the save folder for what's been saved since the destination was set to Automatically
-//! and hasn't been pushed there; a failure is tried again later, and reported if it keeps failing.
+//! and hasn't been pushed there since it last changed; a failure is tried again later, and
+//! reported if it keeps failing.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -98,7 +99,8 @@ fn run_once(tries: &mut Tries, now: SystemTime, notify: &dyn Fn(&str, &str)) {
 
 /// Whether `file` (last changed at `modified`) should be pushed to `destination` now: it's been
 /// saved since the destination was set to Automatically, it's finished being written, it hasn't
-/// been pushed there, and it isn't waiting to be tried again.
+/// been pushed there since it last changed (edits saved go too), and it isn't waiting to be tried
+/// again.
 fn is_due(destination: &Destination, file: &Path, modified: SystemTime, now: SystemTime, tries: &Tries) -> bool {
     let Some(since) = destination.auto_since.filter(|_| destination.auto) else { return false };
     if modified < UNIX_EPOCH + Duration::from_secs(since) || now.duration_since(modified).unwrap_or_default() < SETTLE {
@@ -107,7 +109,9 @@ fn is_due(destination: &Destination, file: &Path, modified: SystemTime, now: Sys
     if tries.waiting(&destination.id, file, now) {
         return false;
     }
-    !search::load(file).pushed.contains_key(&destination.id)
+    // Pushes are noted to the second; one finishes at least SETTLE after the file last changed.
+    let changed = modified.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    search::load(file).pushed.get(&destination.id).is_none_or(|pushed| changed > pushed.at)
 }
 
 #[cfg(test)]
@@ -134,6 +138,8 @@ mod tests {
         assert!(!is_due(&d, &file, at(2_099), at(2_100), &tries), "still being written");
         search::record_push(&file, &d.id, None).unwrap();
         assert!(!is_due(&d, &file, at(2_000), at(2_100), &tries), "pushed already");
+        let edited = SystemTime::now() + Duration::from_secs(10);
+        assert!(is_due(&d, &file, edited, edited + Duration::from_secs(60), &tries), "edited and saved since");
         let other = Destination { auto: true, auto_since: Some(1_500), ..Destination::new(Kind::discord()) };
         assert!(is_due(&other, &file, at(2_000), at(2_100), &tries), "each destination for itself");
     }
