@@ -25,6 +25,13 @@ jobs:
       - run: installer/smoke-test.ps1
         shell: pwsh
 
+  # GitHub shows a blank issue, not the form, when it can't read an issue form.
+  issue-forms:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -c 'import sys, yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' .github/ISSUE_TEMPLATE/*.yml
+
   # The library and editor build on Linux too. This job also runs the pixel snapshot tests, in the
   # same environment as ci/Dockerfile (a software GPU and the DejaVu font), so they match locally.
   linux:
