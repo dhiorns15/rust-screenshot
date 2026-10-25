@@ -9,6 +9,7 @@ mod discord;
 mod immich;
 mod s3;
 mod sftp;
+mod slack;
 mod webdav;
 
 use std::path::Path;
@@ -71,6 +72,11 @@ pub enum Kind {
     Discord {},
     /// An Immich server. Secret: an API key.
     Immich { server: String },
+    /// A Slack channel, posted to as the user's own Slack app. Secret: its bot token.
+    Slack {
+        /// The channel's ID ("C0123ABCDEF"), not its name.
+        channel: String,
+    },
     /// Any HTTP upload API, described as ShareX's custom uploaders are (see `custom`). Secret, if it
     /// needs one: a token, put wherever `{secret}` is written.
     Custom {
@@ -98,7 +104,7 @@ fn default_port() -> u16 {
 
 impl Kind {
     /// An empty one of each kind, in the order they're offered.
-    pub const ALL: [fn() -> Kind; 6] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::discord, Kind::immich, Kind::custom];
+    pub const ALL: [fn() -> Kind; 7] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::discord, Kind::slack, Kind::immich, Kind::custom];
 
     pub fn sftp() -> Kind {
         Kind::Sftp { host: String::new(), port: default_port(), user: String::new(), folder: String::new(), public_url: String::new() }
@@ -127,6 +133,10 @@ impl Kind {
         Kind::Immich { server: String::new() }
     }
 
+    pub fn slack() -> Kind {
+        Kind::Slack { channel: String::new() }
+    }
+
     pub fn custom() -> Kind {
         Kind::Custom {
             url: String::new(),
@@ -145,6 +155,7 @@ impl Kind {
             Kind::S3 { .. } => "S3-compatible",
             Kind::Discord { .. } => "Discord",
             Kind::Immich { .. } => "Immich",
+            Kind::Slack { .. } => "Slack",
             Kind::Custom { .. } => "Custom uploader",
         }
     }
@@ -157,6 +168,7 @@ impl Kind {
             Kind::S3 { .. } => Some("Secret access key"),
             Kind::Discord { .. } => Some("Webhook URL"),
             Kind::Immich { .. } => Some("API key"),
+            Kind::Slack { .. } => Some("Bot token"),
             Kind::Custom { .. } => Some("Token"),
         }
     }
@@ -180,6 +192,7 @@ impl Kind {
             }
             Kind::Discord { .. } => String::new(),
             Kind::Immich { server } => server.clone(),
+            Kind::Slack { channel } => channel.clone(),
             // Without the query, which may carry a key.
             Kind::Custom { url, .. } => url.split('?').next().unwrap_or_default().to_owned(),
         }
@@ -226,6 +239,8 @@ impl Destination {
                 .or_else(|| public(public_url)),
             Kind::Discord { .. } => None,
             Kind::Immich { server } => address(server, "the server's address"),
+            Kind::Slack { channel } if channel.trim().starts_with('#') => Some("Use the channel's ID, from its details (like C0123ABCDEF), not its name".into()),
+            Kind::Slack { channel } => required(channel, "the channel's ID"),
             Kind::Custom { url, .. } => address(url, "the upload address").or_else(|| custom::problems(&uploader(&self.kind, ""))),
         }
     }
@@ -274,6 +289,7 @@ pub fn test(destination: &Destination, secret: Option<&str>) -> Result<String, S
         }
         Kind::Discord {} => discord::test(secret),
         Kind::Immich { server } => immich::test(server, secret),
+        Kind::Slack { .. } => slack::test(secret),
         Kind::Custom { .. } => custom::test(&uploader(&destination.kind, secret)),
     }
 }
@@ -299,6 +315,7 @@ pub fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Res
         }
         Kind::Discord {} => discord::post(secret, file),
         Kind::Immich { server } => immich::upload(server, secret, file),
+        Kind::Slack { channel } => slack::post(secret, channel, file),
         Kind::Custom { .. } => custom::upload(&uploader(&destination.kind, secret), file),
     }
 }
@@ -488,6 +505,7 @@ mod tests {
             },
             Kind::Discord { .. } => Kind::Discord {},
             Kind::Immich { .. } => Kind::Immich { server: "https://photos.example.com".into() },
+            Kind::Slack { .. } => Kind::Slack { channel: "C0123ABCDEF".into() },
             Kind::Custom { .. } => Kind::Custom {
                 url: "https://i.example.com/api/upload".into(),
                 method: "POST".into(),
@@ -602,6 +620,7 @@ mod tests {
                 ("WebDAV", Some("Password")),
                 ("S3-compatible", Some("Secret access key")),
                 ("Discord", Some("Webhook URL")),
+                ("Slack", Some("Bot token")),
                 ("Immich", Some("API key")),
                 ("Custom uploader", Some("Token")),
             ]

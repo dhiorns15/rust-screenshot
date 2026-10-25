@@ -112,6 +112,7 @@ fn fields(kind: &mut Kind) -> Vec<Field<'_>> {
         ],
         Kind::Discord {} => vec![],
         Kind::Immich { server } => vec![field("Server address", "https://photos.example.com", server)],
+        Kind::Slack { channel } => vec![field("Channel ID", "C0123ABCDEF, from the channel's details", channel)],
         Kind::Custom { url, method, file_field, fields, headers, link } => vec![
             field("Upload address", "https://i.example.com/api/upload", url),
             field("Method", "POST", method),
@@ -130,6 +131,7 @@ fn help(kind: &Kind) -> &'static str {
         Kind::S3 { .. } => "Works with AWS, Cloudflare R2, Backblaze B2, Wasabi and MinIO.",
         Kind::Discord { .. } => "Server Settings > Integrations > Webhooks > Copy Webhook URL",
         Kind::Immich { .. } => "Account Settings > API Keys",
+        Kind::Slack { .. } => "Your Slack app's Bot User OAuth Token (xoxb-…), with the files:write scope; invite the app to the channel. The README has an app manifest to start from.",
         Kind::Custom { .. } => "Any upload API, like ShareX's custom uploaders. {secret} is replaced by the token, {filename} by the file's name.",
     }
 }

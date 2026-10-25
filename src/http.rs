@@ -26,8 +26,7 @@ pub enum Part {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Body {
     Empty,
-    // For a request with a small body of its own; none yet.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// A small body of its own (a form, some JSON).
     Bytes(Vec<u8>),
     /// A file, streamed from disk.
     File(PathBuf),
