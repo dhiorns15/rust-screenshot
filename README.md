@@ -346,6 +346,10 @@ though many hosts with an upload API already work as a custom uploader.
 
 ### Command line
 
+The installer doesn't put RSnip on the PATH, so on Windows give its full path, e.g. in PowerShell
+`& "$env:LOCALAPPDATA\Programs\RSnip\rsnip.exe" --system-info` (or `rsnip.exe` in the folder the
+zip was unpacked to).
+
 ```
 rsnip                  start the tray app
 rsnip --region         start a region capture (uses the running instance if there is one)

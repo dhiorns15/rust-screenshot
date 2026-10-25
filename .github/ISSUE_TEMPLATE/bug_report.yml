@@ -51,7 +51,7 @@ body:
     id: system-info
     attributes:
       label: System info
-      description: Paste from Settings → System info → Copy (or Report a problem, which copies it for you). If RSnip won't open, give your RSnip version, OS and desktop (e.g. Ubuntu 24.04, GNOME, Wayland).
+      description: Paste from Settings → System info → Copy (or Report a problem, which copies it for you). If RSnip won't open, paste what `rsnip --system-info` prints (on Windows, in PowerShell: `& "$env:LOCALAPPDATA\Programs\RSnip\rsnip.exe" --system-info`), or give your RSnip version, OS and desktop (e.g. Ubuntu 24.04, GNOME, Wayland).
       render: text
     validations:
       required: true
