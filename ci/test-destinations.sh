@@ -27,9 +27,9 @@ trap cleanup EXIT
 # The key the test signs in to the SFTP server with (RSnip uses the user's own).
 ssh-keygen -q -t ed25519 -N "" -C rsnip-test -f "$tmp/ssh/id_ed25519"
 # The FTPS server's certificate, for its name on the network.
-docker run --rm -v "$(host "$tmp/tls"):/t" alpine/openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
-    -keyout /t/key.pem -out /t/cert.pem -subj "/CN=$net-ftps" -addext "subjectAltName=DNS:$net-ftps" >/dev/null 2>&1
-chmod 644 "$tmp/tls/key.pem"
+# Readable by the server's user too; it's the container's to change, as it made it.
+docker run --rm -v "$(host "$tmp/tls"):/t" --entrypoint sh alpine/openssl -c "openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+    -keyout /t/key.pem -out /t/cert.pem -subj /CN=$net-ftps -addext subjectAltName=DNS:$net-ftps && chmod 644 /t/key.pem" >/dev/null 2>&1
 
 docker network create "$net" >/dev/null
 docker run -d --name "$net-s3" --network "$net" -v "$(host "$tmp/s3"):/data" \
