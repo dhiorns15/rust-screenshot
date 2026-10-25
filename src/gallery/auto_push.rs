@@ -75,10 +75,7 @@ fn run_once(tries: &mut Tries, now: SystemTime, notify: &dyn Fn(&str, &str)) {
             continue;
         }
         // Read once for all of them; the keyring may have to be unlocked.
-        let secret = match destination.kind.secret_label() {
-            None => Ok(None),
-            Some(label) => crate::secrets::get(&destination.id).and_then(|s| s.map(Some).ok_or(format!("No {} is saved for it", label.to_lowercase()))),
-        };
+        let secret = push::saved_secret(destination);
         for file in due {
             let result = secret.clone().and_then(|secret| push::push(destination, secret.as_deref(), &file));
             let result = result.and_then(|link| search::record_push(&file, &destination.id, link));

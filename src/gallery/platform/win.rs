@@ -176,17 +176,33 @@ pub fn show_in_folder(path: &Path) {
 
 /// Windows' folder picker, starting in `current`; `None` if it was cancelled.
 pub fn pick_folder(title: &str, current: &Path) -> Result<Option<PathBuf>, String> {
-    use windows::core::HSTRING;
+    pick(title, Some(current), None)
+}
+
+/// Windows' file picker, offering the files matching `filter` (a name and a pattern like
+/// "*.sxcu"); `None` if it was cancelled.
+pub fn pick_file(title: &str, filter: (&str, &str)) -> Result<Option<PathBuf>, String> {
+    pick(title, None, Some(filter))
+}
+
+/// A folder, or with `filter` a file.
+fn pick(title: &str, current: Option<&Path>, filter: Option<(&str, &str)>) -> Result<Option<PathBuf>, String> {
+    use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
     use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, SIGDN_FILESYSPATH};
     unsafe {
         // Run on a thread of its own (see `Env::pick_folder`), so this is its COM setup.
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).map_err(|e| e.to_string())?;
-        let options = dialog.GetOptions().map_err(|e| e.to_string())?;
-        dialog.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM).map_err(|e| e.to_string())?;
+        let options = dialog.GetOptions().map_err(|e| e.to_string())? | FOS_FORCEFILESYSTEM;
+        dialog.SetOptions(if filter.is_some() { options } else { options | FOS_PICKFOLDERS }).map_err(|e| e.to_string())?;
         let _ = dialog.SetTitle(&HSTRING::from(title));
-        if let Ok(start) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(current.as_os_str()), None) {
+        if let Some((name, pattern)) = filter {
+            let (name, pattern) = (HSTRING::from(name), HSTRING::from(pattern));
+            let _ = dialog.SetFileTypes(&[COMDLG_FILTERSPEC { pszName: PCWSTR(name.as_ptr()), pszSpec: PCWSTR(pattern.as_ptr()) }]);
+        }
+        if let Some(start) = current.and_then(|c| SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(c.as_os_str()), None).ok()) {
             let _ = dialog.SetFolder(&start);
         }
         // Fails when it's cancelled.

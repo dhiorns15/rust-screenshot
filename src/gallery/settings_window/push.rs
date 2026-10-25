@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use eframe::egui::{self, Color32, RichText, Ui};
 
 use super::{row, SettingsApp};
-use crate::gallery::env::TrayRequest;
+use crate::gallery::env::{PickedFolder, TrayRequest};
 use crate::gallery::theme;
 use crate::push::{self, Destination, Kind};
 
@@ -26,6 +26,8 @@ pub struct PushState {
     removing: Option<String>,
     /// Removed destinations' secrets being forgotten.
     forgetting: Vec<Answer<()>>,
+    /// A ShareX uploader file being chosen, to import.
+    importing: Option<PickedFolder>,
 }
 
 enum Test {
@@ -60,7 +62,8 @@ impl Form {
     fn problem(&self) -> Option<String> {
         self.destination.problems().or_else(|| {
             let label = self.destination.kind.secret_label()?;
-            (!self.editing && self.secret.is_empty()).then(|| format!("Enter the {}", lowercase_first(label)))
+            let needed = !self.editing && !self.destination.kind.secret_optional();
+            (needed && self.secret.is_empty()).then(|| format!("Enter the {}", lowercase_first(label)))
         })
     }
 }
@@ -80,10 +83,13 @@ struct Field<'a> {
     label: &'static str,
     hint: &'static str,
     value: &'a mut String,
+    /// A few lines high, for one entry a line.
+    multiline: bool,
 }
 
 fn fields(kind: &mut Kind) -> Vec<Field<'_>> {
-    let field = |label, hint, value| Field { label, hint, value };
+    let field = |label, hint, value| Field { label, hint, value, multiline: false };
+    let lines = |label, hint, value| Field { label, hint, value, multiline: true };
     match kind {
         Kind::Sftp { host, user, folder, public_url, .. } => vec![
             field("Server", "nas.example.com", host),
@@ -106,6 +112,14 @@ fn fields(kind: &mut Kind) -> Vec<Field<'_>> {
         ],
         Kind::Discord {} => vec![],
         Kind::Immich { server } => vec![field("Server address", "https://photos.example.com", server)],
+        Kind::Custom { url, method, file_field, fields, headers, link } => vec![
+            field("Upload address", "https://i.example.com/api/upload", url),
+            field("Method", "POST", method),
+            field("File field", "Empty to send the file as the whole body", file_field),
+            lines("Form fields", "name: value, one a line", fields),
+            lines("Headers", "Authorization: Bearer {secret}", headers),
+            field("Link", "Where the reply has it, e.g. {json:data.url} or {response}", link),
+        ],
     }
 }
 
@@ -116,6 +130,7 @@ fn help(kind: &Kind) -> &'static str {
         Kind::S3 { .. } => "Works with AWS, Cloudflare R2, Backblaze B2, Wasabi and MinIO.",
         Kind::Discord { .. } => "Server Settings > Integrations > Webhooks > Copy Webhook URL",
         Kind::Immich { .. } => "Account Settings > API Keys",
+        Kind::Custom { .. } => "Any upload API, like ShareX's custom uploaders. {secret} is replaced by the token, {filename} by the file's name.",
     }
 }
 
@@ -147,8 +162,8 @@ impl SettingsApp {
         if list.is_empty() && self.push.form.is_none() {
             theme::card(ui, |ui| {
                 row(ui, "Nowhere yet. Add a place to push to.", "", |ui| {
-                    if let Some(kind) = add_menu(ui) {
-                        self.push.form = Some(Form::new(Destination::new(kind), false));
+                    if let Some(added) = add_menu(ui) {
+                        self.add(ui.ctx(), added);
                     }
                 });
             });
@@ -165,8 +180,8 @@ impl SettingsApp {
         if self.push.form.as_ref().is_some_and(|f| !f.editing) {
             self.form_card(ui);
         } else if self.push.form.is_none() && !list.is_empty() {
-            if let Some(kind) = add_menu(ui) {
-                self.push.form = Some(Form::new(Destination::new(kind), false));
+            if let Some(added) = add_menu(ui) {
+                self.add(ui.ctx(), added);
             }
         }
         if let Some(action) = action {
@@ -174,8 +189,40 @@ impl SettingsApp {
         }
     }
 
+    /// Opens the form for a new destination, or asks for the ShareX file to make it from.
+    fn add(&mut self, ctx: &egui::Context, added: Added) {
+        match added {
+            Added::Kind(kind) => self.push.form = Some(Form::new(Destination::new(kind), false)),
+            Added::Sxcu => self.push.importing = Some(self.env.pick_file(ctx, "Choose a ShareX custom uploader", ("ShareX custom uploader", "*.sxcu"))),
+        }
+    }
+
+    /// A ShareX uploader file, once chosen: the form, filled in from it.
+    fn import(&mut self) {
+        let Some(Ok(picked)) = self.push.importing.as_ref().map(|rx| rx.try_recv()) else { return };
+        self.push.importing = None;
+        let file = match picked {
+            Ok(Some(file)) => file,
+            Ok(None) => return,
+            Err(e) => return self.note = Some(format!("Couldn't open the file chooser: {e}")),
+        };
+        let imported = std::fs::read_to_string(&file).map_err(|e| e.to_string()).and_then(|text| push::import_sxcu(&text));
+        match imported {
+            Ok((destination, secret)) => {
+                let mut form = Form::new(destination, false);
+                form.secret = secret.unwrap_or_default();
+                self.push.form = Some(form);
+            }
+            Err(e) => {
+                let name = file.file_name().unwrap_or_default().to_string_lossy();
+                self.note = Some(format!("Couldn't use {name}: {e}"));
+            }
+        }
+    }
+
     /// Picks up the answers that have arrived.
     fn poll_push(&mut self) {
+        self.import();
         for test in self.push.tests.values_mut() {
             if let Test::Running(rx) = test {
                 if let Ok(result) = rx.try_recv() {
@@ -325,14 +372,22 @@ impl SettingsApp {
                     text_row(ui, "Name", "", &mut form.destination.name, false);
                     let sftp = matches!(form.destination.kind, Kind::Sftp { .. });
                     for (i, f) in fields(&mut form.destination.kind).into_iter().enumerate() {
-                        text_row(ui, f.label, f.hint, f.value, false);
+                        if f.multiline {
+                            lines_row(ui, f.label, f.hint, f.value);
+                        } else {
+                            text_row(ui, f.label, f.hint, f.value, false);
+                        }
                         // The port follows the server.
                         if sftp && i == 0 {
                             text_row(ui, "Port", "22", &mut form.port, false);
                         }
                     }
                     if let Some(label) = form.destination.kind.secret_label() {
-                        let hint = if form.editing { "Leave empty to keep the saved one" } else { "" };
+                        let hint = match (form.editing, form.destination.kind.secret_optional()) {
+                            (true, _) => "Leave empty to keep the saved one",
+                            (false, true) => "Optional",
+                            (false, false) => "",
+                        };
                         // A webhook address is worth seeing to check it was pasted whole; it's
                         // still kept in the credential store.
                         let masked = !matches!(form.destination.kind, Kind::Discord { .. });
@@ -385,16 +440,34 @@ fn text_row(ui: &mut Ui, label: &str, hint: &str, value: &mut String, password: 
     ui.end_row();
 }
 
+/// A label and a text box a few lines high, for one entry a line.
+fn lines_row(ui: &mut Ui, label: &str, hint: &str, value: &mut String) {
+    let text = ui.label(label);
+    ui.add(egui::TextEdit::multiline(value).hint_text(hint).desired_rows(3).desired_width(360.0)).labelled_by(text.id);
+    ui.end_row();
+}
+
+/// What the Add… menu was asked for.
+enum Added {
+    Kind(Kind),
+    /// A custom uploader, from a ShareX file.
+    Sxcu,
+}
+
 /// The Add… button, a menu of the kinds of place; the one chosen.
-fn add_menu(ui: &mut Ui) -> Option<Kind> {
+fn add_menu(ui: &mut Ui) -> Option<Added> {
     let mut chosen = None;
     ui.menu_button("Add…", |ui| {
         for make in Kind::ALL {
             let kind = make();
             if ui.button(kind.name()).clicked() {
-                chosen = Some(kind);
+                chosen = Some(Added::Kind(kind));
                 ui.close();
             }
+        }
+        if ui.button("Custom uploader from a ShareX file (.sxcu)…").clicked() {
+            chosen = Some(Added::Sxcu);
+            ui.close();
         }
     });
     chosen

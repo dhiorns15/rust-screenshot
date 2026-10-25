@@ -109,8 +109,23 @@ pub fn pick_folder(title: &str, current: &std::path::Path) -> Result<Option<std:
     // The current folder as the portal takes it: bytes, ending in a zero.
     let mut start = current.as_os_str().as_bytes().to_vec();
     start.push(0);
-    let mut options = HashMap::from([("directory", Value::from(true)), ("current_folder", Value::from(start))]);
-    let Response::Done(results) = request(&conn, &chooser, "OpenFile", &mut options, |c, o| c.call_method("OpenFile", &("", title, o)))? else {
+    let options = HashMap::from([("directory", Value::from(true)), ("current_folder", Value::from(start))]);
+    open_file(&conn, &chooser, title, options)
+}
+
+/// Asks the desktop to pick a file, offering those matching `filter` (a name and a pattern like
+/// "*.sxcu"); `None` if it was cancelled.
+pub fn pick_file(title: &str, (name, pattern): (&str, &str)) -> Result<Option<std::path::PathBuf>, String> {
+    let conn = Connection::session().map_err(|e| format!("Couldn't reach the desktop's session bus: {e}"))?;
+    let chooser = Proxy::new(&conn, PORTAL, PORTAL_PATH, "org.freedesktop.portal.FileChooser").map_err(|e| e.to_string())?;
+    // a(sa(us)): each filter's name and its patterns, 0 meaning a glob.
+    let filters = vec![(name.to_owned(), vec![(0u32, pattern.to_owned())])];
+    open_file(&conn, &chooser, title, HashMap::from([("filters", Value::from(filters))]))
+}
+
+/// The file chooser's OpenFile, with `options`; the first thing picked.
+fn open_file(conn: &Connection, chooser: &Proxy, title: &str, mut options: HashMap<&str, Value>) -> Result<Option<std::path::PathBuf>, String> {
+    let Response::Done(results) = request(conn, chooser, "OpenFile", &mut options, |c, o| c.call_method("OpenFile", &("", title, o)))? else {
         return Ok(None);
     };
     let uris: Vec<String> = take(results, "uris")?;

@@ -4,6 +4,7 @@
 //! the system's credential store (see `secrets`), by the destination's id. Each kind's talking to
 //! its server is in a module of its own.
 
+mod custom;
 mod discord;
 mod immich;
 mod s3;
@@ -70,6 +71,25 @@ pub enum Kind {
     Discord {},
     /// An Immich server. Secret: an API key.
     Immich { server: String },
+    /// Any HTTP upload API, described as ShareX's custom uploaders are (see `custom`). Secret, if it
+    /// needs one: a token, put wherever `{secret}` is written.
+    Custom {
+        url: String,
+        #[serde(default)]
+        method: String,
+        /// The form field the file goes in; empty: the file is the whole body.
+        #[serde(default)]
+        file_field: String,
+        /// Form fields, "name: value" a line.
+        #[serde(default)]
+        fields: String,
+        /// Headers, "Name: value" a line.
+        #[serde(default)]
+        headers: String,
+        /// Where the link is in the reply, e.g. "{json:data.url}".
+        #[serde(default)]
+        link: String,
+    },
 }
 
 fn default_port() -> u16 {
@@ -78,7 +98,7 @@ fn default_port() -> u16 {
 
 impl Kind {
     /// An empty one of each kind, in the order they're offered.
-    pub const ALL: [fn() -> Kind; 5] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::discord, Kind::immich];
+    pub const ALL: [fn() -> Kind; 6] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::discord, Kind::immich, Kind::custom];
 
     pub fn sftp() -> Kind {
         Kind::Sftp { host: String::new(), port: default_port(), user: String::new(), folder: String::new(), public_url: String::new() }
@@ -107,6 +127,17 @@ impl Kind {
         Kind::Immich { server: String::new() }
     }
 
+    pub fn custom() -> Kind {
+        Kind::Custom {
+            url: String::new(),
+            method: "POST".into(),
+            file_field: "file".into(),
+            fields: String::new(),
+            headers: String::new(),
+            link: String::new(),
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             Kind::Sftp { .. } => "SFTP",
@@ -114,6 +145,7 @@ impl Kind {
             Kind::S3 { .. } => "S3-compatible",
             Kind::Discord { .. } => "Discord",
             Kind::Immich { .. } => "Immich",
+            Kind::Custom { .. } => "Custom uploader",
         }
     }
 
@@ -125,7 +157,13 @@ impl Kind {
             Kind::S3 { .. } => Some("Secret access key"),
             Kind::Discord { .. } => Some("Webhook URL"),
             Kind::Immich { .. } => Some("API key"),
+            Kind::Custom { .. } => Some("Token"),
         }
+    }
+
+    /// Whether it can do without its secret: a custom uploader may need no token.
+    pub fn secret_optional(&self) -> bool {
+        matches!(self, Kind::Custom { .. })
     }
 
     /// Where it is, for showing in a list; never the secret.
@@ -142,6 +180,8 @@ impl Kind {
             }
             Kind::Discord { .. } => String::new(),
             Kind::Immich { server } => server.clone(),
+            // Without the query, which may carry a key.
+            Kind::Custom { url, .. } => url.split('?').next().unwrap_or_default().to_owned(),
         }
     }
 }
@@ -186,6 +226,7 @@ impl Destination {
                 .or_else(|| public(public_url)),
             Kind::Discord { .. } => None,
             Kind::Immich { server } => address(server, "the server's address"),
+            Kind::Custom { url, .. } => address(url, "the upload address").or_else(|| custom::problems(&uploader(&self.kind, ""))),
         }
     }
 }
@@ -233,6 +274,7 @@ pub fn test(destination: &Destination, secret: Option<&str>) -> Result<String, S
         }
         Kind::Discord {} => discord::test(secret),
         Kind::Immich { server } => immich::test(server, secret),
+        Kind::Custom { .. } => custom::test(&uploader(&destination.kind, secret)),
     }
 }
 
@@ -257,6 +299,30 @@ pub fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Res
         }
         Kind::Discord {} => discord::post(secret, file),
         Kind::Immich { server } => immich::upload(server, secret, file),
+        Kind::Custom { .. } => custom::upload(&uploader(&destination.kind, secret), file),
+    }
+}
+
+/// A custom uploader's description, with `secret`.
+fn uploader<'a>(kind: &'a Kind, secret: &'a str) -> custom::Uploader<'a> {
+    let Kind::Custom { url, method, file_field, fields, headers, link } = kind else { unreachable!("not a custom uploader") };
+    custom::Uploader { url, method, file_field, fields, headers, link, secret }
+}
+
+/// A ShareX custom uploader file (`.sxcu`) as a destination, and the token taken out of it.
+pub fn import_sxcu(text: &str) -> Result<(Destination, Option<String>), String> {
+    let (name, kind, secret) = custom::import(text)?;
+    Ok((Destination { name, ..Destination::new(kind) }, secret))
+}
+
+/// The secret saved for `destination`, which may wait for the keyring to be unlocked; an error if
+/// it needs one and has none.
+pub fn saved_secret(destination: &Destination) -> Result<Option<String>, String> {
+    let Some(label) = destination.kind.secret_label() else { return Ok(None) };
+    match crate::secrets::get(&destination.id)? {
+        Some(secret) => Ok(Some(secret)),
+        None if destination.kind.secret_optional() => Ok(None),
+        None => Err(format!("No {} is saved; choose Edit to enter it", label.to_lowercase())),
     }
 }
 
@@ -387,6 +453,21 @@ mod tests {
     }
 
     #[test]
+    fn custom_uploaders_come_from_sharex_files_and_push() {
+        let (server, requests) = serve_each(vec![("200 OK", "", r#"{"files":[{"url":"https://z.example.com/u/a.png"}]}"#.into())]);
+        let sxcu = serde_json::json!({
+            "Name": "Zipline", "RequestURL": format!("{server}/api/upload"), "Headers": {"Authorization": "tok"},
+            "Body": "MultipartFormData", "FileFormName": "file", "URL": "{json:files[0].url}",
+        });
+        let (d, secret) = import_sxcu(&sxcu.to_string()).unwrap();
+        assert_eq!((d.name.as_str(), secret.as_deref(), d.problems()), ("Zipline", Some("tok"), None));
+        assert_eq!(d.kind.target(), format!("{server}/api/upload"));
+        assert_eq!(push(&d, secret.as_deref(), &shot("custom")), Ok(Some("https://z.example.com/u/a.png".into())));
+        assert_eq!(requests.join().unwrap()[0].header("Authorization"), Some("tok"));
+        assert!(d.kind.secret_optional() && !Kind::immich().secret_optional());
+    }
+
+    #[test]
     fn links_need_a_public_address() {
         assert_eq!(link("", "a.png"), None);
         assert_eq!(link(" https://x.example.com/s/ ", "dir/a #1.png").as_deref(), Some("https://x.example.com/s/dir/a%20%231.png"));
@@ -407,6 +488,14 @@ mod tests {
             },
             Kind::Discord { .. } => Kind::Discord {},
             Kind::Immich { .. } => Kind::Immich { server: "https://photos.example.com".into() },
+            Kind::Custom { .. } => Kind::Custom {
+                url: "https://i.example.com/api/upload".into(),
+                method: "POST".into(),
+                file_field: "file".into(),
+                fields: String::new(),
+                headers: "Authorization: {secret}".into(),
+                link: "{json:url}".into(),
+            },
         };
         d
     }
@@ -514,6 +603,7 @@ mod tests {
                 ("S3-compatible", Some("Secret access key")),
                 ("Discord", Some("Webhook URL")),
                 ("Immich", Some("API key")),
+                ("Custom uploader", Some("Token")),
             ]
         );
     }

@@ -356,6 +356,11 @@ pub fn pick_folder(title: &str, current: &Path) -> Result<Option<PathBuf>, Strin
     super::super::portal::pick_folder(title, current)
 }
 
+/// The desktop's file chooser, offering the files matching `filter` (a name and a pattern).
+pub fn pick_file(title: &str, filter: (&str, &str)) -> Result<Option<PathBuf>, String> {
+    super::super::portal::pick_file(title, filter)
+}
+
 pub fn recycle(path: &Path) -> bool {
     trash::delete(path).is_ok()
 }

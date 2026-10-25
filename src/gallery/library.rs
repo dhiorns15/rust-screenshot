@@ -122,7 +122,7 @@ enum Action {
     Drag(PathBuf),
     Menu(PathBuf, &'static str),
     /// Push this (or the selected ones, if it's one of them) there.
-    Push(PathBuf, crate::push::Destination),
+    Push(PathBuf, Box<crate::push::Destination>),
     CopyLink(String),
 }
 
@@ -408,7 +408,7 @@ impl App {
                 }
                 for destination in destinations {
                     if ui.add_enabled(self.pushing.is_none(), egui::Button::new(&destination.name)).on_disabled_hover_text("Still pushing").clicked() {
-                        action = Some(Action::Push(path.clone(), destination));
+                        action = Some(Action::Push(path.clone(), Box::new(destination)));
                         ui.close();
                     }
                 }

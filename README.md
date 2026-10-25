@@ -318,6 +318,7 @@ tried again after a minute, five minutes and half an hour, then reported with a 
 | S3-compatible | Endpoint (`https://s3.<region>.amazonaws.com`, `https://<account>.r2.cloudflarestorage.com`, Backblaze B2's or Wasabi's S3 endpoint, MinIO's address), region (optional: taken from the endpoint, `auto` for R2), bucket, an optional folder in it, and an access key ID and secret | With a public address for the bucket |
 | Discord | A channel's webhook: *Server Settings → Integrations → Webhooks → Copy Webhook URL*. Files up to Discord's limit (10 MB without a server boost) | The attachment |
 | Immich | The server's address and an API key (*Account Settings → API Keys*; it needs to upload, and to read the user for *Test*) | The photo in Immich |
+| Custom uploader | Any upload API, described as ShareX's custom uploaders are: the upload address, method, the form field the file goes in (or none, to send the file as the whole body), form fields and headers (`Name: value`, one a line), and where the link is in the reply (`{json:data.url}`, `{response}`, `{header:Location}`). `{secret}` is replaced by the token, kept with the other secrets, and `{filename}` by the file's name. *Add… → Custom uploader from a ShareX file (.sxcu)* fills it in from a `.sxcu` file, keeping its key or token as the secret | Where the reply says |
 
 Passwords, keys and webhook addresses are kept in Windows' Credential Manager, or on Linux the
 desktop's keyring (GNOME Keyring, KWallet: any Secret Service), never in RSnip's settings. On Linux
@@ -325,8 +326,7 @@ without a keyring, places that need one can't be saved.
 
 **Coming later:** Dropbox, Google Drive, OneDrive, Imgur (with albums) and Box (each needs RSnip
 registered with them), Slack, Microsoft Teams and Mattermost, SMB shares, FTPS, Imgbb, Catbox,
-Gyazo and Streamable, PhotoPrism and Synology Photos, and a custom uploader for anything with an
-upload API.
+Gyazo and Streamable, PhotoPrism and Synology Photos.
 
 ### Command line
 

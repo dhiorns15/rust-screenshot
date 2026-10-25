@@ -419,10 +419,10 @@ fn system_info_leaves_out_the_tray_app_where_there_is_none() {
     assert!(h.query_by_label("Theme").is_some());
 }
 
-/// Types `text` into the box labelled `label` (a password box too).
+/// Types `text` into the box labelled `label` (a password or multi-line box too).
 fn type_into(h: &mut Harness<SettingsApp>, label: &str, text: &str) {
     use eframe::egui::accesskit::Role;
-    let node = h.query_by_role_and_label(Role::TextInput, label).or_else(|| h.query_by_role_and_label(Role::PasswordInput, label));
+    let node = [Role::TextInput, Role::PasswordInput, Role::MultilineTextInput].into_iter().find_map(|role| h.query_by_role_and_label(role, label));
     let node = node.unwrap_or_else(|| panic!("no box labelled {label}"));
     node.click();
     node.type_text(text);
@@ -457,7 +457,7 @@ fn push_to_starts_empty() {
     open(&mut h, Section::Destinations);
     assert!(h.query_by_label("Nowhere yet. Add a place to push to.").is_some());
     click(&mut h, "Add…");
-    for kind in ["SFTP", "WebDAV", "S3-compatible", "Discord", "Immich"] {
+    for kind in ["SFTP", "WebDAV", "S3-compatible", "Discord", "Immich", "Custom uploader", "Custom uploader from a ShareX file (.sxcu)…"] {
         assert!(h.query_by_label(kind).is_some(), "{kind}");
     }
 }
@@ -550,6 +550,49 @@ fn automatically_and_by_hand_are_remembered_with_the_time() {
     click(&mut h, "By hand");
     let d = destinations(&h).remove(0);
     assert_eq!((d.auto, d.auto_since), (false, None));
+}
+
+#[test]
+fn a_sharex_uploader_fills_in_the_form_and_its_token_is_kept_as_the_secret() {
+    let mut h = settings("settings-push-sxcu", |_| {});
+    let dir = h.state().env.dir.clone();
+    let sxcu = dir.join("zipline.sxcu");
+    let json = r#"{"Name":"Zipline","RequestURL":"https://z.example.com/api/upload","Headers":{"Authorization":"tok-123"},"Body":"MultipartFormData","FileFormName":"file","URL":"{json:files[0].url}"}"#;
+    std::fs::write(&sxcu, json).unwrap();
+    h.state().env.sandboxed().picked_file = Some(sxcu);
+    open(&mut h, Section::Destinations);
+    click(&mut h, "Add…");
+    click(&mut h, "Custom uploader from a ShareX file (.sxcu)…");
+    assert!(h.query_by_label("Add Custom uploader").is_some(), "the form, filled in");
+    assert!(is_enabled(&h, "Save"));
+    click(&mut h, "Save");
+    let d = destinations(&h).remove(0);
+    assert_eq!(d.name, "Zipline");
+    assert!(matches!(&d.kind, crate::push::Kind::Custom { headers, .. } if headers == "Authorization: {secret}"));
+    assert_eq!(h.state().env.sandboxed().secrets.get(&d.id).map(String::as_str), Some("tok-123"));
+    assert!(!h.state().env.text_setting(options::DESTINATIONS).unwrap().contains("tok-123"));
+
+    // One RSnip can't use says why.
+    let bad = dir.join("regex.sxcu");
+    std::fs::write(&bad, r#"{"RequestURL":"https://x.example.com","FileFormName":"f","URL":"{regex:(.*)|1}"}"#).unwrap();
+    h.state().env.sandboxed().picked_file = Some(bad);
+    click(&mut h, "Add…");
+    click(&mut h, "Custom uploader from a ShareX file (.sxcu)…");
+    assert!(h.query_by_label("Couldn't use regex.sxcu: RSnip doesn't fill in {regex}").is_some());
+    assert_eq!(destinations(&h).len(), 1);
+}
+
+#[test]
+fn a_custom_uploader_may_have_no_token() {
+    let mut h = settings("settings-push-custom", |_| {});
+    open(&mut h, Section::Destinations);
+    click(&mut h, "Add…");
+    click(&mut h, "Custom uploader");
+    type_into(&mut h, "Upload address", "https://i.example.com/upload");
+    assert!(is_enabled(&h, "Save"), "no token needed");
+    type_into(&mut h, "Headers", "no colon here");
+    assert!(!is_enabled(&h, "Save"));
+    assert!(h.query_by_label_contains("Each header needs a name, a colon and its value").is_some());
 }
 
 #[test]
@@ -650,6 +693,19 @@ mod snapshots {
         type_into(&mut h, "Server address", "https://photos.example.com");
         type_into(&mut h, "API key", "secret-key");
         snapshot(&mut h, Section::Destinations, "settings_push_form");
+    }
+
+    #[test]
+    fn push_to_custom_form() {
+        let _gpu = super::super::tests::gpu();
+        let mut h = rendered("snap-settings-push-custom", |_| {});
+        open(&mut h, Section::Destinations);
+        click(&mut h, "Add…");
+        click(&mut h, "Custom uploader");
+        type_into(&mut h, "Upload address", "https://i.example.com/api/upload");
+        type_into(&mut h, "Headers", "Authorization: Bearer {secret}");
+        type_into(&mut h, "Link", "{json:data.url}");
+        snapshot(&mut h, Section::Destinations, "settings_push_custom");
     }
 
     #[test]

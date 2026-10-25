@@ -144,7 +144,7 @@ pub fn request(method: &str, url: &str, headers: &[(&str, &str)], body: Body) ->
 }
 
 /// The server in an address, for messages: "https://user@example.com:8443/a?b" is "example.com:8443".
-fn host_of(url: &str) -> &str {
+pub fn host_of(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     authority.rsplit('@').next().unwrap_or(authority)

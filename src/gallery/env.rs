@@ -104,6 +104,8 @@ pub struct Sandbox {
     pub host: Host,
     /// The folder "picked" in the folder chooser (`None`: cancelled).
     pub picked_folder: Option<PathBuf>,
+    /// The file "picked" in the file chooser (`None`: cancelled).
+    pub picked_file: Option<PathBuf>,
     /// Updates can be installed from Settings.
     pub can_install: bool,
     /// Times RSnip was asked to restart into an update it installed.
@@ -286,6 +288,25 @@ impl Env {
                 let (ctx, title, current) = (ctx.clone(), title.to_owned(), current.to_owned());
                 std::thread::spawn(move || {
                     let _ = tx.send(platform::pick_folder(&title, &current));
+                    ctx.request_repaint();
+                });
+            }
+        }
+        rx
+    }
+
+    /// Asks for a file with the system's file chooser, offering those matching `filter` (a name
+    /// and a pattern like "*.sxcu"); the answer arrives as `pick_folder`'s does.
+    pub fn pick_file(&self, ctx: &eframe::egui::Context, title: &str, filter: (&'static str, &'static str)) -> PickedFolder {
+        let (tx, rx) = channel();
+        match &self.sandbox {
+            Some(s) => {
+                let _ = tx.send(Ok(s.borrow().picked_file.clone()));
+            }
+            None => {
+                let (ctx, title) = (ctx.clone(), title.to_owned());
+                std::thread::spawn(move || {
+                    let _ = tx.send(platform::pick_file(&title, filter));
                     ctx.request_repaint();
                 });
             }
@@ -605,13 +626,9 @@ fn outcome(id: &str, file: PathBuf, result: Result<Option<String>, String>) -> P
 /// The secret to use with `destination`: the one given, else the one saved for it (which may
 /// wait for the keyring), or an error if it needs one and has none.
 fn saved_secret(destination: &Destination, given: Option<String>) -> Result<Option<String>, String> {
-    let Some(label) = destination.kind.secret_label() else { return Ok(None) };
     match given {
-        Some(secret) => Ok(Some(secret)),
-        None => match crate::secrets::get(&destination.id)? {
-            Some(secret) => Ok(Some(secret)),
-            None => Err(format!("No {} is saved; choose Edit to enter it", label.to_lowercase())),
-        },
+        Some(secret) if destination.kind.secret_label().is_some() => Ok(Some(secret)),
+        _ => crate::push::saved_secret(destination),
     }
 }
 
