@@ -319,6 +319,7 @@ tried again after a minute, five minutes and half an hour, then reported with a 
 | Discord | A channel's webhook: *Server Settings → Integrations → Webhooks → Copy Webhook URL*. Files up to Discord's limit (10 MB without a server boost) | The attachment |
 | Slack | A Slack app of your own, with a bot that may upload files (below), installed to your workspace and invited to the channel (`/invite @RSnip`); its *Bot User OAuth Token* (`xoxb-…`) and the channel's ID (in the channel's details, like `C0123ABCDEF`) | The file in Slack |
 | Immich | The server's address and an API key (*Account Settings → API Keys*; it needs to upload, and to read the user for *Test*) | The photo in Immich |
+| PhotoPrism | The server's address, an app password (*Settings → Account → Apps and Devices*, or `photoprism auth add -s "files sessions albums" <user>`: full access, or the `files` and `sessions` scopes, and `albums` to put photos in one) and an optional album, made if it isn't there. Uploaded as PhotoPrism's own web upload is, then imported | None (PhotoPrism doesn't say which photo it became) |
 | Custom uploader | Any upload API, described as ShareX's custom uploaders are: the upload address, method, the form field the file goes in (or none, to send the file as the whole body), form fields and headers (`Name: value`, one a line), and where the link is in the reply (`{json:data.url}`, `{response}`, `{header:Location}`). `{secret}` is replaced by the token, kept with the other secrets, and `{filename}` by the file's name. *Add… → Custom uploader from a ShareX file (.sxcu)* fills it in from a `.sxcu` file, keeping its key or token as the secret | Where the reply says |
 
 For Slack, *Create New App → From a manifest* at [api.slack.com/apps](https://api.slack.com/apps),
@@ -343,7 +344,7 @@ without a keyring, places that need one can't be saved.
 
 **Coming later:** Dropbox, Google Drive, OneDrive, Imgur (with albums) and Box (each needs RSnip
 registered with them), Microsoft Teams and Mattermost, SMB shares, FTPS, Imgbb, Catbox,
-Gyazo and Streamable, PhotoPrism and Synology Photos.
+Gyazo and Streamable, and Synology Photos.
 
 ### Command line
 

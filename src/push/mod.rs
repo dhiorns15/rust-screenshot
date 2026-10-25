@@ -7,6 +7,7 @@
 mod custom;
 mod discord;
 mod immich;
+mod photoprism;
 mod s3;
 mod sftp;
 mod slack;
@@ -77,6 +78,13 @@ pub enum Kind {
         /// The channel's ID ("C0123ABCDEF"), not its name.
         channel: String,
     },
+    /// A PhotoPrism server. Secret: an app password.
+    PhotoPrism {
+        server: String,
+        /// The album to put what's pushed in, by its title; empty for none.
+        #[serde(default)]
+        album: String,
+    },
     /// Any HTTP upload API, described as ShareX's custom uploaders are (see `custom`). Secret, if it
     /// needs one: a token, put wherever `{secret}` is written.
     Custom {
@@ -104,7 +112,7 @@ fn default_port() -> u16 {
 
 impl Kind {
     /// An empty one of each kind, in the order they're offered.
-    pub const ALL: [fn() -> Kind; 7] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::discord, Kind::slack, Kind::immich, Kind::custom];
+    pub const ALL: [fn() -> Kind; 8] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::discord, Kind::slack, Kind::immich, Kind::photoprism, Kind::custom];
 
     pub fn sftp() -> Kind {
         Kind::Sftp { host: String::new(), port: default_port(), user: String::new(), folder: String::new(), public_url: String::new() }
@@ -137,6 +145,10 @@ impl Kind {
         Kind::Slack { channel: String::new() }
     }
 
+    pub fn photoprism() -> Kind {
+        Kind::PhotoPrism { server: String::new(), album: String::new() }
+    }
+
     pub fn custom() -> Kind {
         Kind::Custom {
             url: String::new(),
@@ -156,6 +168,7 @@ impl Kind {
             Kind::Discord { .. } => "Discord",
             Kind::Immich { .. } => "Immich",
             Kind::Slack { .. } => "Slack",
+            Kind::PhotoPrism { .. } => "PhotoPrism",
             Kind::Custom { .. } => "Custom uploader",
         }
     }
@@ -169,6 +182,7 @@ impl Kind {
             Kind::Discord { .. } => Some("Webhook URL"),
             Kind::Immich { .. } => Some("API key"),
             Kind::Slack { .. } => Some("Bot token"),
+            Kind::PhotoPrism { .. } => Some("App password"),
             Kind::Custom { .. } => Some("Token"),
         }
     }
@@ -193,6 +207,7 @@ impl Kind {
             Kind::Discord { .. } => String::new(),
             Kind::Immich { server } => server.clone(),
             Kind::Slack { channel } => channel.clone(),
+            Kind::PhotoPrism { server, .. } => server.clone(),
             // Without the query, which may carry a key.
             Kind::Custom { url, .. } => url.split('?').next().unwrap_or_default().to_owned(),
         }
@@ -241,6 +256,7 @@ impl Destination {
             Kind::Immich { server } => address(server, "the server's address"),
             Kind::Slack { channel } if channel.trim().starts_with('#') => Some("Use the channel's ID, from its details (like C0123ABCDEF), not its name".into()),
             Kind::Slack { channel } => required(channel, "the channel's ID"),
+            Kind::PhotoPrism { server, .. } => address(server, "the server's address"),
             Kind::Custom { url, .. } => address(url, "the upload address").or_else(|| custom::problems(&uploader(&self.kind, ""))),
         }
     }
@@ -290,6 +306,7 @@ pub fn test(destination: &Destination, secret: Option<&str>) -> Result<String, S
         Kind::Discord {} => discord::test(secret),
         Kind::Immich { server } => immich::test(server, secret),
         Kind::Slack { .. } => slack::test(secret),
+        Kind::PhotoPrism { server, .. } => photoprism::test(server, secret),
         Kind::Custom { .. } => custom::test(&uploader(&destination.kind, secret)),
     }
 }
@@ -316,6 +333,7 @@ pub fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Res
         Kind::Discord {} => discord::post(secret, file),
         Kind::Immich { server } => immich::upload(server, secret, file),
         Kind::Slack { channel } => slack::post(secret, channel, file),
+        Kind::PhotoPrism { server, album } => photoprism::upload(server, secret, album, file),
         Kind::Custom { .. } => custom::upload(&uploader(&destination.kind, secret), file),
     }
 }
@@ -506,6 +524,7 @@ mod tests {
             Kind::Discord { .. } => Kind::Discord {},
             Kind::Immich { .. } => Kind::Immich { server: "https://photos.example.com".into() },
             Kind::Slack { .. } => Kind::Slack { channel: "C0123ABCDEF".into() },
+            Kind::PhotoPrism { .. } => Kind::PhotoPrism { server: "https://pp.example.com".into(), album: "Screenshots".into() },
             Kind::Custom { .. } => Kind::Custom {
                 url: "https://i.example.com/api/upload".into(),
                 method: "POST".into(),
@@ -604,6 +623,23 @@ mod tests {
         println!("SFTP: pushed, making the folders");
     }
 
+    /// Against a PhotoPrism server at `RSNIP_TEST_PHOTOPRISM`, with the app password
+    /// `RSNIP_TEST_PHOTOPRISM_KEY` (scopes files, sessions, albums). Run by hand against
+    /// photoprism/photoprism in Docker; too big a server for CI.
+    #[test]
+    #[ignore = "needs a PhotoPrism server"]
+    fn real_photoprism() {
+        let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name} isn't set"));
+        let d = to(Kind::PhotoPrism { server: var("RSNIP_TEST_PHOTOPRISM"), album: "RSnip test".into() });
+        let key = var("RSNIP_TEST_PHOTOPRISM_KEY");
+        println!("{}", test(&d, Some(&key)).unwrap());
+        assert_eq!(test(&d, Some("wrong")), Err("PhotoPrism didn't accept the app password".into()));
+        let png = shot("photoprism");
+        // A real PNG, as PhotoPrism skips what it can't read.
+        image::RgbaImage::from_pixel(64, 48, image::Rgba([200, 30, 90, 255])).save(&png).unwrap();
+        assert_eq!(push(&d, Some(&key), &png), Ok(None));
+    }
+
     #[test]
     fn ids_are_unique() {
         let ids: std::collections::BTreeSet<String> = (0..1000).map(|_| new_id()).collect();
@@ -622,6 +658,7 @@ mod tests {
                 ("Discord", Some("Webhook URL")),
                 ("Slack", Some("Bot token")),
                 ("Immich", Some("API key")),
+                ("PhotoPrism", Some("App password")),
                 ("Custom uploader", Some("Token")),
             ]
         );
