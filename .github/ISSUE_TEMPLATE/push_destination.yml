@@ -1,0 +1,30 @@
+name: A new place to push to
+description: Ask for a service RSnip should be able to push screenshots and recordings to.
+labels: [enhancement, push-to]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Already planned: Dropbox, Google Drive, OneDrive, Imgur, Box, Slack, Teams, Mattermost, SMB
+        shares, FTPS, Imgbb, Catbox, Gyazo, Streamable, PhotoPrism, Synology Photos and a custom
+        uploader (see the Roadmap in the README). A thumbs-up on an existing issue for one of these
+        helps us choose what's next.
+  - type: input
+    id: service
+    attributes:
+      label: Service
+      placeholder: e.g. pCloud, Jellyfin, a Mastodon instance
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: How you'd use it
+      description: Automatically for everything, by hand now and then, a link to share, a backup...
+    validations:
+      required: true
+  - type: textarea
+    id: api
+    attributes:
+      label: How it takes uploads, if you know
+      description: A link to its upload API, and how it signs in (API key, username and password, sign in with the browser). If it speaks WebDAV or S3, RSnip may already reach it.

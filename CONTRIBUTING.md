@@ -2,6 +2,10 @@
 
 Thanks for helping! Bug reports, ideas and pull requests are all welcome. For anything bigger than a
 small fix, please open an issue first so we can agree on the approach before you spend time on it.
+[New issue](https://github.com/dhiorns15/rust-screenshot/issues/new/choose) offers a form for each:
+a bug, an idea, or a new place to push to. For a bug, *Settings → System info → Report a problem* in
+RSnip copies what the form asks about your system. Security problems go privately, see
+[SECURITY.md](SECURITY.md).
 
 ## AI-assisted contributions
 

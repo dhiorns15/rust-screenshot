@@ -1,0 +1,32 @@
+name: Idea
+description: Something RSnip could do, or do better.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you're trying to do
+      description: The task or annoyance behind the idea, so we can find the best way to help with it.
+      placeholder: I take a lot of screenshots of forms and always have to blur the same fields by hand.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you picture it working. Another tool that does it well is useful to mention.
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Where you'd use it
+      multiple: true
+      options:
+        - Windows
+        - Linux
+  - type: textarea
+    id: else
+    attributes:
+      label: Anything else
+      description: Mock-ups, screenshots, links.
