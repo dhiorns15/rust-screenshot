@@ -333,7 +333,10 @@ impl SettingsApp {
                     }
                     if let Some(label) = form.destination.kind.secret_label() {
                         let hint = if form.editing { "Leave empty to keep the saved one" } else { "" };
-                        text_row(ui, label, hint, &mut form.secret, true);
+                        // A webhook address is worth seeing to check it was pasted whole; it's
+                        // still kept in the credential store.
+                        let masked = !matches!(form.destination.kind, Kind::Discord { .. });
+                        text_row(ui, label, hint, &mut form.secret, masked);
                     }
                 });
             });
