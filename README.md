@@ -316,6 +316,7 @@ tried again after a minute, five minutes and half an hour, then reported with a 
 | SFTP | The server, its port and the folder; a user name unless `~/.ssh/config` gives one. It signs in with your SSH keys and ssh-agent, through the system's OpenSSH (built into Windows 10 and 11; `openssh-client` on Linux), so RSnip never stores an SSH password. A server it hasn't met is remembered; one whose key has changed is refused | With a public address for the folder |
 | WebDAV | The folder's address (Nextcloud: `https://<server>/remote.php/dav/files/<user>/<folder>`), user name and password (an app password, where the server has them). Missing folders are made | With a public address for the folder |
 | S3-compatible | Endpoint (`https://s3.<region>.amazonaws.com`, `https://<account>.r2.cloudflarestorage.com`, Backblaze B2's or Wasabi's S3 endpoint, MinIO's address), region (optional: taken from the endpoint, `auto` for R2), bucket, an optional folder in it, and an access key ID and secret | With a public address for the bucket |
+| SMB share | The share (`\\nas\shots` or `//nas/shots`), a folder in it, and a user name and password, or none to sign in as you are signed in to Windows (a guest on Linux). On Windows it's Windows' own file sharing (the sign-in lasts until you sign out); on Linux, Samba's `smbclient` (the `smbclient` package; `samba-client` on Fedora and openSUSE). Missing folders are made | With a public address for the folder |
 | FTPS | The server, its port (21 for explicit TLS, the usual; 990 for implicit), user name, password and folder. FTP over TLS only, through the system's `curl` (built into Windows 10 and 11; the `curl` package on Linux): plain FTP, which sends the password unencrypted, isn't offered. The server's certificate has to be one the computer trusts. Missing folders are made | With a public address for the folder |
 | Discord | A channel's webhook: *Server Settings → Integrations → Webhooks → Copy Webhook URL*. Files up to Discord's limit (10 MB without a server boost) | The attachment |
 | Slack | A Slack app of your own, with a bot that may upload files (below), installed to your workspace and invited to the channel (`/invite @RSnip`); its *Bot User OAuth Token* (`xoxb-…`) and the channel's ID (in the channel's details, like `C0123ABCDEF`) | The file in Slack |
@@ -344,7 +345,7 @@ desktop's keyring (GNOME Keyring, KWallet: any Secret Service), never in RSnip's
 without a keyring, places that need one can't be saved.
 
 **Coming later:** Dropbox, Google Drive, OneDrive, Imgur (with albums) and Box (each needs RSnip
-registered with them), Microsoft Teams and Mattermost, SMB shares, Imgbb, Catbox,
+registered with them), Microsoft Teams and Mattermost, Imgbb, Catbox,
 Gyazo and Streamable, and Synology Photos.
 
 ### Command line

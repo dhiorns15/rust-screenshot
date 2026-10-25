@@ -79,7 +79,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: ci/desktop-test.sh
 
-  # Pushing to real S3, WebDAV, SFTP and FTPS servers, in Docker (ci/test-destinations.sh); the linux
+  # Pushing to real S3, WebDAV, SFTP, FTPS and SMB servers, in Docker (ci/test-destinations.sh); the linux
   # job's container can't start containers of its own.
   destinations:
     runs-on: ubuntu-latest

@@ -12,6 +12,7 @@ mod photoprism;
 mod s3;
 mod sftp;
 mod slack;
+mod smb;
 mod webdav;
 
 use std::path::Path;
@@ -96,6 +97,19 @@ pub enum Kind {
         #[serde(default)]
         public_url: String,
     },
+    /// A folder on an SMB share (Windows file sharing, Samba, a NAS). Secret, if a user is given:
+    /// its password.
+    Smb {
+        /// "\\nas\shots" or "//nas/shots".
+        share: String,
+        #[serde(default)]
+        folder: String,
+        /// Empty: as you are signed in to Windows, or a guest on Linux.
+        #[serde(default)]
+        user: String,
+        #[serde(default)]
+        public_url: String,
+    },
     /// Any HTTP upload API, described as ShareX's custom uploaders are (see `custom`). Secret, if it
     /// needs one: a token, put wherever `{secret}` is written.
     Custom {
@@ -127,7 +141,7 @@ fn default_ftps_port() -> u16 {
 
 impl Kind {
     /// An empty one of each kind, in the order they're offered.
-    pub const ALL: [fn() -> Kind; 9] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::ftps, Kind::discord, Kind::slack, Kind::immich, Kind::photoprism, Kind::custom];
+    pub const ALL: [fn() -> Kind; 10] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::smb, Kind::ftps, Kind::discord, Kind::slack, Kind::immich, Kind::photoprism, Kind::custom];
 
     pub fn sftp() -> Kind {
         Kind::Sftp { host: String::new(), port: default_port(), user: String::new(), folder: String::new(), public_url: String::new() }
@@ -168,6 +182,10 @@ impl Kind {
         Kind::Ftps { host: String::new(), port: default_ftps_port(), user: String::new(), folder: String::new(), public_url: String::new() }
     }
 
+    pub fn smb() -> Kind {
+        Kind::Smb { share: String::new(), folder: String::new(), user: String::new(), public_url: String::new() }
+    }
+
     pub fn custom() -> Kind {
         Kind::Custom {
             url: String::new(),
@@ -189,6 +207,7 @@ impl Kind {
             Kind::Slack { .. } => "Slack",
             Kind::PhotoPrism { .. } => "PhotoPrism",
             Kind::Ftps { .. } => "FTPS",
+            Kind::Smb { .. } => "SMB share",
             Kind::Custom { .. } => "Custom uploader",
         }
     }
@@ -204,6 +223,7 @@ impl Kind {
             Kind::Slack { .. } => Some("Bot token"),
             Kind::PhotoPrism { .. } => Some("App password"),
             Kind::Ftps { .. } => Some("Password"),
+            Kind::Smb { .. } => Some("Password"),
             Kind::Custom { .. } => Some("Token"),
         }
     }
@@ -216,9 +236,10 @@ impl Kind {
         }
     }
 
-    /// Whether it can do without its secret: a custom uploader may need no token.
+    /// Whether it can do without its secret: a custom uploader may need no token, and a share no
+    /// password.
     pub fn secret_optional(&self) -> bool {
-        matches!(self, Kind::Custom { .. })
+        matches!(self, Kind::Custom { .. } | Kind::Smb { .. })
     }
 
     /// Where it is, for showing in a list; never the secret.
@@ -238,6 +259,10 @@ impl Kind {
             Kind::Slack { channel } => channel.clone(),
             Kind::PhotoPrism { server, .. } => server.clone(),
             Kind::Ftps { host, user, folder, .. } => format!("{user}@{host}{}{folder}", if folder.is_empty() { "" } else { ":" }),
+            Kind::Smb { share, folder, .. } => {
+                let folder = folder.trim_matches(['/', '\\']);
+                if folder.is_empty() { share.clone() } else { format!("{share}, {folder}") }
+            }
             // Without the query, which may carry a key.
             Kind::Custom { url, .. } => url.split('?').next().unwrap_or_default().to_owned(),
         }
@@ -291,6 +316,9 @@ impl Destination {
                 .or_else(|| (*port == 0).then(|| "Enter a port from 1 to 65535".to_owned()))
                 .or_else(|| required(user, "the user name"))
                 .or_else(|| public(public_url)),
+            Kind::Smb { share, public_url, .. } => {
+                smb::parse(share, "").is_none().then(|| smb::BAD_SHARE.to_owned()).or_else(|| public(public_url))
+            }
             Kind::Custom { url, .. } => address(url, "the upload address").or_else(|| custom::problems(&uploader(&self.kind, ""))),
         }
     }
@@ -342,6 +370,7 @@ pub fn test(destination: &Destination, secret: Option<&str>) -> Result<String, S
         Kind::Slack { .. } => slack::test(secret),
         Kind::PhotoPrism { server, .. } => photoprism::test(server, secret),
         Kind::Ftps { host, port, user, folder, .. } => ftps::test(&ftps::Server { host, port: *port, user, password: secret, folder }),
+        Kind::Smb { share, folder, user, .. } => smb::test(&smb::Share { share, folder, user, password: secret }),
         Kind::Custom { .. } => custom::test(&uploader(&destination.kind, secret)),
     }
 }
@@ -371,6 +400,10 @@ pub fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Res
         Kind::PhotoPrism { server, album } => photoprism::upload(server, secret, album, file),
         Kind::Ftps { host, port, user, folder, public_url } => {
             ftps::put(&ftps::Server { host, port: *port, user, password: secret, folder }, &name, file)?;
+            Ok(link(public_url, &name))
+        }
+        Kind::Smb { share, folder, user, public_url } => {
+            smb::put(&smb::Share { share, folder, user, password: secret }, &name, file)?;
             Ok(link(public_url, &name))
         }
         Kind::Custom { .. } => custom::upload(&uploader(&destination.kind, secret), file),
@@ -565,6 +598,7 @@ mod tests {
             Kind::Slack { .. } => Kind::Slack { channel: "C0123ABCDEF".into() },
             Kind::PhotoPrism { .. } => Kind::PhotoPrism { server: "https://pp.example.com".into(), album: "Screenshots".into() },
             Kind::Ftps { port, .. } => Kind::Ftps { host: "nas.local".into(), port, user: "me".into(), folder: "shots".into(), public_url: String::new() },
+            Kind::Smb { .. } => Kind::Smb { share: "\\\\nas\\shots".into(), folder: "rsnip".into(), user: String::new(), public_url: String::new() },
             Kind::Custom { .. } => Kind::Custom {
                 url: "https://i.example.com/api/upload".into(),
                 method: "POST".into(),
@@ -608,7 +642,7 @@ mod tests {
 
     /// Against real servers, as ci/test-destinations.sh starts them: rclone's S3 and WebDAV at
     /// `RSNIP_TEST_S3` and `RSNIP_TEST_WEBDAV`, OpenSSH's SFTP at the host `RSNIP_TEST_SFTP` and
-    /// vsftpd's FTPS at `RSNIP_TEST_FTPS`.
+    /// vsftpd's FTPS at `RSNIP_TEST_FTPS` and Samba's share `RSNIP_TEST_SMB`.
     /// What each keeps shows here in the folder `RSNIP_TEST_<KIND>_DIR`.
     #[test]
     #[ignore = "needs the servers ci/test-destinations.sh starts"]
@@ -672,6 +706,18 @@ mod tests {
         }
         assert_eq!(test(&d, Some("rsnip-secret")), Ok("Connected".into()));
         println!("FTPS: pushed over TLS, making the folders");
+
+        let share = |user: &str| to(Kind::Smb { share: var("RSNIP_TEST_SMB"), folder: "shots/today".into(), user: user.into(), public_url: String::new() });
+        let d = share("rsnip");
+        assert_eq!(test(&d, Some("rsnip-secret")), Ok("Connected. The folder will be made with the first push".into()));
+        assert_eq!(test(&d, Some("wrong")), Err("The server didn't accept the user name or password".into()));
+        assert!(test(&share(""), None).unwrap_err().starts_with("The share didn't let RSnip in"), "no guests there");
+        for file in [&png, &mp4] {
+            assert_eq!(push(&d, Some("rsnip-secret"), file), Ok(None));
+            check(&Path::new(&var("RSNIP_TEST_SMB_DIR")).join("shots/today"), file);
+        }
+        assert_eq!(test(&d, Some("rsnip-secret")), Ok("Connected".into()));
+        println!("SMB: pushed, making the folders");
     }
 
     /// Against a PhotoPrism server at `RSNIP_TEST_PHOTOPRISM`, with the app password
@@ -706,6 +752,7 @@ mod tests {
                 ("SFTP", None),
                 ("WebDAV", Some("Password")),
                 ("S3-compatible", Some("Secret access key")),
+                ("SMB share", Some("Password")),
                 ("FTPS", Some("Password")),
                 ("Discord", Some("Webhook URL")),
                 ("Slack", Some("Bot token")),

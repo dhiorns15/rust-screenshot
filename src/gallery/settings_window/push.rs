@@ -121,6 +121,12 @@ fn fields(kind: &mut Kind) -> Vec<Field<'_>> {
             field("Folder", "Empty for the folder the server starts in", folder),
             field("Link to share", "Optional: where the pushed files can be opened, e.g. https://img.example.com/", public_url),
         ],
+        Kind::Smb { share, folder, user, public_url } => vec![
+            field("Share", "\\\\nas\\shots", share),
+            field("Folder", "Optional: in the share", folder),
+            field("User", "Empty to sign in as you are (a guest on Linux)", user),
+            field("Link to share", "Optional: where the pushed files can be opened, e.g. https://img.example.com/", public_url),
+        ],
         Kind::Custom { url, method, file_field, fields, headers, link } => vec![
             field("Upload address", "https://i.example.com/api/upload", url),
             field("Method", "POST", method),
@@ -142,6 +148,7 @@ fn help(kind: &Kind) -> &'static str {
         Kind::Slack { .. } => "Your Slack app's Bot User OAuth Token (xoxb-…), with the files:write scope; invite the app to the channel. The README has an app manifest to start from.",
         Kind::PhotoPrism { .. } => "Settings > Account > Apps and Devices: an app password with full access, or the files and sessions scopes (and albums, for an album).",
         Kind::Ftps { .. } => "FTP over TLS, through the system's curl: port 21 for explicit TLS, 990 for implicit. Plain FTP isn't offered, as it sends the password unencrypted.",
+        Kind::Smb { .. } => "A Windows or Samba share, a NAS's say. On Linux it needs Samba's smbclient.",
         Kind::Custom { .. } => "Any upload API, like ShareX's custom uploaders. {secret} is replaced by the token, {filename} by the file's name.",
     }
 }
