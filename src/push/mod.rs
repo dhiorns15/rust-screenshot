@@ -243,6 +243,11 @@ impl Kind {
         matches!(self, Kind::Custom { .. } | Kind::Smb { .. })
     }
 
+    /// Its section in docs/destinations.md ("smb-share"), named as GitHub names a heading's anchor.
+    pub fn doc_anchor(&self) -> String {
+        self.name().to_ascii_lowercase().replace(' ', "-")
+    }
+
     /// What says where it is or who signs in there (addresses, hosts, users, folders, keys' ids),
     /// to keep out of a public report.
     pub fn private_words(&self) -> Vec<String> {
@@ -761,6 +766,16 @@ mod tests {
         // A real PNG, as PhotoPrism skips what it can't read.
         image::RgbaImage::from_pixel(64, 48, image::Rgba([200, 30, 90, 255])).save(&png).unwrap();
         assert_eq!(push(&d, Some(&key), &png), Ok(None));
+    }
+
+    #[test]
+    fn every_kind_has_its_section_in_the_docs() {
+        let page = include_str!("../../docs/destinations.md");
+        for kind in every_kind() {
+            let heading = format!("## {}", kind.name());
+            assert!(page.lines().any(|l| l.trim_end() == heading), "no {heading}");
+            assert!(page.contains(&format!("](#{})", kind.doc_anchor())), "{} isn't in the contents", kind.name());
+        }
     }
 
     #[test]

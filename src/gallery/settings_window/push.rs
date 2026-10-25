@@ -11,7 +11,7 @@ use eframe::egui::{self, Color32, RichText, Ui};
 
 use super::{row, SettingsApp};
 use crate::gallery::env::{PickedFolder, TrayRequest};
-use crate::gallery::theme;
+use crate::gallery::theme::{self, icon};
 use crate::push::history::{self, Entry};
 use crate::push::{self, Destination, Kind};
 
@@ -75,6 +75,8 @@ enum Action {
     Test(Destination),
     Edit(Destination),
     AskRemove(String),
+    /// Open this kind's section of docs/destinations.md.
+    Help(Kind),
     Remove(String),
     CancelRemove,
 }
@@ -343,6 +345,7 @@ impl SettingsApp {
             }
             Action::Edit(d) => self.push.form = Some(Form::new(d, true)),
             Action::AskRemove(id) => self.push.removing = Some(id),
+            Action::Help(kind) => self.env.open(std::path::Path::new(&doc_url(&kind))),
             Action::CancelRemove => self.push.removing = None,
             Action::Remove(id) => {
                 list.retain(|d| d.id != id);
@@ -383,6 +386,9 @@ impl SettingsApp {
                 if ui.add_enabled(!testing, egui::Button::new(if testing { "Testing…" } else { "Test" })).clicked() {
                     action = Some(Action::Test(d.clone()));
                 }
+                if help_button(ui, &d.kind) {
+                    action = Some(Action::Help(d.kind.clone()));
+                }
             });
             ui.separator();
             let detail = if d.auto { "Pushed as soon as they're saved" } else { "Only pushed when you choose" };
@@ -416,7 +422,14 @@ impl SettingsApp {
         theme::card(ui, |ui| {
             let kind_name = form.destination.kind.name();
             let title = if form.editing { format!("Edit {}", form.destination.name) } else { format!("Add {kind_name}") };
-            ui.label(RichText::new(title).strong());
+            let mut help_clicked = false;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(title).strong());
+                help_clicked = help_button(ui, &form.destination.kind);
+            });
+            if help_clicked {
+                self.env.open(std::path::Path::new(&doc_url(&form.destination.kind)));
+            }
             ui.label(RichText::new(help(&form.destination.kind)).small().color(muted));
             ui.add_space(4.0);
             let busy = form.saving.is_some();
@@ -492,6 +505,16 @@ fn text_row(ui: &mut Ui, label: &str, hint: &str, value: &mut String, password: 
     let text = ui.label(label);
     ui.add(egui::TextEdit::singleline(value).hint_text(hint).password(password).desired_width(360.0)).labelled_by(text.id);
     ui.end_row();
+}
+
+/// Where docs/destinations.md says how to set up `kind`.
+fn doc_url(kind: &Kind) -> String {
+    format!("{}/blob/main/docs/destinations.md#{}", super::REPO, kind.doc_anchor())
+}
+
+/// The ? that opens `kind`'s section of docs/destinations.md; whether it was clicked.
+fn help_button(ui: &mut Ui, kind: &Kind) -> bool {
+    ui.button(icon::QUESTION).on_hover_text(format!("How to set up {}, and what it needs", kind.name())).clicked()
 }
 
 /// A label and a text box a few lines high, for one entry a line.

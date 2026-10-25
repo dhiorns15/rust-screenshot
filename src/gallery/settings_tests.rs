@@ -611,6 +611,24 @@ fn a_custom_uploader_may_have_no_token() {
 }
 
 #[test]
+fn the_question_mark_opens_how_to_set_it_up() {
+    use crate::gallery::theme::icon;
+    let docs = "https://github.com/dhiorns15/rust-screenshot/blob/main/docs/destinations.md";
+    let mut h = settings("settings-push-help", |_| {});
+    add_webdav(&mut h);
+    h.get_by_label(icon::QUESTION).click();
+    settle(&mut h);
+    assert_eq!(h.state().env.sandboxed().opened.last().map(|p| p.to_string_lossy().into_owned()), Some(format!("{docs}#webdav")));
+
+    click(&mut h, "Add…");
+    click(&mut h, "S3-compatible");
+    let form_help = h.get_all_by_label(icon::QUESTION).last().unwrap();
+    form_help.click();
+    settle(&mut h);
+    assert_eq!(h.state().env.sandboxed().opened.last().map(|p| p.to_string_lossy().into_owned()), Some(format!("{docs}#s3-compatible")));
+}
+
+#[test]
 fn recent_pushes_say_what_went_and_what_failed() {
     use crate::push::history::{self, Entry};
     let mut h = settings("settings-push-recent", |_| {});

@@ -318,34 +318,22 @@ went wrong when one didn't.
 
 | Place | What it needs | Link |
 |---|---|---|
-| SFTP | The server, its port and the folder; a user name unless `~/.ssh/config` gives one. It signs in with your SSH keys and ssh-agent, through the system's OpenSSH (built into Windows 10 and 11; `openssh-client` on Linux), so RSnip never stores an SSH password. A server it hasn't met is remembered; one whose key has changed is refused | With a public address for the folder |
-| WebDAV | The folder's address (Nextcloud: `https://<server>/remote.php/dav/files/<user>/<folder>`), user name and password (an app password, where the server has them). Missing folders are made | With a public address for the folder |
-| S3-compatible | Endpoint (`https://s3.<region>.amazonaws.com`, `https://<account>.r2.cloudflarestorage.com`, Backblaze B2's or Wasabi's S3 endpoint, MinIO's address), region (optional: taken from the endpoint, `auto` for R2), bucket, an optional folder in it, and an access key ID and secret | With a public address for the bucket |
-| SMB share | The share (`\\nas\shots` or `//nas/shots`), a folder in it, and a user name and password, or none to sign in as you are signed in to Windows (a guest on Linux). On Windows it's Windows' own file sharing (the sign-in lasts until you sign out); on Linux, Samba's `smbclient` (the `smbclient` package; `samba-client` on Fedora and openSUSE). Missing folders are made | With a public address for the folder |
-| FTPS | The server, its port (21 for explicit TLS, the usual; 990 for implicit), user name, password and folder. FTP over TLS only, through the system's `curl` (built into Windows 10 and 11; the `curl` package on Linux): plain FTP, which sends the password unencrypted, isn't offered. The server's certificate has to be one the computer trusts. Missing folders are made | With a public address for the folder |
-| Discord | A channel's webhook: *Server Settings → Integrations → Webhooks → Copy Webhook URL*. Files up to Discord's limit (10 MB without a server boost) | The attachment |
-| Slack | A Slack app of your own, with a bot that may upload files (below), installed to your workspace and invited to the channel (`/invite @RSnip`); its *Bot User OAuth Token* (`xoxb-…`) and the channel's ID (in the channel's details, like `C0123ABCDEF`) | The file in Slack |
-| Immich | The server's address and an API key (*Account Settings → API Keys*; it needs to upload, and to read the user for *Test*) | The photo in Immich |
-| PhotoPrism | The server's address, an app password (*Settings → Account → Apps and Devices*, or `photoprism auth add -s "files sessions albums" <user>`: full access, or the `files` and `sessions` scopes, and `albums` to put photos in one) and an optional album, made if it isn't there. Uploaded as PhotoPrism's own web upload is, then imported | None (PhotoPrism doesn't say which photo it became) |
-| Custom uploader | Any upload API, described as ShareX's custom uploaders are: the upload address, method, the form field the file goes in (or none, to send the file as the whole body), form fields and headers (`Name: value`, one a line), and where the link is in the reply (`{json:data.url}`, `{response}`, `{header:Location}`). `{secret}` is replaced by the token, kept with the other secrets, and `{filename}` by the file's name. *Add… → Custom uploader from a ShareX file (.sxcu)* fills it in from a `.sxcu` file, keeping its key or token as the secret | Where the reply says |
+| SFTP | The server and folder; signs in with your SSH keys through the system's OpenSSH, never a stored password | With a public address for the folder |
+| WebDAV | The folder's address, a user name and (app) password | With a public address for the folder |
+| S3-compatible | Endpoint, bucket, an access key ID and secret (AWS, R2, B2, Wasabi, MinIO) | With a public address for the bucket |
+| SMB share | The share (`\\nas\shots`), and a user and password or none; Samba's `smbclient` on Linux | With a public address for the folder |
+| FTPS | The server, user, password and folder; FTP over TLS only, through the system's `curl` | With a public address for the folder |
+| Discord | A channel's webhook address | The attachment |
+| Slack | A bot token from a Slack app of your own (`files:write`) and the channel's ID | The file in Slack |
+| Immich | The server's address and an API key (`asset.upload`, `user.read`) | The photo in Immich |
+| PhotoPrism | The server's address and an app password (`files`, `sessions`, `albums`) | None |
+| Custom uploader | Any upload API, described as ShareX's custom uploaders are, or imported from a `.sxcu` file | Where the reply says |
 
-For Slack, *Create New App → From a manifest* at [api.slack.com/apps](https://api.slack.com/apps),
-pick the workspace and paste this, then *Install to Workspace* and copy the token from *OAuth &
-Permissions*:
+How to set up each, the least each needs (keys, scopes, permissions), what *Test* checks and what
+the usual errors mean are in [docs/destinations.md](docs/destinations.md); the **?** next to a place
+in Settings opens its section.
 
-```yaml
-display_information:
-  name: RSnip
-features:
-  bot_user:
-    display_name: RSnip
-oauth_config:
-  scopes:
-    bot:
-      - files:write
-```
-
-Passwords, keys and webhook addresses are kept in Windows' Credential Manager, or on Linux the
+Passwords, keys, tokens and webhook addresses are kept in Windows' Credential Manager, or on Linux the
 desktop's keyring (GNOME Keyring, KWallet: any Secret Service), never in RSnip's settings. On Linux
 without a keyring, places that need one can't be saved.
 
