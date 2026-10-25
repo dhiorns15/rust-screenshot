@@ -1189,6 +1189,33 @@ pub fn record_source(path: &Path, app: &str, window: &str) {
     search::record_source(path, app, window);
 }
 
+/// Where the recording that will be `path` is written until it's finished: under the same name in
+/// the save folder's hidden `.rsnip`, so the library and the automatic pusher never see it
+/// half-written. `finish_recording` moves it into place.
+pub fn working_path(path: &Path) -> Result<PathBuf, String> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return Err("Bad file name".into()) };
+    let dir = dir.join(".rsnip");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
+    platform::hide(&dir);
+    Ok(dir.join(name))
+}
+
+/// Moves a finished recording from its `working_path` to `path`, in the same folder.
+pub fn finish_recording(working: &Path, path: &Path) -> Result<(), String> {
+    // A virus scanner can hold a file just written for a moment.
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(working, path) {
+            Ok(()) => return Ok(()),
+            Err(_) if tries < 10 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) => return Err(format!("Couldn't move the recording into {}: {e}", path.parent().unwrap_or(path).display())),
+        }
+    }
+}
+
 /// RSnip's icon for a window's title bar and taskbar button.
 fn window_icon() -> Arc<egui::IconData> {
     let size = 64;
@@ -1313,6 +1340,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn recordings_appear_only_once_finished() {
+        let dir = sandbox_dir("working-recording");
+        let path = dir.join("Recording 2026-10-24 213000.mp4");
+        let working = working_path(&path).unwrap();
+        std::fs::write(&working, b"half").unwrap();
+        assert!(library_files(&dir).is_empty(), "not listed, so not pushed, while it's written");
+        finish_recording(&working, &path).unwrap();
+        assert_eq!(library_files(&dir), std::slice::from_ref(&path));
+        assert!(!working.exists());
+        doc::prune_layers(&dir);
+        assert!(path.exists());
     }
 
     #[test]

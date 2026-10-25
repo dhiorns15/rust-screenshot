@@ -74,6 +74,7 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
     }
     let ext = if format.gif { "gif" } else { "mp4" };
     let path = crate::output::new_path("Recording", ext)?;
+    let working = crate::gallery::working_path(&path)?;
     let fps = format.fps();
     let stop = Arc::new(AtomicBool::new(false));
     let started = Instant::now();
@@ -85,21 +86,27 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
         std::thread::spawn(move || {
             let mut note = None;
             let encoder: Result<Box<dyn Encoder>, String> = if format.gif {
-                Gif::new(&path, w, h, fps).map(|e| Box::new(e) as _)
+                Gif::new(&working, w, h, fps).map(|e| Box::new(e) as _)
             } else {
-                Mp4::new(&path, w, h, fps, format.hevc)
+                Mp4::new(&working, w, h, fps, format.hevc)
                     .or_else(|e| {
                         // Not every PC has an H.265 encoder; H.264 is always there.
                         if !format.hevc {
                             return Err(e);
                         }
                         note = Some("This PC has no H.265 encoder, so it was recorded as H.264.".to_string());
-                        Mp4::new(&path, w, h, fps, false)
+                        Mp4::new(&working, w, h, fps, false)
                     })
                     .map(|e| Box::new(e) as _)
             };
             let _ = ready_tx.send(encoder.as_ref().map(|_| ()).map_err(Clone::clone));
-            run(encoder?, area, fps, started, &stop).map(|()| Recorded { path, note })
+            match encoder.and_then(|encoder| run(encoder, area, fps, started, &stop)) {
+                Ok(()) => crate::gallery::finish_recording(&working, &path).map(|()| Recorded { path, note }),
+                Err(e) => {
+                    let _ = std::fs::remove_file(&working);
+                    Err(e)
+                }
+            }
         })
     };
     ready_rx.recv().map_err(|_| "The recording didn't start".to_string())??;

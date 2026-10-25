@@ -317,6 +317,8 @@ pub fn snapshot(cast: &ScreenCast) -> Result<image::RgbaImage, String> {
 pub struct Recording {
     child: Child,
     pub path: PathBuf,
+    /// Where it's written until it's finished (see `working_path`).
+    working: PathBuf,
     pub started: Instant,
     /// Writes the GIF from the pipeline's frames.
     gif: Option<JoinHandle<Result<(), String>>>,
@@ -336,24 +338,26 @@ pub fn start(cast: &ScreenCast, frame: (u32, u32), area: Option<Area>, format: F
     let name = |ext: &str| super::platform::new_path(folder, "Recording", ext);
     let mut recording = if format.gif {
         let path = name("gif");
+        let working = super::working_path(&path)?;
         let (args, size) = gif_pipeline(cast.node, frame, area);
         let mut child = launch(&args, cast.connect()?, Stdio::piped())?;
         let frames = child.stdout.take().expect("piped");
-        let file = std::fs::File::create(&path).map_err(|e| format!("Couldn't create {}: {e}", path.display()))?;
+        let file = std::fs::File::create(&working).map_err(|e| format!("Couldn't create {}: {e}", working.display()))?;
         let gif = std::thread::spawn(move || write_gif(frames, file, size));
-        Recording { child, path, started: Instant::now(), gif: Some(gif), note: None }
+        Recording { child, path, working, started: Instant::now(), gif: Some(gif), note: None }
     } else {
         let (encoder, note) = encoder(format.hevc);
         let path = name(encoder.extension);
-        let args = video_pipeline(cast.node, frame, area, format.fps.clamp(1, 60), &encoder, &path);
+        let working = super::working_path(&path)?;
+        let args = video_pipeline(cast.node, frame, area, format.fps.clamp(1, 60), &encoder, &working);
         let child = launch(&args, cast.connect()?, Stdio::null())?;
-        Recording { child, path, started: Instant::now(), gif: None, note }
+        Recording { child, path, working, started: Instant::now(), gif: None, note }
     };
     // A pipeline that can't run (a missing element, say) stops straight away.
     std::thread::sleep(Duration::from_millis(800));
     if recording.child.try_wait().map_err(|e| e.to_string())?.is_some() {
         let error = failure(&mut recording.child);
-        let _ = std::fs::remove_file(&recording.path);
+        let _ = std::fs::remove_file(&recording.working);
         return Err(error);
     }
     Ok(recording)
@@ -377,10 +381,11 @@ impl Recording {
         if let Some(gif) = self.gif.take() {
             gif.join().unwrap_or_else(|_| Err("The GIF encoder stopped unexpectedly".into()))?;
         }
-        let written = std::fs::metadata(&self.path).is_ok_and(|m| m.len() > 0);
+        let written = std::fs::metadata(&self.working).is_ok_and(|m| m.len() > 0);
         if !status.success() && !written {
             return Err(failure(&mut self.child));
         }
+        super::finish_recording(&self.working, &self.path)?;
         Ok(Recorded { path: self.path, note: self.note })
     }
 
