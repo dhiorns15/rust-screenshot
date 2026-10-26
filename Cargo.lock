@@ -3159,7 +3159,7 @@ dependencies = [
  "trash",
  "ureq",
  "windows 0.58.0",
- "windows-core 0.58.0",
+ "windows-core 0.62.2",
  "windows-sys 0.59.0",
  "x11rb",
  "zbus",
