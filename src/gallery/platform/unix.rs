@@ -495,22 +495,25 @@ pub fn hevc_available() -> bool {
 /// What reads the text in screenshots, for Settings.
 pub const TEXT_RECOGNITION: &str = "Tesseract";
 
-/// Tesseract's text recognition on an image file, for search, if it's installed.
+/// Tesseract's text recognition on an image file, for search, if it's installed. It reads the
+/// whole library in the background, so on one core at the lowest priority: by itself Tesseract
+/// takes every core for each screenshot.
 pub fn ocr() -> Option<super::super::env::Ocr> {
-    let read = read_words()?;
-    Some(std::sync::Arc::new(move |path: &Path| {
-        let img = image::open(path).map_err(|e| e.to_string())?.to_rgba8();
-        read(&img).map(|words| super::super::words::text(&words))
-    }))
+    on_path("tesseract").then(|| {
+        std::sync::Arc::new(|path: &Path| {
+            let img = image::open(path).map_err(|e| e.to_string())?.to_rgba8();
+            tesseract(&img, true).map(|words| super::super::words::text(&words))
+        }) as super::super::env::Ocr
+    })
 }
 
 /// Tesseract's text recognition word by word, for copying text out of an image, if it's installed
 /// (the `tesseract-ocr` package, or `tesseract` on some distributions).
 pub fn read_words() -> Option<super::super::env::ReadWords> {
-    on_path("tesseract").then(|| std::sync::Arc::new(tesseract) as super::super::env::ReadWords)
+    on_path("tesseract").then(|| std::sync::Arc::new(|img: &RgbaImage| tesseract(img, false)) as super::super::env::ReadWords)
 }
 
-fn tesseract(img: &RgbaImage) -> Result<Vec<super::super::words::Word>, String> {
+fn tesseract(img: &RgbaImage, background: bool) -> Result<Vec<super::super::words::Word>, String> {
     // It reads small UI text far better enlarged; the boxes are scaled back afterwards.
     let scale = if img.width().max(img.height()) <= 2000 { 2 } else { 1 };
     let big;
@@ -523,7 +526,19 @@ fn tesseract(img: &RgbaImage) -> Result<Vec<super::super::words::Word>, String> 
     let mut png = Vec::new();
     let rgb = image::DynamicImage::ImageRgba8(img.clone()).to_rgb8();
     rgb.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| e.to_string())?;
-    let out = Command::new("tesseract")
+    let mut command = Command::new("tesseract");
+    if background {
+        use std::os::unix::process::CommandExt;
+        command.env("OMP_THREAD_LIMIT", "1");
+        // SAFETY: only setpriority, which is async-signal-safe, between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+                Ok(())
+            });
+        }
+    }
+    let out = command
         .args(["stdin", "-", "tsv"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
