@@ -382,6 +382,15 @@ impl App {
         let vanished = self.entries.iter().any(|e| !listed.contains(e.path.as_path()));
         if vanished {
             doc::prune_layers(&self.env.dir);
+            // Deleted elsewhere, or cleaned up: not left open, where saving would bring it back,
+            // unless it has edits that would be lost.
+            if self.editor.as_ref().is_some_and(|e| !e.doc.path.exists() && !e.doc.dirty()) {
+                self.editor = None;
+            }
+            if self.player.as_ref().is_some_and(|p| !p.path.exists()) {
+                self.player = None;
+            }
+            self.selected.retain(|path| path.exists());
         }
         self.metas.retain(|path, _| listed.contains(path.as_path()));
         self.meta_times.retain(|path, _| listed.contains(path.as_path()));

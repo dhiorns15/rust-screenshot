@@ -892,3 +892,26 @@ mod snapshots {
         println!("wrote {out}");
     }
 }
+
+#[test]
+fn a_screenshot_deleted_elsewhere_doesnt_stay_open() {
+    let mut h = harness("kittest-vanished");
+    click(&mut h, "Screenshot b");
+    let b = h.state().editor.as_ref().unwrap().doc.path.clone();
+    // As the clean-up, or Explorer, would.
+    std::fs::remove_file(&b).unwrap();
+    h.state_mut().rescan();
+    settle(&mut h);
+    assert!(h.state().editor.is_none(), "saving it would bring it back");
+    assert!(h.query_by_label("Screenshot b").is_none());
+
+    // Unless it has edits, which would be lost.
+    click(&mut h, "Screenshot a");
+    let a = h.state().editor.as_ref().unwrap().doc.path.clone();
+    let redact = super::doc::Shape::Redact { rect: egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0)), color: egui::Color32::BLACK };
+    h.state_mut().editor.as_mut().unwrap().doc.add(redact);
+    std::fs::remove_file(&a).unwrap();
+    h.state_mut().rescan();
+    settle(&mut h);
+    assert!(h.state().editor.as_ref().is_some_and(|e| e.doc.path == a));
+}
