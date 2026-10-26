@@ -7,6 +7,8 @@ Windows it does everything below; on Linux it takes screenshots and recordings t
 command line or a desktop shortcut, with a few things Windows-only (see
 [RSnip on Linux](docs/linux.md)).
 
+![RSnip's editor with a marked-up screenshot, and the library of screenshots beside it](docs/images/rsnip.png)
+
 ## Highlights
 
 - **Capture** a region, a window, one screen or all screens, the same area as last time, a long
