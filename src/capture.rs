@@ -350,8 +350,11 @@ fn file_description(exe: &std::path::Path) -> Option<String> {
             (VerQueryValueW(info.as_ptr().cast(), key.as_ptr(), &mut ptr, &mut len) != 0 && !ptr.is_null() && len > 0)
                 .then_some((ptr as *const u16, len as usize))
         };
-        // The first language the file has strings for.
-        let (translation, _) = query("\\VarFileInfo\\Translation")?;
+        // The first language the file has strings for: a language and a code page, 2 bytes each.
+        let (translation, bytes) = query("\\VarFileInfo\\Translation")?;
+        if bytes < 4 {
+            return None;
+        }
         let (lang, codepage) = (*translation, *translation.add(1));
         let (text, len) = query(&format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription"))?;
         let text = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
