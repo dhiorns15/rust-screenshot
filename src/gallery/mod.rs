@@ -949,8 +949,9 @@ impl App {
                 ui.label(RichText::new("No text found in this image").color(muted));
                 return;
             }
+            // No spinner: it would redraw the window every frame, which is slow where there's no
+            // graphics card to do it (a virtual machine), and the text is shown the moment it's read.
             TextStatus::Reading => {
-                ui.spinner();
                 ui.label(RichText::new("Reading text…").color(muted));
                 return;
             }
@@ -990,8 +991,8 @@ impl App {
         if ui.add_enabled(!editor.auto_redacting(), auto).on_hover_text(hover).clicked() {
             editor.start_auto_redact();
         }
+        // No spinner, as in `copy_text_options`.
         if editor.auto_redacting() {
-            ui.spinner();
             ui.label(RichText::new("Reading text…").color(theme::palette(ui).muted));
         }
     }
