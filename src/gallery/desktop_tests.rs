@@ -94,10 +94,12 @@ impl ScreenCastBackend {
 #[derive(Default)]
 struct Shutter {
     cancel: bool,
+    /// Refuses without asking, as Ubuntu 24.04's GNOME does for an app started from its menu.
+    refuse: bool,
     asked: Vec<HashMap<String, OwnedValue>>,
 }
 
-/// The stand-in for GNOME's screenshot service: it saves the test picture, or cancels.
+/// The stand-in for GNOME's screenshot service: it saves the test picture, cancels or refuses.
 struct ScreenshotBackend {
     shutter: Arc<Mutex<Shutter>>,
 }
@@ -114,6 +116,9 @@ impl ScreenshotBackend {
         shutter.asked.push(options);
         if std::mem::take(&mut shutter.cancel) {
             return (1, HashMap::new());
+        }
+        if std::mem::take(&mut shutter.refuse) {
+            return (2, HashMap::new());
         }
         // Where GNOME's own tool saves: the folder `bring_in` watches.
         let folder = super::platform::legacy_save_folder();
@@ -641,4 +646,13 @@ fn desktop_screenshots_are_saved_copied_and_told_of() {
     assert!(!screenshot::take(Capture { mode: Mode::Full, delay: 0 }));
     assert_eq!(notifications.shown.lock().unwrap().len(), shown);
     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), files);
+
+    // Refused without asking: on X11 it's read from the X server instead.
+    desktop.shutter.lock().unwrap().refuse = true;
+    assert!(screenshot::take(Capture { mode: Mode::Full, delay: 0 }), "copied");
+    let (title, body) = latest();
+    assert_eq!(title, "Screenshot copied to clipboard");
+    let (conn, number) = x11rb::connect(None).unwrap();
+    let root = &x11rb::connection::Connection::setup(&conn).roots[number];
+    assert_eq!(saved(&body).dimensions(), (root.width_in_pixels.into(), root.height_in_pixels.into()), "all of the X screen");
 }
