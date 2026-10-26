@@ -6,6 +6,7 @@
 //! the clipboard only holds what was copied for as long as the process that copied it lives.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use image::RgbaImage;
@@ -129,16 +130,23 @@ fn shoot(mode: Mode) -> Result<Option<RgbaImage>, String> {
 }
 
 /// All of the screen, from the screenshot portal; `None` if it was declined. The portal can refuse
-/// without asking (Ubuntu 24.04's GNOME does, for an app started from its menu), so then it's read
-/// from the X server on an X11 desktop, or taken from a screen the desktop's picker shares, as for
-/// recording.
+/// without asking (Ubuntu 24.04's GNOME does, for an app started from its menu, and can take a
+/// minute to), so then it's read from the X server on an X11 desktop, or taken from a screen the
+/// desktop's picker shares, as for recording. Once it has refused it isn't asked again.
 fn grab() -> Result<Option<RgbaImage>, String> {
-    let refused = match portal::screenshot() {
-        Ok(Some(file)) => return load(&file).map(Some),
-        Ok(None) => return Ok(None),
-        Err(e) => e,
-    };
     let x11 = std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some();
+    let refused = if REFUSED.load(Ordering::Relaxed) {
+        "it refused before".to_string()
+    } else {
+        match ask_portal(x11) {
+            Ok(Some(file)) => return load(&file).map(Some),
+            Ok(None) => return Ok(None),
+            Err(e) => {
+                REFUSED.store(true, Ordering::Relaxed);
+                e
+            }
+        }
+    };
     if x11 {
         return from_x_server().map(Some).map_err(|e| format!("The desktop didn't allow it ({refused}), and {e}"));
     }
@@ -146,6 +154,33 @@ fn grab() -> Result<Option<RgbaImage>, String> {
         return Ok(None);
     };
     recorder::snapshot(&cast).map(Some)
+}
+
+/// The portal refused a screenshot (or took too long to answer), so it isn't asked again.
+static REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// How long the portal is waited for on an X11 desktop, where the screen can be read without it.
+const PORTAL_WAIT: Duration = Duration::from_secs(3);
+
+/// Asks the portal for a screenshot (see `portal::screenshot`). On an X11 desktop no answer within
+/// `PORTAL_WAIT` counts as a refusal; a screenshot that comes after all is deleted.
+fn ask_portal(x11: bool) -> Result<Option<PathBuf>, String> {
+    if !x11 {
+        return portal::screenshot();
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if let Err(std::sync::mpsc::SendError(Ok(Some(file)))) = tx.send(portal::screenshot()) {
+            let _ = std::fs::remove_file(file);
+        }
+    });
+    rx.recv_timeout(PORTAL_WAIT).unwrap_or_else(|_| Err(format!("no answer in {} s", PORTAL_WAIT.as_secs())))
+}
+
+/// Forgets that the portal refused, as a new process would.
+#[cfg(test)]
+pub fn forget_refusal() {
+    REFUSED.store(false, Ordering::Relaxed);
 }
 
 /// All of the screen, as the X server has it (only on an X11 desktop: on Wayland its windows

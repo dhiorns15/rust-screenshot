@@ -96,6 +96,8 @@ struct Shutter {
     cancel: bool,
     /// Refuses without asking, as Ubuntu 24.04's GNOME does for an app started from its menu.
     refuse: bool,
+    /// Takes its time answering, as that GNOME can before refusing.
+    slow: bool,
     asked: Vec<HashMap<String, OwnedValue>>,
 }
 
@@ -119,6 +121,10 @@ impl ScreenshotBackend {
         }
         if std::mem::take(&mut shutter.refuse) {
             return (2, HashMap::new());
+        }
+        if std::mem::take(&mut shutter.slow) {
+            drop(shutter);
+            std::thread::sleep(Duration::from_secs(6));
         }
         // Where GNOME's own tool saves: the folder `bring_in` watches.
         let folder = super::platform::legacy_save_folder();
@@ -654,5 +660,23 @@ fn desktop_screenshots_are_saved_copied_and_told_of() {
     assert_eq!(title, "Screenshot copied to clipboard");
     let (conn, number) = x11rb::connect(None).unwrap();
     let root = &x11rb::connection::Connection::setup(&conn).roots[number];
-    assert_eq!(saved(&body).dimensions(), (root.width_in_pixels.into(), root.height_in_pixels.into()), "all of the X screen");
+    let x_screen = (root.width_in_pixels.into(), root.height_in_pixels.into());
+    assert_eq!(saved(&body).dimensions(), x_screen, "all of the X screen");
+
+    // And it isn't asked again.
+    let asked = desktop.shutter.lock().unwrap().asked.len();
+    assert!(screenshot::take(Capture { mode: Mode::Full, delay: 0 }));
+    assert_eq!(desktop.shutter.lock().unwrap().asked.len(), asked);
+    assert_eq!(saved(&latest().1).dimensions(), x_screen);
+
+    // An answer that's slow in coming isn't waited for; the screenshot it brings after all goes.
+    screenshot::forget_refusal();
+    desktop.shutter.lock().unwrap().slow = true;
+    let started = Instant::now();
+    assert!(screenshot::take(Capture { mode: Mode::Full, delay: 0 }));
+    assert!(started.elapsed() < Duration::from_secs(5), "waited {:?}", started.elapsed());
+    assert_eq!(saved(&latest().1).dimensions(), x_screen);
+    let empty = || std::fs::read_dir(&desktops).unwrap().count() == 0;
+    wait_for(|| started.elapsed() > Duration::from_secs(7) && empty(), "the portal's late screenshot to be deleted");
+    screenshot::forget_refusal();
 }
