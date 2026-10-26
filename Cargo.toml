@@ -25,7 +25,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-tiny-skia = "0.11"
+tiny-skia = "0.12"
 # Uploads to other places (see src/push): HTTP with rustls and the system's certificates.
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
 # FTPS (see src/push/ftps.rs), over the same rustls, with the system's certificates or a trusted one.
