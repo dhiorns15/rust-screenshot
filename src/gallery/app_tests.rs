@@ -259,6 +259,162 @@ fn searching_shows_what_is_folded_away() {
     assert!(!shows(&h, "Yesterday, 1"), "headings can't be folded while searching");
 }
 
+/// The window on the gallery page, with nothing open.
+fn gallery(name: &str) -> Harness<'static, App> {
+    harness_with(name, |env| env.set_setting(Page::SETTING, Page::Gallery.to_setting()))
+}
+
+fn selected_names(h: &Harness<App>) -> Vec<String> {
+    let mut names: Vec<String> = h.state().selected.iter().map(|p| p.file_stem().unwrap().to_string_lossy().into_owned()).collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn the_toolbar_switches_between_the_editor_and_the_gallery() {
+    let mut h = harness("kittest-page");
+    assert!(shows(&h, "Library along the bottom") && shows(&h, "Arrow") && shows(&h, "Undo"));
+    click(&mut h, "Gallery");
+    assert!(h.state().page == Page::Gallery);
+    assert_eq!(h.state().env.setting(Page::SETTING), Some(Page::Gallery.to_setting()), "remembered");
+    assert!(!shows(&h, "Library along the bottom") && !shows(&h, "Arrow") && !shows(&h, "Undo"), "no library or tools here");
+    assert!(shows(&h, "Editor") && shows(&h, "Today, 2") && shows(&h, "Screenshot c"));
+
+    click(&mut h, "Editor");
+    assert!(h.state().page == Page::Editor);
+    assert_eq!(h.state().env.setting(Page::SETTING), Some(Page::Editor.to_setting()));
+    assert!(shows(&h, "Library along the bottom") && shows(&h, "Arrow"));
+    assert!(h.state().editor.as_ref().is_some_and(|e| e.doc.path.ends_with("Screenshot a.png")), "still open");
+}
+
+#[test]
+fn the_gallery_page_is_remembered_and_opens_nothing_by_itself() {
+    let h = gallery("kittest-page-saved");
+    assert!(h.state().page == Page::Gallery);
+    assert!(h.state().editor.is_none(), "the gallery is for choosing");
+    assert!(shows(&h, "Screenshot a"));
+    assert!(Page::from_setting(None) == Page::Editor && Page::from_setting(Some(7)) == Page::Editor, "junk means the editor");
+}
+
+#[test]
+fn clicking_in_the_gallery_selects_without_opening() {
+    let mut h = gallery("kittest-gallery-click");
+    click(&mut h, "Screenshot b");
+    assert_eq!(selected_names(&h), ["Screenshot b"]);
+    assert!(h.state().editor.is_none() && h.state().page == Page::Gallery, "not opened");
+
+    h.get_by_label("Screenshot c").click_modifiers(Modifiers::COMMAND);
+    settle(&mut h);
+    assert_eq!(selected_names(&h), ["Screenshot b", "Screenshot c"]);
+    assert!(shows(&h, "2 selected"));
+    click(&mut h, "Screenshot a");
+    h.get_by_label("Screenshot c").click_modifiers(Modifiers::SHIFT);
+    settle(&mut h);
+    assert_eq!(selected_names(&h), ["Screenshot a", "Screenshot b", "Screenshot c"], "a range, across dates");
+}
+
+#[test]
+fn double_clicking_in_the_gallery_opens_it_in_the_editor() {
+    let mut h = harness_set_up("kittest-gallery-open", 1.0 / 60.0, |env| env.set_setting(Page::SETTING, Page::Gallery.to_setting()));
+    let at = rect_of(&h, "Screenshot b").center();
+    click_at(&mut h, at, 2);
+    settle(&mut h);
+    assert!(h.state().page == Page::Editor, "on to the editor");
+    assert!(h.state().editor.as_ref().is_some_and(|e| e.doc.path.ends_with("Screenshot b.png")));
+    assert_eq!(h.state().env.setting(Page::SETTING), Some(Page::Editor.to_setting()));
+}
+
+#[test]
+fn recordings_open_in_the_player_from_the_gallery() {
+    let (mut h, gif) = with_recording("kittest-gallery-recording");
+    click(&mut h, "Gallery");
+    assert!(shows(&h, "Recording z"));
+    // Long enough after the click on Gallery for the double click not to count with it.
+    for _ in 0..30 {
+        settle(&mut h);
+    }
+    let at = rect_of(&h, "Recording z").center();
+    click_at(&mut h, at, 2);
+    settle(&mut h);
+    assert!(h.state().page == Page::Editor);
+    assert!(h.state().player.as_ref().is_some_and(|p| p.path == gif));
+}
+
+#[test]
+fn arrows_enter_ctrl_a_and_escape_work_the_gallery() {
+    let mut h = gallery("kittest-gallery-keys");
+    // Three across, so a and b share a line and c, a date of its own, has the next.
+    h.key_press(Key::ArrowRight);
+    settle(&mut h);
+    assert_eq!(selected_names(&h), ["Screenshot a"], "the first, with nothing selected");
+    h.key_press(Key::ArrowRight);
+    settle(&mut h);
+    assert_eq!(selected_names(&h), ["Screenshot b"]);
+    h.key_press(Key::ArrowRight);
+    settle(&mut h);
+    assert_eq!(selected_names(&h), ["Screenshot c"], "on to the next line");
+    h.key_press(Key::ArrowLeft);
+    settle(&mut h);
+    assert_eq!(selected_names(&h), ["Screenshot b"]);
+    h.key_press(Key::ArrowDown);
+    settle(&mut h);
+    assert_eq!(selected_names(&h), ["Screenshot c"]);
+    h.key_press(Key::ArrowUp);
+    settle(&mut h);
+    assert_eq!(selected_names(&h), ["Screenshot a"], "the same column, on the line above");
+    assert!(h.state().editor.is_none(), "moving doesn't open anything");
+
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    settle(&mut h);
+    assert_eq!(h.state().selected.len(), 3);
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert!(h.state().selected.is_empty());
+
+    click(&mut h, "Screenshot c");
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    assert!(h.state().page == Page::Editor);
+    assert!(h.state().editor.as_ref().is_some_and(|e| e.doc.path.ends_with("Screenshot c.png")));
+}
+
+#[test]
+fn the_gallery_leaves_the_keys_to_a_text_box() {
+    let mut h = gallery("kittest-gallery-typing");
+    use egui::accesskit::Role::TextInput;
+    h.get_by_role(TextInput).focus();
+    settle(&mut h);
+    h.key_press(Key::ArrowRight);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    settle(&mut h);
+    assert!(h.state().selected.is_empty(), "the arrows and Ctrl+A were for the search box");
+}
+
+#[test]
+fn the_gallery_has_the_right_click_menu() {
+    let mut h = gallery("kittest-gallery-menu");
+    h.get_by_label("Screenshot b").click_secondary();
+    settle(&mut h);
+    for item in ["Open in default app", "Show in folder", "Copy as files", "Delete"] {
+        assert!(shows(&h, item), "{item}");
+    }
+    assert!(h.query_by_label_contains("Push to").is_some());
+    click(&mut h, "Show in folder");
+    assert_eq!(h.state().env.sandboxed().shown_in_folder, [h.state().env.dir.join("Screenshot b.png")]);
+}
+
+#[test]
+fn editor_keys_do_nothing_on_the_gallery_page() {
+    let mut h = harness("kittest-gallery-shortcuts");
+    h.key_press(Key::B);
+    settle(&mut h);
+    assert!(h.state().tools.tool == Tool::Box, "B picks the Box tool in the editor");
+    click(&mut h, "Gallery");
+    h.key_press(Key::P);
+    settle(&mut h);
+    assert!(h.state().tools.tool == Tool::Box, "but P doesn't pick the Pen tool behind the gallery");
+}
+
 #[test]
 fn narrow_window_keeps_every_toolbar_button_clear() {
     let mut h = harness("kittest-narrow");
@@ -847,6 +1003,13 @@ mod snapshots {
     }
 
     #[test]
+    fn the_gallery() {
+        let _gpu = super::super::tests::gpu();
+        let mut h = window(fixtures("snap-gallery"), SIZE, |env| env.set_setting(Page::SETTING, Page::Gallery.to_setting()));
+        snapshot(&mut h, "gallery");
+    }
+
+    #[test]
     fn library_with_a_date_folded() {
         let _gpu = super::super::tests::gpu();
         let mut h = window(fixtures("snap-folded"), SIZE, |env| env.set_text_setting(library::FOLDED_SETTING, "Yesterday"));
@@ -933,7 +1096,7 @@ mod snapshots {
     /// RSNIP_UI="size=1280x820 dock=bottom click=Text" RSNIP_UI_OUT=ui.png cargo test render_window -- --ignored
     /// ```
     ///
-    /// `RSNIP_UI` is space-separated: `size=WxH`, `dock=left|bottom`, `theme=light|dark`, `empty` (no screenshots), and
+    /// `RSNIP_UI` is space-separated: `size=WxH`, `dock=left|bottom`, `page=editor|gallery`, `theme=light|dark`, `empty` (no screenshots), and
     /// any number of `click=<label>` (a button's accessible name, e.g. a tool, `Undo`, `Export`, a
     /// colour; use `_` for spaces), applied in order.
     #[test]
@@ -944,6 +1107,7 @@ mod snapshots {
         let out = std::env::var("RSNIP_UI_OUT").unwrap_or_else(|_| "target/ui.png".into());
         let mut size = SIZE;
         let mut dock = Dock::Left;
+        let mut page = Page::Editor;
         let mut appearance = super::super::theme::Appearance::Dark;
         let mut empty = false;
         let mut clicks = Vec::new();
@@ -955,6 +1119,8 @@ mod snapshots {
                 }
                 Some(("dock", "bottom")) => dock = Dock::Bottom,
                 Some(("dock", _)) => dock = Dock::Left,
+                Some(("page", "gallery")) => page = Page::Gallery,
+                Some(("page", _)) => page = Page::Editor,
                 Some(("theme", "light")) => appearance = super::super::theme::Appearance::Light,
                 Some(("theme", _)) => appearance = super::super::theme::Appearance::Dark,
                 Some(("click", label)) => clicks.push(label.replace('_', " ")),
@@ -965,6 +1131,7 @@ mod snapshots {
         let dir = if empty { tests::sandbox_dir("render-empty") } else { fixtures("render") };
         let mut h = window(dir, size, |env| {
             env.set_setting(Dock::SETTING, dock.to_setting());
+            env.set_setting(Page::SETTING, page.to_setting());
             env.set_setting(super::super::theme::Appearance::SETTING, appearance.to_setting());
         });
         for label in &clicks {

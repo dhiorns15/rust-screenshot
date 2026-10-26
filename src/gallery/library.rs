@@ -7,10 +7,10 @@ use std::time::SystemTime;
 use eframe::egui::{self, Align, Align2, Color32, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
 use super::theme::{self, icon, IconButton};
-use super::{open_with_shell, platform, search, App, Dock, THUMB};
+use super::{open_with_shell, platform, search, App, Dock, Page, THUMB};
 
 const ROW_HEIGHT: f32 = THUMB.y + 40.0;
-const HEADER_HEIGHT: f32 = 30.0;
+pub(super) const HEADER_HEIGHT: f32 = 30.0;
 /// A filmstrip column: a thumbnail and its name.
 const COLUMN_WIDTH: f32 = THUMB.x + 16.0;
 /// Room above the filmstrip for the date labels.
@@ -71,7 +71,7 @@ fn sticky_label_x(start: f32, end: f32, scroll: f32) -> f32 {
     scroll.clamp(start, (end - COLUMN_WIDTH).max(start))
 }
 
-fn search_hint() -> String {
+pub(super) fn search_hint() -> String {
     format!("{}  Search text, apps and names", icon::MAGNIFYING_GLASS)
 }
 
@@ -148,9 +148,14 @@ impl Row {
     }
 }
 
-/// What the user did in the list this frame.
-enum Action {
+/// What the user did in the list or the gallery this frame.
+pub(super) enum Action {
+    /// In the library a plain click selects and opens it...
     Click(PathBuf, egui::Modifiers),
+    /// ...in the gallery it only selects (opening takes a double click or Enter).
+    Select(PathBuf, egui::Modifiers),
+    /// Open it in the editor or the player.
+    Open(PathBuf),
     Drag(PathBuf),
     Menu(PathBuf, &'static str),
     /// Push this (or the selected ones, if it's one of them) there.
@@ -161,17 +166,22 @@ enum Action {
 }
 
 impl App {
-    pub(super) fn library(&mut self, ui: &mut egui::Ui) {
+    /// The entries the search shows, as indexes into `entries`; also forgets selected files that
+    /// were deleted or renamed.
+    pub(super) fn visible(&mut self) -> Vec<usize> {
         let none = search::Meta::default();
-        let visible: Vec<usize> = (0..self.entries.len())
+        let visible = (0..self.entries.len())
             .filter(|&i| {
                 let entry = &self.entries[i];
                 search::matches(&self.filter, &entry.name, self.metas.get(&entry.path).unwrap_or(&none))
             })
             .collect();
-        // Forget selected files that were deleted or renamed.
         self.selected.retain(|p| self.entries.iter().any(|e| &e.path == p));
+        visible
+    }
 
+    pub(super) fn library(&mut self, ui: &mut egui::Ui) {
+        let visible = self.visible();
         let bottom = self.dock == Dock::Bottom;
         if bottom {
             ui.horizontal(|ui| {
@@ -203,18 +213,31 @@ impl App {
 
         // What's in view, for Shift+click and for what actions apply to: not what's folded away.
         let order: Vec<PathBuf> = visible.iter().zip(&labels).filter(|(_, label)| !self.folded(label)).map(|(&i, _)| self.entries[i].path.clone()).collect();
+        if let Some(action) = action {
+            self.apply_action(ui.ctx(), action, &order);
+        }
+    }
+
+    /// Does what the user did in the library or the gallery. `order` is what's in view, for
+    /// Shift+click and for what an action on one of several selected applies to.
+    pub(super) fn apply_action(&mut self, ctx: &egui::Context, action: Action, order: &[PathBuf]) {
         match action {
-            Some(Action::ToggleGroup(label)) => self.toggle_group(&label),
-            Some(Action::Click(path, mods)) => self.click(path, mods, &order),
-            Some(Action::Drag(path)) => {
-                let paths = self.targets(&path, &order);
+            Action::ToggleGroup(label) => self.toggle_group(&label),
+            Action::Click(path, mods) => self.click(path, mods, order),
+            Action::Select(path, mods) => self.select(path, mods, order),
+            Action::Open(path) => {
+                self.request_open(path);
+                self.set_page(Page::Editor);
+            }
+            Action::Drag(path) => {
+                let paths = self.targets(&path, order);
                 // Blocks until the drop; Explorer, chat apps and mail clients take them as files.
                 if let Err(e) = platform::drag_files(&paths) {
                     self.set_status(format!("Couldn't drag: {e}"));
                 }
             }
-            Some(Action::Menu(path, label)) => {
-                let paths = self.targets(&path, &order);
+            Action::Menu(path, label) => {
+                let paths = self.targets(&path, order);
                 match label {
                     "Open in default app" => paths.iter().for_each(|p| open_with_shell(p)),
                     "Show in folder" => self.env.show_in_folder(&path),
@@ -224,15 +247,14 @@ impl App {
                     _ => {}
                 }
             }
-            Some(Action::Push(path, destination)) => {
-                let paths = self.targets(&path, &order);
-                self.push_to(ui.ctx(), &destination, paths);
+            Action::Push(path, destination) => {
+                let paths = self.targets(&path, order);
+                self.push_to(ctx, &destination, paths);
             }
-            Some(Action::CopyLink(link)) => match self.env.copy_text(&link) {
+            Action::CopyLink(link) => match self.env.copy_text(&link) {
                 Ok(()) => self.set_status("Link copied"),
                 Err(e) => self.set_status(format!("Couldn't copy: {e}")),
             },
-            None => {}
         }
     }
 
@@ -241,7 +263,7 @@ impl App {
     }
 
     /// Searching shows everything that matches, folded dates or not.
-    fn folded(&self, label: &str) -> bool {
+    pub(super) fn folded(&self, label: &str) -> bool {
         !self.searching() && self.collapsed.contains(label)
     }
 
@@ -262,7 +284,7 @@ impl App {
     }
 
     /// A date's heading, with its text at the bottom left of `rect`. Clicking it folds the date.
-    fn heading(&self, ui: &mut egui::Ui, rect: Rect, label: &str, count: usize) -> Option<Action> {
+    pub(super) fn heading(&self, ui: &mut egui::Ui, rect: Rect, label: &str, count: usize) -> Option<Action> {
         let mut color = theme::palette(ui).muted;
         let mut action = None;
         if !self.searching() {
@@ -309,12 +331,7 @@ impl App {
 
     /// Where the library goes (left or bottom), and the screenshots folder; added right to left.
     fn library_buttons(&mut self, ui: &mut egui::Ui) {
-        if ui.add(IconButton::new(icon::GEAR_SIX, "Settings")).on_hover_text("Settings").clicked() {
-            self.env.open_settings();
-        }
-        if ui.add(IconButton::new(icon::FOLDER_OPEN, "Open the folder")).on_hover_text(format!("Open the folder\n{}", self.env.dir.display())).clicked() {
-            open_with_shell(&self.env.dir);
-        }
+        self.folder_buttons(ui);
         theme::group(ui, |ui| {
             for (dock, icon, label) in [(Dock::Bottom, icon::SQUARE_HALF_BOTTOM, "Library along the bottom"), (Dock::Left, icon::SIDEBAR_SIMPLE, "Library on the left")] {
                 if ui.add(IconButton::new(icon, label).selected(self.dock == dock)).on_hover_text(label).clicked() && self.dock != dock {
@@ -325,8 +342,18 @@ impl App {
         });
     }
 
+    /// Settings and the screenshots folder; added right to left.
+    pub(super) fn folder_buttons(&mut self, ui: &mut egui::Ui) {
+        if ui.add(IconButton::new(icon::GEAR_SIX, "Settings")).on_hover_text("Settings").clicked() {
+            self.env.open_settings();
+        }
+        if ui.add(IconButton::new(icon::FOLDER_OPEN, "Open the folder")).on_hover_text(format!("Open the folder\n{}", self.env.dir.display())).clicked() {
+            open_with_shell(&self.env.dir);
+        }
+    }
+
     /// How many of the `visible` entries there are, or what to do with the selected ones.
-    fn count_or_bulk_bar(&mut self, ui: &mut egui::Ui, visible: &[usize]) {
+    pub(super) fn count_or_bulk_bar(&mut self, ui: &mut egui::Ui, visible: &[usize]) {
         if self.selected.len() > 1 {
             self.bulk_bar(ui);
         } else {
@@ -376,7 +403,7 @@ impl App {
                             }
                         }
                         Row::Item(i) => {
-                            if let Some(done) = self.item(ui, rect, *i) {
+                            if let Some(done) = self.item(ui, rect, *i, THUMB) {
                                 action = Some(done);
                             }
                         }
@@ -425,7 +452,7 @@ impl App {
                     for m in n..end {
                         if xs[m] + COLUMN_WIDTH >= viewport.min.x && xs[m] <= viewport.max.x {
                             let rect = Rect::from_min_size(origin + Vec2::new(xs[m], LABEL_HEIGHT), Vec2::new(COLUMN_WIDTH, ROW_HEIGHT));
-                            if let Some(done) = self.item(ui, rect, visible[m]) {
+                            if let Some(done) = self.item(ui, rect, visible[m], THUMB) {
                                 action = Some(done);
                             }
                         }
@@ -438,7 +465,7 @@ impl App {
     }
 
     /// One thumbnail row; returns what was done with it.
-    fn item(&mut self, ui: &mut egui::Ui, rect: Rect, i: usize) -> Option<Action> {
+    pub(super) fn item(&mut self, ui: &mut egui::Ui, rect: Rect, i: usize, thumb: Vec2) -> Option<Action> {
         let entry = &self.entries[i];
         let response = ui.interact(rect, ui.id().with(("entry", &entry.path)), Sense::click_and_drag());
         let selected = self.selected.contains(&entry.path);
@@ -462,10 +489,10 @@ impl App {
             painter.rect_stroke(tile, 8.0, Stroke::new(1.0f32, theme::ACCENT.gamma_multiply(0.7)), egui::StrokeKind::Middle);
         }
 
-        let thumb_area = Rect::from_min_size(rect.min + Vec2::new((rect.width() - THUMB.x) / 2.0, 8.0), THUMB);
+        let thumb_area = Rect::from_min_size(rect.min + Vec2::new((rect.width() - thumb.x) / 2.0, 8.0), thumb);
         match self.thumbs.get(&entry.path) {
             Some((modified, tex)) if *modified == entry.modified => {
-                let fit = (THUMB.x / tex.size_vec2().x).min(THUMB.y / tex.size_vec2().y);
+                let fit = (thumb.x / tex.size_vec2().x).min(thumb.y / tex.size_vec2().y);
                 let r = Rect::from_center_size(thumb_area.center(), tex.size_vec2() * fit);
                 painter.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
             }
@@ -496,60 +523,74 @@ impl App {
         let path = entry.path.clone();
         let many = selected && self.selected.len() > 1;
         let mut action = None;
-        if response.clicked() {
-            action = Some(Action::Click(path.clone(), ui.input(|i| i.modifiers)));
+        let gallery = self.page == Page::Gallery;
+        if response.double_clicked() && gallery {
+            action = Some(Action::Open(path.clone()));
+        } else if response.clicked() {
+            let mods = ui.input(|i| i.modifiers);
+            action = Some(if gallery { Action::Select(path.clone(), mods) } else { Action::Click(path.clone(), mods) });
         }
         if response.drag_started() && platform::EXTRAS {
             action = Some(Action::Drag(path.clone()));
         }
         response.context_menu(|ui| {
-            let labels: &[&'static str] = if many {
-                &["Copy as files", "Pin to screen", "Delete"]
-            } else {
-                &["Open in default app", "Show in folder", "Pin to screen", "Copy as files", "Delete"]
-            };
-            let windows_only = ["Pin to screen"];
-            for &label in labels.iter().filter(|l| platform::EXTRAS || !windows_only.contains(l)) {
-                let text = if many && label != "Pin to screen" { format!("{label} ({})", self.selected.len()) } else { label.to_string() };
-                if ui.button(text).clicked() {
-                    action = Some(Action::Menu(path.clone(), label));
-                    ui.close();
-                }
-            }
-            ui.separator();
-            let push = if many { format!("Push to ({})", self.selected.len()) } else { "Push to".into() };
-            // What's pushed is the file, so the open one waits for its edits to be saved, as in Export.
-            let open = self.editor.as_ref().filter(|e| e.doc.dirty()).map(|e| &e.doc.path);
-            let unsaved = open.is_some_and(|open| *open == path || (many && self.selected.contains(open)));
-            ui.add_enabled_ui(!unsaved, |ui| ui.menu_button(theme::label(icon::CLOUD_ARROW_UP, &push), |ui| {
-                let destinations = crate::push::load(&self.env);
-                if destinations.is_empty() && ui.button("Set up places to push to…").clicked() {
-                    self.env.open_settings();
-                    ui.close();
-                }
-                for destination in destinations {
-                    if ui.add_enabled(self.pushing.is_none(), egui::Button::new(&destination.name)).on_disabled_hover_text("Still pushing").clicked() {
-                        action = Some(Action::Push(path.clone(), Box::new(destination)));
-                        ui.close();
-                    }
-                }
-            }))
-            .response
-            .on_disabled_hover_text("Save your edits first, so they go too");
-            if !many {
-                for (name, link) in self.links(&path) {
-                    if ui.button(theme::label(icon::LINK, &format!("Copy link ({name})"))).clicked() {
-                        action = Some(Action::CopyLink(link));
-                        ui.close();
-                    }
-                }
+            if let Some(done) = self.item_menu(ui, &path, many) {
+                action = Some(done);
             }
         });
         action
     }
 
-    /// Plain click opens and selects one; Ctrl+click toggles; Shift+click selects a range.
-    fn click(&mut self, path: PathBuf, mods: egui::Modifiers, order: &[PathBuf]) {
+    /// The right-click menu of a thumbnail: what to do with it, or with all the selected ones if
+    /// it's one of them (`many`).
+    fn item_menu(&self, ui: &mut egui::Ui, path: &PathBuf, many: bool) -> Option<Action> {
+        let mut action = None;
+        let labels: &[&'static str] = if many {
+            &["Copy as files", "Pin to screen", "Delete"]
+        } else {
+            &["Open in default app", "Show in folder", "Pin to screen", "Copy as files", "Delete"]
+        };
+        let windows_only = ["Pin to screen"];
+        for &label in labels.iter().filter(|l| platform::EXTRAS || !windows_only.contains(l)) {
+            let text = if many && label != "Pin to screen" { format!("{label} ({})", self.selected.len()) } else { label.to_string() };
+            if ui.button(text).clicked() {
+                action = Some(Action::Menu(path.clone(), label));
+                ui.close();
+            }
+        }
+        ui.separator();
+        let push = if many { format!("Push to ({})", self.selected.len()) } else { "Push to".into() };
+        // What's pushed is the file, so the open one waits for its edits to be saved, as in Export.
+        let open = self.editor.as_ref().filter(|e| e.doc.dirty()).map(|e| &e.doc.path);
+        let unsaved = open.is_some_and(|open| open == path || (many && self.selected.contains(open)));
+        ui.add_enabled_ui(!unsaved, |ui| ui.menu_button(theme::label(icon::CLOUD_ARROW_UP, &push), |ui| {
+            let destinations = crate::push::load(&self.env);
+            if destinations.is_empty() && ui.button("Set up places to push to…").clicked() {
+                self.env.open_settings();
+                ui.close();
+            }
+            for destination in destinations {
+                if ui.add_enabled(self.pushing.is_none(), egui::Button::new(&destination.name)).on_disabled_hover_text("Still pushing").clicked() {
+                    action = Some(Action::Push(path.clone(), Box::new(destination)));
+                    ui.close();
+                }
+            }
+        }))
+        .response
+        .on_disabled_hover_text("Save your edits first, so they go too");
+        if !many {
+            for (name, link) in self.links(path) {
+                if ui.button(theme::label(icon::LINK, &format!("Copy link ({name})"))).clicked() {
+                    action = Some(Action::CopyLink(link));
+                    ui.close();
+                }
+            }
+        }
+        action
+    }
+
+    /// Ctrl+click toggles; Shift+click selects a range; a plain click selects one.
+    fn select(&mut self, path: PathBuf, mods: egui::Modifiers, order: &[PathBuf]) {
         if mods.command {
             if !self.selected.remove(&path) {
                 self.selected.insert(path.clone());
@@ -560,7 +601,14 @@ impl App {
             self.selected = range(order, &anchor, &path).into_iter().collect();
         } else {
             self.selected = [path.clone()].into();
-            self.anchor = Some(path.clone());
+            self.anchor = Some(path);
+        }
+    }
+
+    /// In the library, a plain click also opens it.
+    fn click(&mut self, path: PathBuf, mods: egui::Modifiers, order: &[PathBuf]) {
+        self.select(path.clone(), mods, order);
+        if !mods.command && !mods.shift {
             self.request_open(path);
         }
     }

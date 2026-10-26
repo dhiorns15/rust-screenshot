@@ -26,6 +26,8 @@ mod color;
 mod doc;
 #[cfg(windows)]
 mod dragout;
+#[allow(clippy::module_inception)]
+mod gallery;
 mod library;
 mod platform;
 mod player;
@@ -222,6 +224,34 @@ impl Dock {
     }
 }
 
+/// What the window shows under the toolbar.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Page {
+    /// The editor, with the library beside it.
+    Editor,
+    /// Everything as a grid of large thumbnails.
+    Gallery,
+}
+
+impl Page {
+    const SETTING: &'static str = "LibraryPage";
+
+    /// Unknown values (or none) mean the default, the editor.
+    fn from_setting(value: Option<u32>) -> Page {
+        match value {
+            Some(1) => Page::Gallery,
+            _ => Page::Editor,
+        }
+    }
+
+    fn to_setting(self) -> u32 {
+        match self {
+            Page::Editor => 0,
+            Page::Gallery => 1,
+        }
+    }
+}
+
 struct App {
     env: Env,
     entries: Vec<Entry>,
@@ -259,6 +289,9 @@ struct App {
     /// Where Shift+click ranges start.
     anchor: Option<PathBuf>,
     dock: Dock,
+    page: Page,
+    /// A gallery item the keyboard moved the selection to, to scroll into view.
+    reveal: Option<PathBuf>,
     /// Dates folded in the library, by their heading (see `library::parse_folded`).
     collapsed: HashSet<String>,
     /// What's known about each listed screenshot for search (see `search`).
@@ -274,6 +307,8 @@ struct App {
     actions_width: f32,
     /// How much room the tool groups took last frame besides their buttons.
     tools_spacing: f32,
+    /// How wide the Editor | Gallery buttons were last frame, with the space after them.
+    page_width: f32,
     /// RSnip crashed since the user last heard about it (see `crash`): when.
     crashed: Option<u64>,
 }
@@ -338,6 +373,8 @@ impl App {
             selected: HashSet::new(),
             anchor: None,
             dock: Dock::from_setting(env.setting(Dock::SETTING)),
+            page: Page::from_setting(env.setting(Page::SETTING)),
+            reveal: None,
             collapsed: library::parse_folded(&env.text_setting(library::FOLDED_SETTING).unwrap_or_default()),
             metas: HashMap::new(),
             meta_times: HashMap::new(),
@@ -346,6 +383,7 @@ impl App {
             read_rx: None,
             actions_width: 320.0,
             tools_spacing: 72.0,
+            page_width: 150.0,
             crashed: crate::crash::unseen(&env.crash_dir, env.setting(crate::crash::SEEN_SETTING)).map(|c| c.time),
             env,
         };
@@ -357,7 +395,13 @@ impl App {
         app.rescan();
         doc::prune_layers(&app.env.dir);
         match file {
-            Some(file) => app.open(&file),
+            Some(file) => {
+                app.open(&file);
+                // Asked for by name: show it, whichever page was last used.
+                app.page = Page::Editor;
+            }
+            // The gallery is for choosing, so nothing's opened until it's chosen.
+            None if app.page == Page::Gallery => {}
             None => {
                 if let Some(first) = app.entries.iter().find(|e| !e.video).map(|e| e.path.clone()) {
                     app.open(&first);
@@ -365,6 +409,14 @@ impl App {
             }
         }
         app
+    }
+
+    /// Switches between the editor and the gallery, and remembers it.
+    fn set_page(&mut self, page: Page) {
+        if self.page != page {
+            self.page = page;
+            self.env.set_setting(Page::SETTING, page.to_setting());
+        }
     }
 
     fn rescan(&mut self) {
@@ -706,6 +758,7 @@ impl App {
                     self.rescan();
                     if !request.is_empty() && request != "--show" {
                         self.request_open(PathBuf::from(request));
+                        self.page = Page::Editor;
                     }
                 }
             }
@@ -715,7 +768,7 @@ impl App {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let typing = self.editor.as_ref().is_some_and(|e| e.is_typing()) || ctx.egui_wants_keyboard_input();
-        if typing || self.editor.is_none() {
+        if typing || self.editor.is_none() || self.page != Page::Editor {
             return;
         }
         let shortcut = |m, k| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, k)));
@@ -751,15 +804,15 @@ impl App {
         }
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
+    fn toolbar(&mut self, ui: &mut egui::Ui, visible: &[usize]) {
         let enabled = self.editor.is_some();
         let width = ui.available_width();
-        // Undo and redo on the left, the tools centred on the window, and the actions on the
-        // right. The tools are named under their icons when there's room, and move off centre
-        // when that's the only way to fit the actions beside them; when it isn't, the actions go
-        // on a row of their own. (A row around the right-to-left layout keeps it from taking the
-        // panel's whole height.)
-        let history = 2.0 * (IconButton::new(icon::ARROW_CLOCKWISE, "Redo").size(ui).x + 8.0);
+        // The Editor | Gallery buttons, then undo and redo, on the left, the tools centred on the
+        // window, and the actions on the right. The tools are named under their icons when
+        // there's room, and move off centre when that's the only way to fit the actions beside
+        // them; when it isn't, the actions go on a row of their own. (A row around the
+        // right-to-left layout keeps it from taking the panel's whole height.)
+        let history = self.page_width + 2.0 * (IconButton::new(icon::ARROW_CLOCKWISE, "Redo").size(ui).x + 8.0);
         let captioned = history + self.tools_spacing + tool_buttons_width(ui, true) <= width;
         let tools = self.tools_spacing + tool_buttons_width(ui, captioned);
         let room = width - tools - ACTIONS_GAP - self.actions_width;
@@ -768,8 +821,17 @@ impl App {
         let indent = if fits { centred.min(room) } else { centred };
         // All of the row's height from the start, so everything is centred on the same line.
         let row = Vec2::new(width, if captioned { 48.0 } else { 32.0 });
+        if self.page == Page::Gallery {
+            ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                self.page_buttons(ui);
+                self.gallery_bar(ui, visible);
+            });
+            return;
+        }
         ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
+            self.page_buttons(ui);
             self.history(ui);
             ui.add_space((indent - history).max(0.0));
             let drawn = ui.add_enabled_ui(enabled, |ui| self.tool_buttons(ui, captioned)).response.rect.width();
@@ -781,6 +843,19 @@ impl App {
         if !fits {
             ui.horizontal(|ui| self.actions_row(ui, enabled));
         }
+    }
+
+    /// Editor | Gallery, at the left of the toolbar.
+    fn page_buttons(&mut self, ui: &mut egui::Ui) {
+        let left = ui.cursor().left();
+        theme::group(ui, |ui| {
+            for (page, label) in [(Page::Editor, "Editor"), (Page::Gallery, "Gallery")] {
+                if ui.add(egui::Button::selectable(self.page == page, label)).clicked() {
+                    self.set_page(page);
+                }
+            }
+        });
+        self.page_width = ui.cursor().left() - left;
     }
 
     fn history(&mut self, ui: &mut egui::Ui) {
@@ -1089,7 +1164,8 @@ impl App {
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if let Some(editor) = &self.editor {
+            let editing = self.page == Page::Editor;
+            if let Some(editor) = self.editor.as_ref().filter(|_| editing) {
                 let name = editor.doc.path.file_name().unwrap_or_default().to_string_lossy();
                 let size = editor.doc.size();
                 let marker = if editor.doc.dirty() { " •" } else { "" };
@@ -1116,7 +1192,7 @@ impl App {
                         platform::open(Path::new(&release.page));
                     }
                 }
-                let Some(editor) = &mut self.editor else { return };
+                let Some(editor) = self.editor.as_mut().filter(|_| editing) else { return };
                 if ui.small_button("1:1").on_hover_text("Actual size").clicked() {
                     editor.zoom = Some(1.0);
                 }
@@ -1189,8 +1265,11 @@ impl eframe::App for App {
 
         let p = theme::palette(ctx);
         let bar = |fill| egui::Frame::NONE.fill(fill).inner_margin(egui::Margin::symmetric(10, 7)).stroke(egui::Stroke::new(1.0f32, p.border));
-        egui::Panel::top("toolbar").frame(bar(p.panel)).show_separator_line(false).show(ui, |ui| self.toolbar(ui));
-        if self.editor.is_some() {
+        let gallery = self.page == Page::Gallery;
+        // What the gallery shows and counts; the library works out its own.
+        let visible = if gallery { self.visible() } else { Vec::new() };
+        egui::Panel::top("toolbar").frame(bar(p.panel)).show_separator_line(false).show(ui, |ui| self.toolbar(ui, &visible));
+        if self.editor.is_some() && !gallery {
             egui::Panel::top("options").frame(bar(p.subpanel)).show_separator_line(false).show(ui, |ui| self.tool_options(ui));
         }
         egui::Panel::bottom("status")
@@ -1198,6 +1277,7 @@ impl eframe::App for App {
             .show(ui, |ui| self.status_bar(ui));
         let library = egui::Frame::NONE.fill(p.panel).inner_margin(egui::Margin::same(10));
         match self.dock {
+            _ if gallery => {}
             Dock::Left => {
                 egui::Panel::left("library")
                     .frame(library)
@@ -1214,7 +1294,11 @@ impl eframe::App for App {
                     .show(ui, |ui| self.library(ui));
             }
         }
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(p.canvas)).show(ui, |ui| {
+        let canvas = egui::Frame::NONE.fill(p.canvas).inner_margin(egui::Margin::same(if gallery { 12 } else { 0 }));
+        egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
+            if gallery {
+                return self.gallery(ui, &visible);
+            }
             match (&mut self.editor, &mut self.player) {
                 (Some(editor), _) => editor.ui(ui, &mut self.tools, self.font.as_ref()),
                 (None, Some(player)) => {

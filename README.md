@@ -260,6 +260,14 @@ annotation (colour, size, shadow, delete) and a hint on how to use it.
 The library sits on the left, or along the bottom as a filmstrip so the editor gets the full width:
 switch with the two layout buttons next to *Library*. RSnip remembers the choice.
 
+*Gallery*, at the left of the toolbar, swaps the editor and the library for a grid of large
+thumbnails, grouped by date like the library (and folded the same way) so you can look through
+everything and choose. *Editor* brings the editor back; RSnip remembers which you were on. A click
+selects (Ctrl+click and Shift+click select several), and a double click or Enter opens it in the
+editor, or in the player for a recording. The arrow keys move the selection, Ctrl+A selects everything
+shown and Esc clears it. Search, dragging a thumbnail out, the right-click menu and the buttons for
+several selected ones work as in the library.
+
 | Tool | Key | |
 | --- | --- | --- |
 | Select | V | click an annotation to select it; drag to move it, drag its handles to resize it (arrows: drag either end) |
