@@ -1,13 +1,48 @@
 # Places to push to
 
-How to set up each place RSnip can push screenshots and recordings to (*Settings → Push to →
-Add…*), the least each needs, what *Test* checks, and what its usual errors mean. The **?** next to
-a place in Settings opens its section here.
+RSnip can send screenshots and recordings to other places as they're saved, or when you choose.
+Set them up in *Settings → Push to* (*Add…*); *Test* checks one without sending anything. Each is
+pushed to **Automatically** (whatever's saved from then on, a few seconds after, and again when
+edits to it are saved; what was there before isn't) or **By hand**: *Export → Push to* in the
+editor and player, or *Push to* in the library's right-click menu, for everything selected. When
+the place gives a link, it's copied, and the item's right-click menu has *Copy link* for each place
+it went; an edited one pushed again to SFTP, WebDAV, S3, an SMB share or FTPS replaces the file
+there, while Discord, Slack, Immich and PhotoPrism get a new copy, and *Copy link* gives the newest. A push that fails by itself is
+tried again after a minute, five minutes and half an hour, then reported with a notification.
+*Recent pushes*, under the places, lists the last ten pushes, by hand and automatic, with what
+went wrong when one didn't, and a *Retry* on the latest failure of a file to a place.
 
-Passwords, keys, tokens and webhook addresses are kept in Windows' Credential Manager, or on Linux
-the desktop's keyring (GNOME Keyring, KWallet: any Secret Service), never in RSnip's settings.
+## The places
+
+| Place | What it needs | Link |
+|---|---|---|
+| SFTP | The server and folder; signs in with your SSH keys through the system's OpenSSH, never a stored password | With a public address for the folder |
+| WebDAV | The folder's address, a user name and (app) password | With a public address for the folder |
+| S3-compatible | Endpoint, bucket, an access key ID and secret (AWS, R2, B2, Wasabi, MinIO) | With a public address for the bucket |
+| SMB share | The share (`\\nas\shots`), and a user and password or none; Samba's `smbclient` on Linux | With a public address for the folder |
+| FTPS | The server, user, password and folder; FTP over TLS only, and a NAS's self-signed certificate can be trusted by its fingerprint | With a public address for the folder |
+| Discord | A channel's webhook address | The attachment |
+| Slack | A bot token from a Slack app of your own (`files:write`) and the channel's ID | The file in Slack |
+| Immich | The server's address and an API key (`asset.upload`, `user.read`) | The photo in Immich |
+| PhotoPrism | The server's address and an app password (`files`, `sessions`, `albums`) | None |
+| Custom uploader | Any upload API, described as ShareX's custom uploaders are, or imported from a `.sxcu` file | Where the reply says |
+
+Passwords, keys, tokens and webhook addresses are kept in Windows' Credential Manager, or on Linux the
+desktop's keyring (GNOME Keyring, KWallet: any Secret Service), never in RSnip's settings. On Linux
+without a keyring, places that need one can't be saved.
 Give RSnip its own key, token or app password where the service has them, with no more than it
 needs, so it can be taken back without changing anything else.
+
+**Coming later:** Dropbox, Google Drive, OneDrive, Imgur (with albums) and Box (each needs RSnip
+registered with them), Microsoft Teams, Gyazo, Streamable and Synology Photos. Mattermost, Imgbb
+and Catbox if someone asks: [suggest a place](https://github.com/dhiorns15/rust-screenshot/issues/new?template=push_destination.yml),
+though many hosts with an upload API already work as a custom uploader.
+
+## Setting up each place
+
+How to set up each place RSnip can push screenshots and recordings to (*Settings → Push to →
+Add…*), the least each needs (keys, scopes, permissions), what *Test* checks, and what its usual
+errors mean. The **?** next to a place in Settings opens its section here.
 
 Where a server drops the connection (a reset, say, or a restart mid-upload) RSnip says *… closed
 the connection*: check that it's running and reachable from this computer, and that nothing between

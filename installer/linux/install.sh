@@ -201,7 +201,7 @@ if [ ! -f "$here/rsnip" ]; then
     exit 1
 fi
 if [ "$(uname -m)" != x86_64 ]; then
-    echo "This download is for x86-64 PCs; on $(uname -m), build RSnip from source (see README.md)." >&2
+    echo "This download is for x86-64 PCs; on $(uname -m), build RSnip from source (see https://github.com/dhiorns15/rust-screenshot/blob/main/docs/building.md)." >&2
     exit 1
 fi
 # Running it once catches a C library that's too old for this build, before anything is copied.
@@ -213,7 +213,7 @@ if ! problem=$("$here/rsnip" --write-icon "$probe/icon.png" 2>&1); then
     case "$problem" in
     *GLIBC*)
         echo "This build needs a newer C library (glibc $(getconf GNU_LIBC_VERSION 2>/dev/null | cut -d' ' -f2) is installed)." >&2
-        echo "Update your distribution, or build RSnip from source (see README.md)." >&2
+        echo "Update your distribution, or build RSnip from source (see https://github.com/dhiorns15/rust-screenshot/blob/main/docs/building.md)." >&2
         ;;
     esac
     exit 1

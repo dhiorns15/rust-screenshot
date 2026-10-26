@@ -1,0 +1,127 @@
+# RSnip on Linux
+
+## What works on Linux
+
+The library and editor also run on Linux (X11 or Wayland), and take screenshots and record the
+screen. RSnip keeps them in its folder, `~/RSnip` unless you choose another in Settings → Library &
+editor, and annotates what's there. The desktop's own screenshot tool (or Flameshot,
+`grim`/`slurp`, …) still works: it keeps saving to the Pictures folder's `Screenshots`, so RSnip
+moves each new screenshot from there into its folder as it's taken (*Bring in the desktop's
+screenshots*, in the same place; the background icon or the library does it). Reading the text in screenshots (to copy it, or
+to search by it) uses [Tesseract](https://github.com/tesseract-ocr/tesseract) when it's installed
+(`tesseract-ocr` on Debian and Ubuntu; the installer's check recommends it). Copying as files
+(screenshots, recordings, several from the library) works as on Windows, to paste into a folder,
+chat or email; pinning and dragging files out are Windows-only.
+
+To build it yourself instead, see [Building](building.md#on-linux).
+
+## Screenshots on Linux
+
+Run `rsnip --region` and drag over the part of the screen to capture, or
+`rsnip --full` for all of it, `rsnip --delay 5` for a region in 5 seconds, `rsnip --text` to copy
+the text in an area (it needs Tesseract), or `rsnip --last` for the same area as last time. As on
+Windows, the screenshot is copied to the clipboard and saved to RSnip's folder, and a notification
+says so. To get them on keys, add custom shortcuts in your desktop's settings: on GNOME,
+*Settings → Keyboard → Keyboard Shortcuts → Custom Shortcuts*, with a command like `rsnip --region`
+(its full path, if RSnip isn't on your `PATH`). RSnip asks the desktop for the
+screenshot (its screenshot portal, which Wayland desktops and most X11 ones have), so GNOME may ask
+once whether RSnip may take screenshots. If the desktop won't (Ubuntu 24.04's GNOME can refuse
+without asking, or take a while to), RSnip reads the screen itself on an X11 desktop, or on Wayland
+asks you to pick the screen to share, as for recording. RSnip's icon takes it, starting if it isn't running, so
+that the copy stays on the clipboard.
+
+## Recording on Linux
+
+From RSnip's icon in the top bar or panel, choose *Record an area…* or
+*Record screen or window…* (or the same from RSnip's app-menu entry, or run `rsnip --record` /
+`rsnip --record-screen`, which you can give a keyboard shortcut in your desktop's settings).
+Your desktop asks which screen or window to share, as it does for screen sharing in a browser; for
+an area, RSnip then shows that screen to drag over. The icon gets a red dot while recording: click
+it (or *Stop recording*, or run the command again) to finish. The recording is saved to RSnip's
+folder in the format set in Settings → Recording and copied as a file, ready to paste, and a
+notification says so. Recordings use
+[GStreamer](https://gstreamer.freedesktop.org/) with its PipeWire plugin, as the desktop's own
+recorder does:
+
+| | Debian, Ubuntu | Fedora | Arch | openSUSE |
+| --- | --- | --- | --- | --- |
+| Recording | `gstreamer1.0-tools gstreamer1.0-pipewire` | `gstreamer1 pipewire-gstreamer` | `gstreamer gst-plugin-pipewire` | `gstreamer-utils gstreamer-plugin-pipewire` |
+| H.264 | `gstreamer1.0-plugins-ugly gstreamer1.0-plugins-bad` | `gstreamer1-plugin-openh264 gstreamer1-plugins-bad-free` | `gst-plugins-ugly gst-plugins-bad` | `gstreamer-plugins-ugly` (Packman) `gstreamer-plugins-bad` |
+| H.265 | `gstreamer1.0-plugins-bad` | `gstreamer1-plugins-bad-freeworld` (RPM Fusion) | `gst-plugins-bad` | `gstreamer-plugins-bad` (Packman) |
+
+Without an H.264 or H.265 encoder, recordings are WebM (VP8), which every GStreamer install can
+write; the graphics card's encoder (VA-API) is used when it's there and the others aren't. Each
+encoder needs its parser too (`h264parse`, in plugins-bad). Settings → Recording says what's
+missing, and `rsnip --check-recording` records a moment of a test picture the way a recording
+would be made, then says what it came out as.
+
+## The icon in the top bar or panel
+
+Closing the library leaves RSnip's icon in the top bar or panel, for recording and opening the
+library, Settings or the screenshots folder again; *Quit RSnip* in its menu stops it. Ubuntu, KDE and most panels show
+it; on plain GNOME (e.g. Fedora) it needs the
+[AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/). Settings →
+General turns it off, or starts it when you sign in.
+
+## Installing on Linux
+
+The downloads run on any x86-64 distribution with glibc 2.39 or later (for example Ubuntu 24.04,
+Debian 13, Fedora 40, openSUSE Tumbleweed, Arch, or newer).
+
+**Ubuntu, Debian and others that use `.deb`**: download `rsnip_X.Y.Z-1_amd64.deb` from the
+[latest release](https://github.com/dhiorns15/rust-screenshot/releases/latest) and open it (it opens
+in your software centre), or run:
+
+```
+sudo apt install ./rsnip_X.Y.Z-1_amd64.deb
+```
+
+**Fedora, openSUSE and others that use `.rpm`**: download `rsnip-X.Y.Z-1.x86_64.rpm` and open it,
+or run one of:
+
+```
+sudo dnf install ./rsnip-X.Y.Z-1.x86_64.rpm
+sudo zypper install --allow-unsigned-rpm ./rsnip-X.Y.Z-1.x86_64.rpm
+```
+
+The package brings what RSnip uses with it: GStreamer for recording (with an H.264 encoder on Ubuntu,
+Debian and Fedora; on openSUSE that comes from Packman) and Tesseract for reading text. It adds
+**RSnip Library** (with *Record* and *Settings* actions) to your app menu. Install a newer download
+the same way to upgrade, and remove it with `sudo apt remove rsnip` / `sudo dnf remove rsnip` (or
+from your software centre); your screenshots and settings are kept.
+
+**Elsewhere** (Arch, say), or to install for your user only without `sudo`, use the `.tar.gz`:
+
+```
+tar -xzf rsnip-vX.Y.Z-linux-x64.tar.gz
+cd rsnip
+./install.sh
+```
+
+This copies `rsnip` to `~/.local/bin` and adds **RSnip Library** (with its icon, and *Record* and
+*Settings* actions) to your app menu, so you can pin it to the dock. It then checks for what RSnip
+uses (the graphics and keyboard libraries for your session, X11 or Wayland, plus `xdg-open`,
+`fc-match`, `curl`/`wget`, Tesseract and GStreamer) and, if anything is missing, prints the command
+that installs it on your distribution (apt, dnf, pacman or zypper). It never installs system
+packages itself, and stops before copying anything if this build can't run on your system (e.g. an
+older glibc).
+
+- `./install.sh --check` only runs that check.
+- Run `./install.sh` from a newer download to upgrade.
+- `./install.sh --uninstall` removes it (and stops it running in the background); your screenshots
+  and settings are kept.
+
+Then point your desktop's screenshot tool at RSnip's folder (or RSnip at your tool's, in Settings →
+Library & editor), and screenshots show up in the library. To open a capture straight in the
+editor, bind a key to a command such as `grim -g "$(slurp)" ~/RSnip/shot-$(date +%s).png && rsnip`
+(Wayland, wlroots desktops) or `flameshot gui -p ~/RSnip`. `rsnip file.png` opens one file.
+
+## Settings and updates on Linux
+
+Settings live in `~/.config/rsnip/settings.json`, or open *Settings* from the library. When a new
+version is out, the library's status bar links to it. It checks once each time the library opens,
+using `curl` or, if that isn't installed (as on Ubuntu), `wget`; turn it off in *Settings → Updates*.
+If RSnip came from its `.deb` or `.rpm`, *Settings → Updates → Install* downloads the new package,
+checks it against GitHub's SHA-256, installs it with your package manager (asking for your
+password) and offers to restart RSnip. Otherwise, download the new version and run `./install.sh`
+again.

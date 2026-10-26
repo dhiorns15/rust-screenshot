@@ -122,7 +122,7 @@ To use the running app from a tool or an AI agent, build with `--features inspec
 
 ## Crash reports
 
-A crash report from a user (see the README) says what happened and where. A panic gives its message
+A crash report from a user (see [Settings](docs/settings.md#crash-reports)) says what happened and where. A panic gives its message
 and the line of RSnip's code it came from, plus a backtrace: with function names on Linux, but none
 in Windows release builds, whose symbols are in a separate `rsnip.pdb`. A native crash (a segfault,
 an access violation) has no backtrace. On Windows it lists addresses as `module+offset` instead,
@@ -135,7 +135,7 @@ same release into one folder, open the exe in WinDbg, and run `ln rsnip+0x1A2B3C
 - Match the code around you: naming, comment density, idioms. Comments say *why*, not *what*.
 - Keep changes focused; one logical change per commit, with a message whose first line says what
   it does (imperative, under ~70 characters) and whose body says why.
-- Update the README for anything a user would notice.
+- Update the README or the docs for anything a user would notice.
 - New behaviour comes with tests at the lowest layer that can show it.
 
 ## Releases

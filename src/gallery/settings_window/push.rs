@@ -165,7 +165,7 @@ fn help(kind: &Kind) -> &'static str {
         Kind::S3 { .. } => "Works with AWS, Cloudflare R2, Backblaze B2, Wasabi and MinIO.",
         Kind::Discord { .. } => "Server Settings > Integrations > Webhooks > Copy Webhook URL",
         Kind::Immich { .. } => "Account Settings > API Keys",
-        Kind::Slack { .. } => "Your Slack app's Bot User OAuth Token (xoxb-…), with the files:write scope; invite the app to the channel. The README has an app manifest to start from.",
+        Kind::Slack { .. } => "Your Slack app's Bot User OAuth Token (xoxb-…), with the files:write scope; invite the app to the channel. docs/destinations.md has an app manifest to start from.",
         Kind::PhotoPrism { .. } => "Settings > Account > Apps and Devices: an app password with full access, or the files and sessions scopes (and albums, for an album).",
         Kind::Ftps { .. } => "FTP over TLS: port 21 for explicit TLS, 990 for implicit. Plain FTP isn't offered, as it sends the password unencrypted.",
         Kind::Smb { .. } => "A Windows or Samba share, a NAS's say. On Linux it needs Samba's smbclient.",
