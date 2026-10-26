@@ -9,6 +9,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
 use super::env::Env;
+use super::gallery::Sort;
 use super::theme::{icon, label};
 use super::*;
 
@@ -388,6 +389,147 @@ fn the_gallery_leaves_the_keys_to_a_text_box() {
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
     settle(&mut h);
     assert!(h.state().selected.is_empty(), "the arrows and Ctrl+A were for the search box");
+}
+
+/// The gallery of `fixtures` and a recording, with Screenshot 2 and Screenshot 10 from earlier
+/// days, and files of different sizes: b is noise and c is big, so the sizes are all different.
+fn sortable(name: &str, setup: impl FnOnce(&Env) + 'static) -> Harness<'static, App> {
+    let dir = fixtures(name);
+    let day = Duration::from_secs(24 * 60 * 60);
+    let write = |file: &str, img: image::RgbaImage, ago: Duration| {
+        let path = dir.join(file);
+        img.save(&path).unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(SystemTime::now() - ago).unwrap();
+    };
+    let solid = |w, h, shade: u8| image::RgbaImage::from_pixel(w, h, image::Rgba([shade, 90, 200, 255]));
+    write("Screenshot b.png", image::RgbaImage::from_fn(320, 200, |x, y| image::Rgba([(x * 7 + y * 13) as u8, (x ^ y) as u8, (x * y) as u8, 255])), Duration::from_secs(60));
+    write("Screenshot c.png", solid(640, 400, 220), day);
+    write("Screenshot 2.png", solid(100, 100, 10), 2 * day);
+    write("Screenshot 10.png", solid(100, 50, 30), 3 * day);
+    super::player::tests::gif(&dir.join("Recording z.gif"), 20);
+    let env = Env::sandbox(dir);
+    env.set_setting(Page::SETTING, Page::Gallery.to_setting());
+    setup(&env);
+    let mut h = Harness::builder().with_size(SIZE).with_step_dt(1.0 / 60.0).build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
+    settle(&mut h);
+    h
+}
+
+/// The names of what's on screen, in reading order.
+fn reading_order(h: &Harness<App>) -> Vec<String> {
+    let mut shown: Vec<(f32, f32, String)> = h
+        .state()
+        .entries
+        .iter()
+        .filter_map(|e| h.query_by_label(&e.name).map(|node| (node.rect().top().round(), node.rect().left(), e.name.clone())))
+        .collect();
+    shown.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    shown.into_iter().map(|(_, _, name)| name).collect()
+}
+
+/// The names of everything, by file size.
+fn by_size(h: &Harness<App>, largest_first: bool) -> Vec<String> {
+    let mut sizes: Vec<(u64, String)> = h.state().entries.iter().map(|e| (e.len, e.name.clone())).collect();
+    sizes.sort();
+    assert!(sizes.windows(2).all(|w| w[0].0 != w[1].0), "the files' sizes differ: {sizes:?}");
+    if largest_first {
+        sizes.reverse();
+    }
+    sizes.into_iter().map(|(_, name)| name).collect()
+}
+
+#[test]
+fn the_gallery_sorts_by_date_either_way() {
+    let mut h = sortable("kittest-sort-date", |_| {});
+    let newest_first = ["Recording z", "Screenshot a", "Screenshot b", "Screenshot c", "Screenshot 2", "Screenshot 10"].map(String::from).to_vec();
+    assert_eq!(reading_order(&h), newest_first);
+    assert!(shows(&h, "Today, 3") && shows(&h, "Yesterday, 1"), "headings by date");
+
+    click(&mut h, "Newest first");
+    assert!(shows(&h, "Oldest first"), "the button says what it is now");
+    assert_eq!(reading_order(&h), newest_first.iter().rev().cloned().collect::<Vec<_>>());
+    assert!(rect_of(&h, "Yesterday, 1").top() < rect_of(&h, "Today, 3").top(), "the oldest dates first");
+}
+
+#[test]
+fn the_gallery_sorts_by_name_without_headings() {
+    let mut h = sortable("kittest-sort-name", |_| {});
+    click(&mut h, "Name");
+    let a_to_z = ["Recording z", "Screenshot 2", "Screenshot 10", "Screenshot a", "Screenshot b", "Screenshot c"].map(String::from).to_vec();
+    assert_eq!(reading_order(&h), a_to_z, "numbers by their value, ignoring case");
+    assert!(shows(&h, "A–Z") && !shows(&h, "Today, 3") && !shows(&h, "Yesterday, 1"), "no headings");
+
+    click(&mut h, "A–Z");
+    assert!(shows(&h, "Z–A"));
+    assert_eq!(reading_order(&h), a_to_z.iter().rev().cloned().collect::<Vec<_>>());
+}
+
+#[test]
+fn the_gallery_sorts_by_size_without_headings() {
+    let mut h = sortable("kittest-sort-size", |_| {});
+    click(&mut h, "Size");
+    assert_eq!(reading_order(&h), by_size(&h, true));
+    assert!(shows(&h, "Largest first") && !shows(&h, "Today, 3") && !shows(&h, "Yesterday, 1"), "no headings");
+
+    click(&mut h, "Largest first");
+    assert!(shows(&h, "Smallest first"));
+    assert_eq!(reading_order(&h), by_size(&h, false));
+}
+
+#[test]
+fn the_gallery_sorts_by_type_with_headings_that_fold() {
+    let mut h = sortable("kittest-sort-type", |_| {});
+    click(&mut h, "Type");
+    assert!(shows(&h, "Screenshots first") && shows(&h, "Screenshots, 5") && shows(&h, "Recordings, 1"), "headings by type");
+    let screenshots = ["Screenshot a", "Screenshot b", "Screenshot c", "Screenshot 2", "Screenshot 10"];
+    let expected: Vec<String> = screenshots.iter().chain(&["Recording z"]).map(|s| s.to_string()).collect();
+    assert_eq!(reading_order(&h), expected, "newest first within each");
+
+    click(&mut h, "Recordings, 1");
+    assert!(!shows(&h, "Recording z") && shows(&h, "Screenshot a"), "a type folds like a date");
+    assert_eq!(h.state().env.text_setting(library::FOLDED_SETTING).as_deref(), Some("type:Recordings"));
+    click(&mut h, "Recordings, 1");
+
+    click(&mut h, "Screenshots first");
+    assert!(shows(&h, "Recordings first"));
+    let mut expected = vec!["Recording z".to_string()];
+    expected.extend(screenshots.map(String::from));
+    assert_eq!(reading_order(&h), expected);
+}
+
+#[test]
+fn the_gallery_remembers_how_it_is_sorted() {
+    let mut h = sortable("kittest-sort-saved", |_| {});
+    click(&mut h, "Size");
+    click(&mut h, "Largest first");
+    assert_eq!(h.state().env.setting(Sort::SETTING), Some(Sort::Size.to_setting()));
+    assert_eq!(h.state().env.setting(Sort::DESCENDING), Some(0));
+
+    let (sort, descending) = (h.state().env.setting(Sort::SETTING), h.state().env.setting(Sort::DESCENDING));
+    let h = sortable("kittest-sort-saved-again", move |env| {
+        env.set_setting(Sort::SETTING, sort.unwrap());
+        env.set_setting(Sort::DESCENDING, descending.unwrap());
+    });
+    assert!(shows(&h, "Smallest first"));
+    assert_eq!(reading_order(&h), by_size(&h, false));
+}
+
+#[test]
+fn a_narrow_window_keeps_every_gallery_toolbar_button_clear() {
+    let mut h = gallery("kittest-gallery-narrow");
+    h.set_size(Vec2::new(760.0, 600.0));
+    settle(&mut h);
+    click(&mut h, "Screenshot a");
+    h.get_by_label("Screenshot c").click_modifiers(Modifiers::COMMAND);
+    settle(&mut h);
+    let names = ["Editor", "Gallery", "Date", "Name", "Size", "Type", "Newest first", "Open the folder", "Settings", "2 selected", "Copy as files", "Delete", "Clear"];
+    let buttons: Vec<(&str, Rect)> = names.iter().map(|&name| (name, rect_of(&h, name))).collect();
+    for (i, (a, ra)) in buttons.iter().enumerate() {
+        assert!(ra.right() <= 760.0 && ra.bottom() <= 600.0, "{a} is inside the window");
+        for (b, rb) in &buttons[i + 1..] {
+            assert!(!ra.intersects(rb.shrink(0.5)), "{a} overlaps {b}");
+        }
+    }
 }
 
 #[test]
@@ -1098,7 +1240,7 @@ mod snapshots {
     ///
     /// `RSNIP_UI` is space-separated: `size=WxH`, `dock=left|bottom`, `page=editor|gallery`, `theme=light|dark`, `empty` (no screenshots), and
     /// any number of `click=<label>` (a button's accessible name, e.g. a tool, `Undo`, `Export`, a
-    /// colour; use `_` for spaces), applied in order.
+    /// colour; use `_` for spaces, and a `ctrl+` before it to Ctrl+click), applied in order.
     #[test]
     #[ignore]
     fn render_window() {
@@ -1135,7 +1277,11 @@ mod snapshots {
             env.set_setting(super::super::theme::Appearance::SETTING, appearance.to_setting());
         });
         for label in &clicks {
-            h.get_by_label_contains(label).click();
+            // `ctrl+Screenshot_b` adds it to the selection.
+            match label.strip_prefix("ctrl+") {
+                Some(label) => h.get_by_label_contains(label).click_modifiers(Modifiers::COMMAND),
+                None => h.get_by_label_contains(label).click(),
+            }
             settle(&mut h);
         }
         h.remove_cursor();

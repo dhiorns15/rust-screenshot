@@ -188,6 +188,8 @@ struct Entry {
     path: PathBuf,
     name: String,
     modified: SystemTime,
+    /// The file's size in bytes.
+    len: u64,
     /// A screen recording, which opens in the default player rather than the editor.
     video: bool,
 }
@@ -290,6 +292,9 @@ struct App {
     anchor: Option<PathBuf>,
     dock: Dock,
     page: Page,
+    /// How the gallery is ordered, and whether that's backwards (newest, largest or Z first).
+    sort: gallery::Sort,
+    descending: bool,
     /// A gallery item the keyboard moved the selection to, to scroll into view.
     reveal: Option<PathBuf>,
     /// Dates folded in the library, by their heading (see `library::parse_folded`).
@@ -348,6 +353,7 @@ impl App {
             }
         });
 
+        let sort = gallery::Sort::from_setting(env.setting(gallery::Sort::SETTING));
         let mut app = App {
             entries: Vec::new(),
             last_scan: Instant::now(),
@@ -374,6 +380,8 @@ impl App {
             anchor: None,
             dock: Dock::from_setting(env.setting(Dock::SETTING)),
             page: Page::from_setting(env.setting(Page::SETTING)),
+            sort,
+            descending: sort.descending(env.setting(gallery::Sort::DESCENDING)),
             reveal: None,
             collapsed: library::parse_folded(&env.text_setting(library::FOLDED_SETTING).unwrap_or_default()),
             metas: HashMap::new(),
@@ -426,10 +434,11 @@ impl App {
             .flatten()
             .filter(|e| is_library_file(&e.path()))
             .filter_map(|e| {
-                let modified = e.metadata().ok()?.modified().ok()?;
+                let meta = e.metadata().ok()?;
+                let modified = meta.modified().ok()?;
                 let name = e.path().file_stem()?.to_string_lossy().into_owned();
                 let video = is_video(&e.path());
-                Some(Entry { path: e.path(), name, modified, video })
+                Some(Entry { path: e.path(), name, modified, len: meta.len(), video })
             })
             .collect();
         entries.sort_by_key(|e| std::cmp::Reverse(e.modified));
@@ -822,11 +831,17 @@ impl App {
         // All of the row's height from the start, so everything is centred on the same line.
         let row = Vec2::new(width, if captioned { 48.0 } else { 32.0 });
         if self.page == Page::Gallery {
+            // What's counted or selected goes on a row of its own in a narrow window, as the
+            // Editor page's actions do.
+            let one_row = width >= gallery::ONE_ROW;
             ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 self.page_buttons(ui);
-                self.gallery_bar(ui, visible);
+                self.gallery_bar(ui, visible, one_row);
             });
+            if !one_row {
+                ui.horizontal(|ui| self.count_or_bulk_bar(ui, visible));
+            }
             return;
         }
         ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {

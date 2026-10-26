@@ -1,27 +1,153 @@
-//! The gallery page: every screenshot and recording as a grid of large thumbnails, by date.
+//! The gallery page: every screenshot and recording as a grid of large thumbnails, sorted and grouped.
 
+use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::iter::Peekable;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::str::Chars;
 use std::time::SystemTime;
 
 use eframe::egui::{self, Align, Key, Layout, Modifiers, Rect, RichText, Vec2};
 
 use super::library::{group_label, search_hint, Action, Day, HEADER_HEIGHT};
-use super::{theme, App};
+use super::theme::{self, icon, IconButton};
+use super::{App, Entry};
 
+/// How wide the window is before the toolbar has room for what's counted or selected beside the
+/// sort buttons, rather than on a row of its own.
+pub(super) const ONE_ROW: f32 = 1100.0;
 /// The least width of a thumbnail's cell; the cells share the row's width out evenly.
 const CELL_MIN: f32 = 260.0;
 /// Room around a thumbnail in its cell, and below it for the name.
 const CELL_PAD: f32 = 8.0;
 const NAME_HEIGHT: f32 = 32.0;
 
-/// A date's screenshots, in the order they're shown.
+/// What the gallery is ordered by.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Sort {
+    Date,
+    Name,
+    Size,
+    Type,
+}
+
+impl Sort {
+    pub(super) const SETTING: &'static str = "GallerySort";
+    pub(super) const DESCENDING: &'static str = "GalleryDescending";
+    const ALL: [Sort; 4] = [Sort::Date, Sort::Name, Sort::Size, Sort::Type];
+
+    /// Unknown values (or none) mean the default, by date.
+    pub(super) fn from_setting(value: Option<u32>) -> Sort {
+        match value {
+            Some(1) => Sort::Name,
+            Some(2) => Sort::Size,
+            Some(3) => Sort::Type,
+            _ => Sort::Date,
+        }
+    }
+
+    pub(super) fn to_setting(self) -> u32 {
+        Sort::ALL.iter().position(|&s| s == self).unwrap_or(0) as u32
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Sort::Date => "Date",
+            Sort::Name => "Name",
+            Sort::Size => "Size",
+            Sort::Type => "Type",
+        }
+    }
+
+    /// Whether it's backwards (newest or largest first), as set, or by default: newest and
+    /// largest first, and names from A.
+    pub(super) fn descending(self, setting: Option<u32>) -> bool {
+        setting.map_or(matches!(self, Sort::Date | Sort::Size), |value| value == 1)
+    }
+
+    /// What the order is called, for the button that reverses it.
+    fn order(self, descending: bool) -> &'static str {
+        match (self, descending) {
+            (Sort::Date, true) => "Newest first",
+            (Sort::Date, false) => "Oldest first",
+            (Sort::Name, false) => "A–Z",
+            (Sort::Name, true) => "Z–A",
+            (Sort::Size, true) => "Largest first",
+            (Sort::Size, false) => "Smallest first",
+            (Sort::Type, false) => "Screenshots first",
+            (Sort::Type, true) => "Recordings first",
+        }
+    }
+}
+
+/// The label of a group by type, which also keeps it folded (see `library::TYPE_PREFIX`).
+pub(super) fn type_label(video: bool) -> &'static str {
+    if video {
+        "type:Recordings"
+    } else {
+        "type:Screenshots"
+    }
+}
+
+/// Names the way a person would order them: ignoring case, and numbers by their value, so
+/// "Shot 2" comes before "Shot 10".
+fn natural(a: &str, b: &str) -> Ordering {
+    fn number(chars: &mut Peekable<Chars>) -> String {
+        let mut digits = String::new();
+        while let Some(c) = chars.next_if(char::is_ascii_digit) {
+            digits.push(c);
+        }
+        digits.trim_start_matches('0').to_owned()
+    }
+    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (a.peek().copied(), b.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let (x, y) = (number(&mut a), number(&mut b));
+                let order = x.len().cmp(&y.len()).then_with(|| x.cmp(&y));
+                if order != Ordering::Equal {
+                    return order;
+                }
+            }
+            (Some(x), Some(y)) => {
+                let order = x.to_lowercase().cmp(y.to_lowercase());
+                if order != Ordering::Equal {
+                    return order;
+                }
+                a.next();
+                b.next();
+            }
+        }
+    }
+}
+
+/// Puts the entries `shown` (indexes into `entries`) in the order `sort` says, backwards if
+/// `descending`; what's equal is newest first, then by name.
+fn sort_entries(entries: &[Entry], shown: &mut [usize], sort: Sort, descending: bool) {
+    shown.sort_by(|&a, &b| {
+        let (a, b) = (&entries[a], &entries[b]);
+        let by = match sort {
+            Sort::Date => a.modified.cmp(&b.modified),
+            Sort::Name => natural(&a.name, &b.name),
+            Sort::Size => a.len.cmp(&b.len),
+            Sort::Type => a.video.cmp(&b.video),
+        };
+        let by = if descending { by.reverse() } else { by };
+        by.then_with(|| b.modified.cmp(&a.modified)).then_with(|| natural(&a.name, &b.name))
+    });
+}
+
+/// A group's screenshots, in the order they're shown.
 struct Group {
+    /// What the group is called and kept folded by; none for no heading.
     label: String,
     /// How many there are, folded away or not.
     count: usize,
-    /// Indexes into `App::entries`; none while the date is folded.
+    /// Indexes into `App::entries`; none while the group is folded.
     items: Vec<usize>,
 }
 
@@ -42,7 +168,10 @@ fn columns(width: f32) -> usize {
 fn rows(groups: &[Group], columns: usize) -> (Vec<Row>, Vec<usize>) {
     let (mut rows, mut shown) = (Vec::new(), Vec::new());
     for (g, group) in groups.iter().enumerate() {
-        rows.push(Row::Header(g));
+        // Without a label, there's no heading: it's all one run.
+        if !group.label.is_empty() {
+            rows.push(Row::Header(g));
+        }
         for chunk in group.items.chunks(columns) {
             rows.push(Row::Cells(shown.len()..shown.len() + chunk.len()));
             shown.extend_from_slice(chunk);
@@ -68,12 +197,68 @@ fn arrow(lines: &[Range<usize>], at: usize, key: Key) -> usize {
 }
 
 impl App {
-    /// What the toolbar shows on the gallery page, after the page buttons: the search box, how
-    /// many there are or what to do with the selected ones, and Settings and the folder.
-    pub(super) fn gallery_bar(&mut self, ui: &mut egui::Ui, visible: &[usize]) {
-        ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(search_hint()).desired_width(260.0));
-        self.count_or_bulk_bar(ui, visible);
+    /// What the toolbar shows on the gallery page, after the page buttons: the search box, how it's
+    /// sorted, how many there are or what to do with the selected ones, and Settings and the
+    /// folder.
+    pub(super) fn gallery_bar(&mut self, ui: &mut egui::Ui, visible: &[usize], one_row: bool) {
+        // The search box gives way when the rest needs the room: the sort buttons, the folder
+        // buttons, and what's counted or selected if that's on this row too.
+        let others = match (one_row, self.selected.len() > 1) {
+            (false, _) => 410.0,
+            (true, false) => 510.0,
+            (true, true) => 740.0,
+        };
+        let search = (ui.available_width() - others).clamp(120.0, 260.0);
+        ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(search_hint()).desired_width(search));
+        ui.label(RichText::new("Sort:").color(theme::palette(ui).muted));
+        theme::group(ui, |ui| {
+            for sort in Sort::ALL {
+                if ui.add(egui::Button::selectable(self.sort == sort, sort.label())).clicked() && self.sort != sort {
+                    self.sort = sort;
+                    // Each starts in its usual direction, which the button next to them reverses.
+                    self.descending = sort.descending(None);
+                    self.env.set_setting(Sort::SETTING, sort.to_setting());
+                    self.env.set_setting(Sort::DESCENDING, self.descending as u32);
+                }
+            }
+        });
+        let order = self.sort.order(self.descending);
+        // Phosphor names the two by their bars; the arrow points the way the list runs.
+        let arrow = if self.descending { icon::SORT_ASCENDING } else { icon::SORT_DESCENDING };
+        if ui.add(IconButton::new(arrow, order)).on_hover_text(format!("{order} (click to reverse)")).clicked() {
+            self.descending = !self.descending;
+            self.env.set_setting(Sort::DESCENDING, self.descending as u32);
+        }
+        if one_row {
+            self.count_or_bulk_bar(ui, visible);
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| self.folder_buttons(ui));
+    }
+
+    /// The `visible` entries in the gallery's order, in the groups it has headings for: dates when
+    /// ordered by date, screenshots and recordings by type, and none by name or size.
+    fn groups(&self, visible: &[usize]) -> Vec<Group> {
+        let mut sorted = visible.to_vec();
+        sort_entries(&self.entries, &mut sorted, self.sort, self.descending);
+        let today = Day::local(SystemTime::now());
+        let mut groups: Vec<Group> = Vec::new();
+        for i in sorted {
+            let entry = &self.entries[i];
+            let label = match self.sort {
+                Sort::Date => group_label(Day::local(entry.modified), today),
+                Sort::Type => type_label(entry.video).to_owned(),
+                Sort::Name | Sort::Size => String::new(),
+            };
+            if groups.last().is_none_or(|g| g.label != label) {
+                groups.push(Group { label: label.clone(), count: 0, items: Vec::new() });
+            }
+            let group = groups.last_mut().unwrap();
+            group.count += 1;
+            if !self.folded(&label) {
+                group.items.push(i);
+            }
+        }
+        groups
     }
 
     pub(super) fn gallery(&mut self, ui: &mut egui::Ui, visible: &[usize]) {
@@ -83,19 +268,7 @@ impl App {
             ui.vertical_centered(|ui| ui.label(RichText::new(text).color(theme::palette(ui).muted)));
             return;
         }
-        let today = Day::local(SystemTime::now());
-        let labels: Vec<String> = visible.iter().map(|&i| group_label(Day::local(self.entries[i].modified), today)).collect();
-        let mut groups: Vec<Group> = Vec::new();
-        for (&i, label) in visible.iter().zip(&labels) {
-            if groups.last().is_none_or(|g| g.label != *label) {
-                groups.push(Group { label: label.clone(), count: 0, items: Vec::new() });
-            }
-            let group = groups.last_mut().unwrap();
-            group.count += 1;
-            if !self.folded(label) {
-                group.items.push(i);
-            }
-        }
+        let groups = self.groups(visible);
 
         let mut action = None;
         egui::ScrollArea::vertical().auto_shrink(false).show_viewport(ui, |ui, viewport| {
@@ -192,6 +365,26 @@ mod tests {
 
     fn group(label: &str, items: &[usize], count: usize) -> Group {
         Group { label: label.into(), count, items: items.to_vec() }
+    }
+
+    #[test]
+    fn names_order_by_their_numbers_and_ignore_case() {
+        let mut names = ["Shot 10", "shot 2", "Shot 1", "Shot 02", "Screenshot 2026-10-26 102531", "screenshot 2026-10-26 093000", "Shot"];
+        names.sort_by(|a, b| natural(a, b));
+        assert_eq!(names, ["screenshot 2026-10-26 093000", "Screenshot 2026-10-26 102531", "Shot", "Shot 1", "shot 2", "Shot 02", "Shot 10"]);
+        assert_eq!(natural("a", "A"), Ordering::Equal);
+        assert_eq!(natural("a1", "a01"), Ordering::Equal, "leading zeros don't count");
+    }
+
+    #[test]
+    fn sorts_are_remembered_as_numbers_and_start_in_their_usual_direction() {
+        for sort in Sort::ALL {
+            assert_eq!(Sort::from_setting(Some(sort.to_setting())), sort);
+        }
+        assert_eq!(Sort::from_setting(None), Sort::Date);
+        assert_eq!(Sort::from_setting(Some(9)), Sort::Date);
+        assert_eq!(Sort::ALL.map(|s| s.descending(None)), [true, false, true, false]);
+        assert!(Sort::Name.descending(Some(1)) && !Sort::Date.descending(Some(0)), "what was set wins");
     }
 
     #[test]

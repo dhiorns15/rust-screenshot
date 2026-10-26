@@ -262,7 +262,10 @@ switch with the two layout buttons next to *Library*. RSnip remembers the choice
 
 *Gallery*, at the left of the toolbar, swaps the editor and the library for a grid of large
 thumbnails, grouped by date like the library (and folded the same way) so you can look through
-everything and choose. *Editor* brings the editor back; RSnip remembers which you were on. A click
+everything and choose. *Sort* orders them by date, name, size or type, and the button beside it
+reverses the order (newest, largest and A–Z are the usual ones to start from); by date and by type
+they're grouped under headings, by name and size they're one run. *Editor* brings the editor back;
+RSnip remembers which page you were on, and how you sorted it. A click
 selects (Ctrl+click and Shift+click select several), and a double click or Enter opens it in the
 editor, or in the player for a recording. The arrow keys move the selection, Ctrl+A selects everything
 shown and Esc clears it. Search, dragging a thumbnail out, the right-click menu and the buttons for

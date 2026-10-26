@@ -21,6 +21,8 @@ const GROUP_GAP: f32 = 14.0;
 const FOLDED_WIDTH: f32 = 120.0;
 /// Where the folded dates are kept, one a line.
 pub const FOLDED_SETTING: &str = "CollapsedGroups";
+/// Starts the label of a group by type (see `heading_name`), so it can't be a date's.
+pub(super) const TYPE_PREFIX: &str = "type:";
 /// The bottom library panel: header row, date labels, thumbnails, scroll bar and margins.
 pub const STRIP_HEIGHT: f32 = 34.0 + LABEL_HEIGHT + ROW_HEIGHT + 16.0;
 
@@ -104,6 +106,12 @@ impl Day {
         let (year, month, day) = platform::local_date(t);
         Day { year, month, day }
     }
+}
+
+/// What a group's heading calls it. Groups are told apart (and kept folded) by their label, which for
+/// the gallery's groups by type is "type:Recordings" and the like.
+fn heading_name(label: &str) -> &str {
+    label.strip_prefix(TYPE_PREFIX).unwrap_or(label)
 }
 
 /// The library heading a screenshot from `day` sits under, seen on `today`.
@@ -270,11 +278,12 @@ impl App {
     /// What a date's heading says: whether it's folded (not while searching, when it can't be),
     /// the date, and how many screenshots it has.
     fn heading_text(&self, label: &str, count: usize) -> String {
+        let shown = heading_name(label);
         if self.searching() {
-            return format!("{label} ({count})");
+            return format!("{shown} ({count})");
         }
         let caret = if self.folded(label) { icon::CARET_RIGHT } else { icon::CARET_DOWN };
-        format!("{caret} {label} ({count})")
+        format!("{caret} {shown} ({count})")
     }
 
     /// How wide a date's heading is, with a little room around it.
@@ -289,7 +298,7 @@ impl App {
         let mut action = None;
         if !self.searching() {
             let response = ui.interact(rect, ui.id().with(("group", label)), Sense::click());
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{label}, {count}")));
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{}, {count}", heading_name(label))));
             if response.hovered() {
                 color = theme::palette(ui).text;
                 ui.set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -323,7 +332,7 @@ impl App {
             self.collapsed.insert(label.to_owned());
             // Out of sight, so not selected: a bulk action shouldn't reach what can't be seen.
             let today = Day::local(SystemTime::now());
-            let hidden: Vec<&PathBuf> = self.entries.iter().filter(|e| group_label(Day::local(e.modified), today) == label).map(|e| &e.path).collect();
+            let hidden: Vec<&PathBuf> = self.entries.iter().filter(|e| group_label(Day::local(e.modified), today) == label || super::gallery::type_label(e.video) == label).map(|e| &e.path).collect();
             self.selected.retain(|p| !hidden.contains(&p));
         }
         self.env.set_text_setting(FOLDED_SETTING, &folded_text(&self.collapsed));
