@@ -1,7 +1,8 @@
 //! Asking the desktop for a screen or window to record, through the screen-cast portal
 //! (xdg-desktop-portal), which every Wayland desktop and most X11 ones have. It shows the desktop's
 //! own picker (the one browsers use for screen sharing), and gives back a PipeWire stream of what
-//! was picked, which GStreamer records (see `recorder`).
+//! was picked, which GStreamer records (see `recorder`). Screenshots come through the screenshot
+//! portal, and files and folders through the file chooser.
 
 use std::collections::HashMap;
 use std::os::fd::OwnedFd;
@@ -132,6 +133,21 @@ fn open_file(conn: &Connection, chooser: &Proxy, title: &str, mut options: HashM
     Ok(uris.first().and_then(|uri| file_path(uri)))
 }
 
+/// Asks the desktop to take a screenshot of everything on screen, through the screenshot portal,
+/// and gives the file it saved it in (RSnip's to delete); `None` if it was declined. The first
+/// time, GNOME asks whether RSnip may take screenshots.
+pub fn screenshot() -> Result<Option<std::path::PathBuf>, String> {
+    let conn = Connection::session().map_err(|e| format!("Couldn't reach the desktop's session bus: {e}"))?;
+    let portal = Proxy::new(&conn, PORTAL, PORTAL_PATH, "org.freedesktop.portal.Screenshot").map_err(|e| e.to_string())?;
+    // No picker of its own: RSnip's area picker comes next, on the screenshot.
+    let mut options = HashMap::from([("interactive", Value::from(false)), ("modal", Value::from(false))]);
+    let Response::Done(results) = request(&conn, &portal, "Screenshot", &mut options, |c, o| c.call_method("Screenshot", &("", o)))? else {
+        return Ok(None);
+    };
+    let uri: String = take(results, "uri")?;
+    file_path(&uri).map(Some).ok_or_else(|| format!("The desktop saved the screenshot somewhere RSnip can't read ({uri})"))
+}
+
 /// The path in a `file://` URI.
 fn file_path(uri: &str) -> Option<std::path::PathBuf> {
     use std::os::unix::ffi::OsStringExt;
@@ -174,13 +190,13 @@ fn request(
     let request = Proxy::new(conn, PORTAL, path.as_str(), "org.freedesktop.portal.Request").map_err(|e| e.to_string())?;
     let mut responses = request.receive_signal("Response").map_err(|e| e.to_string())?;
     options.insert("handle_token", Value::from(token));
-    call(cast, options).map_err(|e| format!("The desktop refused to record ({method}): {e}"))?;
+    call(cast, options).map_err(|e| format!("The desktop refused the request ({method}): {e}"))?;
     let message = responses.next().ok_or("The desktop stopped answering")?;
     let (code, results): (u32, HashMap<String, OwnedValue>) = message.body().deserialize().map_err(|e| e.to_string())?;
     match code {
         0 => Ok(Response::Done(results)),
         1 => Ok(Response::Cancelled),
-        _ => Err(format!("The desktop couldn't start recording ({method})")),
+        _ => Err(format!("The desktop couldn't do it ({method})")),
     }
 }
 

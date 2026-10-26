@@ -120,7 +120,7 @@ impl Section {
 
     /// Only for the tray app (Windows).
     fn needs_tray_app(self) -> bool {
-        matches!(self, Section::Capture | Section::Shortcuts)
+        matches!(self, Section::Shortcuts)
     }
 }
 
@@ -308,6 +308,10 @@ impl SettingsApp {
             }
             ui.separator();
             self.flag_row(ui, options::OPEN_EDITOR, "Open the editor after capture", "Every capture opens straight in the editor");
+            // On Linux the area is picked on a still of the screen, and Recording has its own Hide.
+            if !self.env.tray_app {
+                return;
+            }
             ui.separator();
             self.flag_row(ui, options::SHOW_MAGNIFIER, "Show the magnifier", "Zoomed pixels, position and colour by the cursor. Press M while selecting to show or hide it");
             ui.separator();

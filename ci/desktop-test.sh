@@ -1,6 +1,6 @@
 #!/bin/sh
-# Runs the desktop tests (src/gallery/desktop_tests.rs): recording, the background icon and copying
-# files against real desktop services, which the tests start: PipeWire with WirePlumber,
+# Runs the desktop tests (src/gallery/desktop_tests.rs): recording, screenshots, the background icon
+# and copying files against real desktop services, which the tests start: PipeWire with WirePlumber,
 # xdg-desktop-portal, an X server (Xvfb), and a test picture as the screen. This gives them a session bus of their own, and a home folder.
 #
 # Needs dbus, pipewire, pipewire-bin, wireplumber, xdg-desktop-portal, xvfb, xclip and GStreamer with its

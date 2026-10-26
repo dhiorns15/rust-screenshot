@@ -1,5 +1,6 @@
-//! The library on Linux and other Unix desktops. Capturing is up to another tool (e.g. the
-//! desktop's own, Flameshot or grim); RSnip opens and annotates the results.
+//! The library on Linux and other Unix desktops. Screenshots come from the desktop's screenshot
+//! portal (see `screenshot`), or from another tool (the desktop's own, Flameshot or grim) whose
+//! results RSnip opens and annotates too.
 
 use std::cell::RefCell;
 use std::fs::File;

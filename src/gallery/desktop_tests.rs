@@ -1,8 +1,9 @@
-//! Recording and the background icon against real desktop services: xdg-desktop-portal (which
-//! checks everything an app asks of the desktop, and refused 0.5.0's recordings for a mistyped
-//! option), PipeWire with WirePlumber, and GStreamer. Only the desktop's own pieces are stand-ins:
-//! GNOME's screen-cast picker (a portal backend that shares a test picture through PipeWire), the
-//! panel the icon goes in, and notifications.
+//! Recording, screenshots and the background icon against real desktop services: xdg-desktop-portal
+//! (which checks everything an app asks of the desktop, and refused 0.5.0's recordings for a
+//! mistyped option), PipeWire with WirePlumber, and GStreamer. Only the desktop's own pieces are
+//! stand-ins: GNOME's screen-cast picker (a portal backend that shares a test picture through
+//! PipeWire) and screenshot service (one that saves the test picture), the panel the icon goes in,
+//! and notifications.
 //!
 //! They need a session bus and those services installed, so plain `cargo test` skips them;
 //! ci/desktop-test.sh runs them.
@@ -18,8 +19,9 @@ use std::time::{Duration, Instant};
 use zbus::blocking::{connection, Connection, Proxy};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
-use super::portal::{ScreenCast, Sources};
+use super::portal::{self, ScreenCast, Sources};
 use super::recorder::{self, Area, Format};
+use super::screenshot::{self, Capture, Mode};
 
 /// The stand-in picker's portal backend name, and the "desktop" it's for.
 const BACKEND: &str = "org.freedesktop.impl.portal.desktop.rsnipTest";
@@ -88,10 +90,77 @@ impl ScreenCastBackend {
     }
 }
 
+/// What the stand-in screenshot service does with the next request, and what it was asked.
+#[derive(Default)]
+struct Shutter {
+    cancel: bool,
+    asked: Vec<HashMap<String, OwnedValue>>,
+}
+
+/// The stand-in for GNOME's screenshot service: it saves the test picture, or cancels.
+struct ScreenshotBackend {
+    shutter: Arc<Mutex<Shutter>>,
+}
+
+/// The test screen as a picture, every part of it different, to tell where a crop came from.
+fn screen_picture() -> image::RgbaImage {
+    image::RgbaImage::from_fn(SCREEN.0, SCREEN.1, |x, y| image::Rgba([(x / 3) as u8, (y / 2) as u8, ((x + y) % 251) as u8, 255]))
+}
+
+#[zbus::interface(name = "org.freedesktop.impl.portal.Screenshot")]
+impl ScreenshotBackend {
+    fn screenshot(&self, _handle: OwnedObjectPath, _app_id: String, _parent_window: String, options: HashMap<String, OwnedValue>) -> (u32, HashMap<String, OwnedValue>) {
+        let mut shutter = self.shutter.lock().unwrap();
+        shutter.asked.push(options);
+        if std::mem::take(&mut shutter.cancel) {
+            return (1, HashMap::new());
+        }
+        // Where GNOME's own tool saves: the folder `bring_in` watches.
+        let folder = super::platform::legacy_save_folder();
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("Screenshot from 2026-10-24 09-15-00.png");
+        screen_picture().save(&file).unwrap();
+        let uri = Value::from(super::platform::file_uri(&file));
+        (0, HashMap::from([("uri".to_string(), OwnedValue::try_from(uri).unwrap())]))
+    }
+
+    #[zbus(property, name = "version")]
+    fn version(&self) -> u32 {
+        2
+    }
+}
+
+/// The stand-in for the dialog that asks whether an app may take screenshots, which GNOME shows
+/// the first time: the portal needs a service for it to offer screenshots at all. It's allowed.
+struct AccessBackend;
+
+#[zbus::interface(name = "org.freedesktop.impl.portal.Access")]
+impl AccessBackend {
+    #[allow(clippy::too_many_arguments)]
+    fn access_dialog(
+        &self,
+        _handle: OwnedObjectPath,
+        _app_id: String,
+        _parent_window: String,
+        _title: String,
+        _subtitle: String,
+        _body: String,
+        _options: HashMap<String, OwnedValue>,
+    ) -> (u32, HashMap<String, OwnedValue>) {
+        (0, HashMap::new())
+    }
+
+    #[zbus(property, name = "version")]
+    fn version(&self) -> u32 {
+        1
+    }
+}
+
 /// The real services, started once for all these tests.
 struct Desktop {
     picker: Arc<Mutex<Picker>>,
-    /// Keeps the stand-in picker on the bus.
+    shutter: Arc<Mutex<Shutter>>,
+    /// Keeps the stand-in picker and screenshot service on the bus.
     _backend: Connection,
 }
 
@@ -109,16 +178,21 @@ fn desktop() -> &'static Desktop {
         let dir = runtime.clone();
         std::thread::spawn(move || run_services(&dir, requests));
         let picker = Arc::new(Mutex::new(Picker::default()));
+        let shutter = Arc::new(Mutex::new(Shutter::default()));
         let backend = connection::Builder::session()
             .unwrap()
             .name(BACKEND)
             .unwrap()
             .serve_at("/org/freedesktop/portal/desktop", ScreenCastBackend { picker: picker.clone(), screens: Mutex::new(screens) })
             .unwrap()
+            .serve_at("/org/freedesktop/portal/desktop", ScreenshotBackend { shutter: shutter.clone() })
+            .unwrap()
+            .serve_at("/org/freedesktop/portal/desktop", AccessBackend)
+            .unwrap()
             .build()
             .unwrap();
         start_portal(&runtime);
-        Desktop { picker, _backend: backend }
+        Desktop { picker, shutter, _backend: backend }
     })
 }
 
@@ -192,7 +266,7 @@ fn start_portal(runtime: &Path) {
     std::fs::create_dir_all(&portals).unwrap();
     std::fs::write(
         portals.join("rsnip-test.portal"),
-        format!("[portal]\nDBusName={BACKEND}\nInterfaces=org.freedesktop.impl.portal.ScreenCast;\nUseIn={DESKTOP}\n"),
+        format!("[portal]\nDBusName={BACKEND}\nInterfaces=org.freedesktop.impl.portal.ScreenCast;org.freedesktop.impl.portal.Screenshot;org.freedesktop.impl.portal.Access;\nUseIn={DESKTOP}\n"),
     )
     .unwrap();
     let config = runtime.join("config");
@@ -368,6 +442,20 @@ impl Notifications {
     }
 }
 
+/// The stand-in notifications, on the bus until the connection is dropped.
+fn notifications() -> (Notifications, Connection) {
+    let notifications = Notifications::default();
+    let shell = connection::Builder::session()
+        .unwrap()
+        .name("org.freedesktop.Notifications")
+        .unwrap()
+        .serve_at("/org/freedesktop/Notifications", notifications.clone())
+        .unwrap()
+        .build()
+        .unwrap();
+    (notifications, shell)
+}
+
 /// The icon's menu, as the panel sees it: (id, label) for each item.
 fn menu(conn: &Connection, item: &str) -> Vec<(i32, String)> {
     let icon = Proxy::new(conn, item, "/StatusNotifierItem", "org.kde.StatusNotifierItem").unwrap();
@@ -395,8 +483,10 @@ fn click(conn: &Connection, item: &str, label: &str) {
 
 #[test]
 #[ignore = "needs desktop services: run ci/desktop-test.sh"]
-fn desktop_icon_records_from_its_menu() {
+fn desktop_icon_records_and_takes_screenshots() {
     desktop();
+    // For the clipboard, which the icon's thread opens when it first copies something.
+    let _x = XServer::start(73);
     let panel = Panel::default();
     let notifications = Notifications::default();
     let _desktop_shell = connection::Builder::session()
@@ -433,6 +523,15 @@ fn desktop_icon_records_from_its_menu() {
     assert!(seconds.is_some_and(|s| (1.5..4.0).contains(&s)), "{} was saved and finished, about 2 s long: {seconds:?} s", file.display());
     assert!(menu(&conn, &item).iter().any(|(_, l)| l == "Record screen or window…"), "back to recording");
 
+    // A screenshot, asked for as `rsnip --last` does while the icon runs. The icon copies it, so
+    // it stays on the clipboard for as long as the icon lives.
+    let picked = Area { x: 100, y: 60, width: 200, height: 120 };
+    super::platform::set_text_setting("LastArea", "100 60 200 120 640x480");
+    super::background::capture(Capture { mode: Mode::Last, delay: 0 });
+    wait_for(|| notifications.shown.lock().unwrap().iter().any(|(s, _)| s == "Screenshot copied to clipboard"), "the Screenshot copied notification");
+    let copied = image::load_from_memory(&paste("image/png")).expect("a picture on the clipboard").to_rgba8();
+    assert_eq!(copied, image::imageops::crop_imm(&screen_picture(), picked.x, picked.y, picked.width, picked.height).to_image());
+
     click(&conn, &item, "Quit RSnip");
     let deadline = Instant::now() + Duration::from_secs(10);
     while !icon.is_finished() {
@@ -441,30 +540,42 @@ fn desktop_icon_records_from_its_menu() {
     }
 }
 
+/// An X server for the clipboard to live in, until dropped; DISPLAY points at it meanwhile.
+struct XServer(Child);
+
+impl XServer {
+    fn start(display: u32) -> XServer {
+        let server = Command::new("Xvfb").args([format!(":{display}"), "-nolisten".into(), "tcp".into()]).stderr(Stdio::null()).spawn().expect("couldn't start Xvfb");
+        std::env::set_var("DISPLAY", format!(":{display}"));
+        std::env::remove_var("WAYLAND_DISPLAY");
+        wait_for(|| Path::new(&format!("/tmp/.X11-unix/X{display}")).exists(), "the X server");
+        XServer(server)
+    }
+}
+
+impl Drop for XServer {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        std::env::remove_var("DISPLAY");
+    }
+}
+
+/// What's on the clipboard as `target` (a MIME type, or TARGETS for the list).
+fn paste(target: &str) -> Vec<u8> {
+    Command::new("xclip").args(["-selection", "clipboard", "-t", target, "-o"]).output().expect("couldn't run xclip").stdout
+}
+
 #[test]
 #[ignore = "needs desktop services: run ci/desktop-test.sh"]
 fn desktop_copies_files_for_file_managers() {
-    struct Server(Child);
-    impl Drop for Server {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            std::env::remove_var("DISPLAY");
-        }
-    }
-    let _server = Server(Command::new("Xvfb").args([":71", "-nolisten", "tcp"]).stderr(Stdio::null()).spawn().expect("couldn't start Xvfb"));
-    std::env::set_var("DISPLAY", ":71");
-    std::env::remove_var("WAYLAND_DISPLAY");
-    wait_for(|| Path::new("/tmp/.X11-unix/X71").exists(), "the X server");
+    let _server = XServer::start(71);
     let dir = temp_dir("copy-files");
     let files = [dir.join("Shot 1.png"), dir.join("b.mp4")];
     for f in &files {
         std::fs::write(f, b"x").unwrap();
     }
     super::platform::copy_files(&files).unwrap();
-    let paste = |target: &str| {
-        let out = Command::new("xclip").args(["-selection", "clipboard", "-t", target, "-o"]).output().expect("couldn't run xclip");
-        String::from_utf8(out.stdout).unwrap()
-    };
+    let paste = |target: &str| String::from_utf8(paste(target)).unwrap();
     let uri = |f: &PathBuf| format!("file://{}", f.display()).replace(' ', "%20");
     let targets = paste("TARGETS");
     assert!(targets.lines().any(|t| t == "x-special/gnome-copied-files") && targets.lines().any(|t| t == "text/uri-list"), "{targets}");
@@ -472,4 +583,62 @@ fn desktop_copies_files_for_file_managers() {
     assert_eq!(paste("text/uri-list"), format!("{}\r\n{}\r\n", uri(&files[0]), uri(&files[1])));
     assert_eq!(paste("UTF8_STRING"), format!("{}\n{}", files[0].display(), files[1].display()));
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_asks_the_real_portal_for_a_screenshot() {
+    let desktop = desktop();
+    let file = portal::screenshot().expect("the portal accepted the request").expect("the desktop took a screenshot");
+
+    // What reached the screenshot service got past the portal's checks: no dialog of its own.
+    let asked = desktop.shutter.lock().unwrap().asked.pop().unwrap();
+    assert!(!bool::try_from(&asked["interactive"]).unwrap());
+    assert_eq!(image::open(&file).unwrap().to_rgba8(), screen_picture());
+    let _ = std::fs::remove_file(file);
+
+    desktop.shutter.lock().unwrap().cancel = true;
+    assert_eq!(portal::screenshot().unwrap(), None, "declined");
+}
+
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_screenshots_are_saved_copied_and_told_of() {
+    let desktop = desktop();
+    let _x = XServer::start(72);
+    let (notifications, _shell) = notifications();
+    let (folder, desktops) = (super::platform::screenshots_dir(), super::platform::legacy_save_folder());
+    let latest = || notifications.shown.lock().unwrap().last().cloned().unwrap();
+    let saved = |body: &str| image::open(folder.join(body.split(" is in").next().unwrap())).unwrap().to_rgba8();
+
+    assert!(screenshot::take(Capture { mode: Mode::Full, delay: 0 }), "copied");
+    let (title, body) = latest();
+    assert_eq!(title, "Screenshot copied to clipboard");
+    assert_eq!(saved(&body), screen_picture(), "saved in RSnip's folder as it was");
+    let on_clipboard = image::load_from_memory(&paste("image/png")).expect("a picture on the clipboard").to_rgba8();
+    assert_eq!(on_clipboard, screen_picture());
+    // The desktop's file is gone, so `bring_in` can't bring it in as a second copy.
+    assert_eq!(std::fs::read_dir(&desktops).unwrap().count(), 0, "left in {}", desktops.display());
+
+    // The same area as last time, and only that.
+    super::platform::set_text_setting("LastArea", "100 60 200 120 640x480");
+    assert!(screenshot::take(Capture { mode: Mode::Last, delay: 0 }));
+    let cropped = image::imageops::crop_imm(&screen_picture(), 100, 60, 200, 120).to_image();
+    assert_eq!(saved(&latest().1), cropped);
+    assert_eq!(image::load_from_memory(&paste("image/png")).unwrap().to_rgba8(), cropped);
+
+    // Not saved, if Settings says so.
+    let files = std::fs::read_dir(&folder).unwrap().count();
+    super::platform::set_setting(crate::options::SAVE_TO_FOLDER.name, 0);
+    assert!(screenshot::take(Capture { mode: Mode::Full, delay: 0 }));
+    super::platform::set_setting(crate::options::SAVE_TO_FOLDER.name, 1);
+    assert_eq!(latest().0, "Screenshot copied");
+    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), files, "nothing saved");
+
+    // Declined in the desktop's dialog: nothing happens.
+    let shown = notifications.shown.lock().unwrap().len();
+    desktop.shutter.lock().unwrap().cancel = true;
+    assert!(!screenshot::take(Capture { mode: Mode::Full, delay: 0 }));
+    assert_eq!(notifications.shown.lock().unwrap().len(), shown);
+    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), files);
 }

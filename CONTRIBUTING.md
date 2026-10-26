@@ -44,7 +44,7 @@ Where things are:
 | `src/mp4.rs` | reading recordings' MP4 index, and cutting them without re-encoding (trimming, and seeking on Linux) |
 | `src/update.rs` | update checks, release candidates, and installing updates (the installer on Windows, the `.deb`/`.rpm` on Linux) |
 | `src/crash.rs` | crash reports: the panic hook, and handlers for native crashes (signals on Linux, unhandled exceptions on Windows) |
-| `src/gallery/` | the library window: `mod.rs` (window, toolbar), `library.rs`, `theme.rs`, `color.rs`, `env.rs`, `search.rs` (search by text, app and window), `words.rs` (recognised words and where they are; Tesseract's output on Linux); `background.rs` (Linux's icon in the top bar, `rsnip --tray`, which also records), `portal.rs`, `recorder.rs` and `pick_area.rs` (recording on Linux: the screen-cast portal, GStreamer, and choosing an area); `player/` (playing and trimming recordings in the library: GStreamer on Linux, Media Foundation on Windows, GIFs in Rust); the Settings window: `settings_window.rs`, and its System info report: `system_info.rs` |
+| `src/gallery/` | the library window: `mod.rs` (window, toolbar), `library.rs`, `theme.rs`, `color.rs`, `env.rs`, `search.rs` (search by text, app and window), `words.rs` (recognised words and where they are; Tesseract's output on Linux); `background.rs` (Linux's icon in the top bar, `rsnip --tray`, which also records and takes screenshots), `portal.rs`, `recorder.rs` and `pick_area.rs` (recording on Linux: the screen-cast portal, GStreamer, and choosing an area), `screenshot.rs` (Linux's `--region`, `--full`, `--text` and `--last`: the screenshot portal, then the same picker); `player/` (playing and trimming recordings in the library: GStreamer on Linux, Media Foundation on Windows, GIFs in Rust); the Settings window: `settings_window.rs`, and its System info report: `system_info.rs` |
 | `src/push/`, `src/http.rs`, `src/secrets.rs` | pushing to other places: the destinations and each kind's requests (`sftp.rs`, `webdav.rs`, `s3.rs`, `smb.rs`, `ftps.rs`, `discord.rs`, `slack.rs`, `immich.rs`, `photoprism.rs`, `custom.rs` with ShareX `.sxcu` import), HTTP for them, and their passwords and keys in the system's credential store; each kind has a section in `docs/destinations.md` (how to set it up, what it needs), which a test checks |
 | `src/gallery/pushing.rs`, `auto_push.rs`, `bring_in.rs` | pushing by hand from the library, pushing new items automatically, and (Linux) bringing in the desktop's new screenshots; Settings → Push to is `settings_window/push.rs` |
 | `src/gallery/doc.rs` | a screenshot's annotations, undo history and rendering |
@@ -79,11 +79,11 @@ runs both on Windows and Linux and must pass. The suite has several layers:
 
   After an intended UI change, add `-e UPDATE_SNAPSHOTS=1`, then look at every changed PNG before
   committing it. When a snapshot fails in CI, the run's artifacts include `.new.png` and `.diff.png`.
-- **Desktop tests** (`src/gallery/desktop_tests.rs`): Linux recording and the background icon
-  against real desktop services: xdg-desktop-portal (which checks everything RSnip asks of the
-  desktop), PipeWire with WirePlumber, and GStreamer. Only the desktop's own pieces are stand-ins:
-  GNOME's screen-cast picker (it shares a test picture through PipeWire), the panel the icon goes in,
-  and notifications. `ci/desktop-test.sh` runs them in a session bus and home folder of their own
+- **Desktop tests** (`src/gallery/desktop_tests.rs`): Linux recording, screenshots and the
+  background icon against real desktop services: xdg-desktop-portal (which checks everything RSnip
+  asks of the desktop), PipeWire with WirePlumber, and GStreamer. Only the desktop's own pieces are
+  stand-ins: GNOME's screen-cast picker (it shares a test picture through PipeWire) and screenshot
+  service (it saves the test picture), the panel the icon goes in, and notifications. `ci/desktop-test.sh` runs them in a session bus and home folder of their own
   (locally, use the Docker image); plain `cargo test` skips them. CI runs them twice: on Debian 13 (PipeWire 1.4,
   the Linux job) and on Ubuntu 24.04 LTS (PipeWire 1.0, `desktop-ubuntu`). Anything RSnip sends the
   desktop belongs here, not only in a unit test.

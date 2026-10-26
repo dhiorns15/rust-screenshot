@@ -1,6 +1,6 @@
-//! Picking the part of the screen to record, on Linux: a full-screen window showing a frame of the
-//! screen to drag a rectangle on. `rsnip --pick-area <frame.png>` prints the area in the frame's
-//! pixels as "x y width height", or nothing if it was cancelled.
+//! Picking the part of the screen to record or capture, on Linux: a full-screen window showing a
+//! frame of the screen to drag a rectangle on. `rsnip --pick-area <frame.png> [capture|text]` prints
+//! the area in the frame's pixels as "x y width height", or nothing if it was cancelled.
 //!
 //! The area is measured on the frame as shown, so it's right whichever screen the window opens on.
 
@@ -15,20 +15,57 @@ use super::theme::ACCENT;
 /// Areas smaller than this (in frame pixels) are taken as a click, not a drag.
 const MIN_SIZE: f32 = 16.0;
 
+/// What the area is for, which the window says.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Purpose {
+    Record,
+    Capture,
+    /// Copying the text in it.
+    Text,
+}
+
+impl Purpose {
+    /// As given to `rsnip --pick-area`; recording, if it's missing.
+    pub fn parse(name: Option<&str>) -> Purpose {
+        match name {
+            Some("capture") => Purpose::Capture,
+            Some("text") => Purpose::Text,
+            _ => Purpose::Record,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Purpose::Record => "record",
+            Purpose::Capture => "capture",
+            Purpose::Text => "text",
+        }
+    }
+
+    /// What to choose, for the window's title and hint.
+    fn what(self) -> &'static str {
+        match self {
+            Purpose::Record => "the area to record",
+            Purpose::Capture => "the area to capture",
+            Purpose::Text => "the text to copy",
+        }
+    }
+}
+
 /// Shows the frame and waits for an area; `None` if cancelled.
-pub fn run(frame: &Path) -> Option<Area> {
+pub fn run(frame: &Path, purpose: Purpose) -> Option<Area> {
     let image = image::open(frame).ok()?.to_rgba8();
     let picked = Arc::new(Mutex::new(None));
     let result = picked.clone();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("RSnip: choose the area to record")
+            .with_title(format!("RSnip: choose {}", purpose.what()))
             .with_app_id("rsnip")
             .with_fullscreen(true)
             .with_decorations(false),
         ..Default::default()
     };
-    let app = Box::new(move |cc: &eframe::CreationContext| -> Result<Box<dyn eframe::App>, _> { Ok(Box::new(Picker::new(&cc.egui_ctx, &image, result))) });
+    let app = Box::new(move |cc: &eframe::CreationContext| -> Result<Box<dyn eframe::App>, _> { Ok(Box::new(Picker::new(&cc.egui_ctx, &image, purpose, result))) });
     eframe::run_native("RSnip area", options, app).ok()?;
     let area = picked.lock().ok()?.take();
     area
@@ -40,14 +77,15 @@ struct Picker {
     size: Vec2,
     /// Where the drag started, in frame pixels.
     start: Option<Pos2>,
+    purpose: Purpose,
     picked: Arc<Mutex<Option<Area>>>,
 }
 
 impl Picker {
-    fn new(ctx: &egui::Context, image: &image::RgbaImage, picked: Arc<Mutex<Option<Area>>>) -> Picker {
+    fn new(ctx: &egui::Context, image: &image::RgbaImage, purpose: Purpose, picked: Arc<Mutex<Option<Area>>>) -> Picker {
         let size = [image.width() as usize, image.height() as usize];
         let texture = ctx.load_texture("frame", egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()), TextureOptions::LINEAR);
-        Picker { texture, size: Vec2::new(size[0] as f32, size[1] as f32), start: None, picked }
+        Picker { texture, size: Vec2::new(size[0] as f32, size[1] as f32), start: None, purpose, picked }
     }
 
     fn finish(&self, ctx: &egui::Context, area: Option<Area>) {
@@ -112,8 +150,8 @@ impl eframe::App for Picker {
             }
         }
 
-        let hint = "Drag over the area to record   ·   Enter: the whole screen   ·   Esc: cancel";
-        let galley = painter.layout_no_wrap(hint.into(), FontId::proportional(16.0), Color32::WHITE);
+        let hint = format!("Drag over {}   ·   Enter: the whole screen   ·   Esc: cancel", self.purpose.what());
+        let galley = painter.layout_no_wrap(hint,FontId::proportional(16.0), Color32::WHITE);
         let pill = Rect::from_center_size(Pos2::new(screen.center().x, screen.min.y + 40.0), galley.size() + Vec2::new(32.0, 16.0));
         painter.rect_filled(pill, CornerRadius::same(20), Color32::from_black_alpha(200));
         painter.galley(pill.center() - galley.size() / 2.0, galley, Color32::WHITE);
@@ -145,8 +183,17 @@ mod tests {
         let picked = Arc::new(Mutex::new(None));
         let result = picked.clone();
         let image = image::RgbaImage::from_pixel(1920, 1080, image::Rgba([40, 80, 160, 255]));
-        let h = Harness::builder().with_size(Vec2::new(960.0, 540.0)).build_eframe(move |cc| Picker::new(&cc.egui_ctx, &image, result));
+        let h = Harness::builder().with_size(Vec2::new(960.0, 540.0)).build_eframe(move |cc| Picker::new(&cc.egui_ctx, &image, Purpose::Record, result));
         (h, picked)
+    }
+
+    #[test]
+    fn says_what_its_for() {
+        assert_eq!(["record", "capture", "text", "junk"].map(|n| Purpose::parse(Some(n))), [Purpose::Record, Purpose::Capture, Purpose::Text, Purpose::Record]);
+        assert_eq!(Purpose::parse(None), Purpose::Record, "as it was before screenshots");
+        for p in [Purpose::Record, Purpose::Capture, Purpose::Text] {
+            assert_eq!(Purpose::parse(Some(p.name())), p);
+        }
     }
 
     #[test]

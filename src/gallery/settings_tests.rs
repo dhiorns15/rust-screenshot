@@ -66,9 +66,18 @@ fn shows_the_tray_app_sections_only_where_there_is_one() {
     let h = settings("settings-sections", |_| {});
     assert_eq!(h.state().sections().len(), 9);
     let h = settings("settings-sections-linux", |env| env.tray_app = false);
-    assert_eq!(h.state().sections(), [Section::General, Section::Recording, Section::Library, Section::Destinations, Section::Updates, Section::SystemInfo, Section::About]);
+    assert_eq!(h.state().sections(), [Section::General, Section::Capture, Section::Recording, Section::Library, Section::Destinations, Section::Updates, Section::SystemInfo, Section::About]);
     assert!(h.query_by_label("Start with Windows").is_none(), "only the theme in General");
     assert!(h.query_by_label_contains("Shortcuts").is_none());
+}
+
+#[test]
+fn linux_capture_settings_are_saving_and_the_editor() {
+    let mut h = settings("settings-capture-linux", |env| env.tray_app = false);
+    open(&mut h, Section::Capture);
+    assert!(is_on(&h, "Save screenshots to the folder"));
+    assert!(!is_on(&h, "Open the editor after capture"));
+    assert!(h.query_by_label("Show the magnifier").is_none() && h.query_by_label("Hide RSnip while capturing").is_none());
 }
 
 #[test]

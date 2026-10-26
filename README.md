@@ -51,16 +51,27 @@ The installer is written to `target\installer`.
 
 ### Linux
 
-The library and editor also run on Linux (X11 or Wayland), and record the screen. Screenshots are
-left to your desktop's screenshot tool (or Flameshot, `grim`/`slurp`, …): RSnip browses its folder,
-`~/RSnip` unless you choose another in Settings → Library & editor, and annotates what's there.
-The desktop's tool keeps saving to the Pictures folder's `Screenshots`, so RSnip moves each new
-screenshot from there into its folder as it's taken (*Bring in the desktop's screenshots*, in the
-same place; the background icon or the library does it). Reading the text in screenshots (to copy it, or
+The library and editor also run on Linux (X11 or Wayland), and take screenshots and record the
+screen. RSnip keeps them in its folder, `~/RSnip` unless you choose another in Settings → Library &
+editor, and annotates what's there. The desktop's own screenshot tool (or Flameshot,
+`grim`/`slurp`, …) still works: it keeps saving to the Pictures folder's `Screenshots`, so RSnip
+moves each new screenshot from there into its folder as it's taken (*Bring in the desktop's
+screenshots*, in the same place; the background icon or the library does it). Reading the text in screenshots (to copy it, or
 to search by it) uses [Tesseract](https://github.com/tesseract-ocr/tesseract) when it's installed
 (`tesseract-ocr` on Debian and Ubuntu; the installer's check recommends it). Copying as files
 (screenshots, recordings, several from the library) works as on Windows, to paste into a folder,
 chat or email; pinning and dragging files out are Windows-only.
+
+**Screenshots on Linux**: run `rsnip --region` and drag over the part of the screen to capture, or
+`rsnip --full` for all of it, `rsnip --delay 5` for a region in 5 seconds, `rsnip --text` to copy
+the text in an area (it needs Tesseract), or `rsnip --last` for the same area as last time. As on
+Windows, the screenshot is copied to the clipboard and saved to RSnip's folder, and a notification
+says so. To get them on keys, add custom shortcuts in your desktop's settings: on GNOME,
+*Settings → Keyboard → Keyboard Shortcuts → Custom Shortcuts*, with a command like `rsnip --region`
+(its full path, if RSnip isn't on your `PATH`). RSnip asks the desktop for the
+screenshot (its screenshot portal, which Wayland desktops and most X11 ones have), so GNOME may ask
+once whether RSnip may take screenshots. RSnip's icon takes it, starting if it isn't running, so
+that the copy stays on the clipboard.
 
 **Recording on Linux**: from RSnip's icon in the top bar or panel, choose *Record an area…* or
 *Record screen or window…* (or the same from RSnip's app-menu entry, or run `rsnip --record` /
@@ -216,7 +227,7 @@ Changes apply straight away.
 | Section | |
 | --- | --- |
 | General | **Theme**: System (follows Windows' light or dark mode), Light or Dark. **Start with Windows**, **Open the library when RSnip starts** (otherwise it starts quietly in the tray), **Show notifications**. On Linux: **Keep RSnip in the background** (an icon in the top bar or panel once the library closes) and **Start when you sign in** |
-| Capture | **Save screenshots to the folder** (when off, captures go to the clipboard only), **Open the editor after capture** (this saves the capture even if saving is off), **Show the magnifier** (or press M while selecting), **Hide RSnip while capturing** (on by default: the library and Settings windows step aside during a capture or recording and come back after). Every capture is copied to the clipboard |
+| Capture | **Save screenshots to the folder** (when off, captures go to the clipboard only), **Open the editor after capture** (this saves the capture even if saving is off), **Show the magnifier** (or press M while selecting), **Hide RSnip while capturing** (on by default: the library and Settings windows step aside during a capture or recording and come back after). Every capture is copied to the clipboard. On Linux, only the first two: there the area is picked on a still of the screen |
 | Shortcuts | A shortcut for each action (region, all screens, last region, scrolling, record, text). *Change* asks you to press the new combination (Esc cancels); giving it a key another action has moves it. **Also take over Win+Shift+S** for a region capture. It warns if Windows' own Print Screen setting is on or two actions share a key |
 | Recording | MP4 or GIF; for MP4s, the frame rate (15, 24, 30 or 60) and codec (H.264 or H.265). On Linux: **Hide the library while recording**, and what's missing for recording |
 | Library & editor | **Save screenshots and recordings to**: RSnip's folder, which the library shows (`RSnip` in your user folder unless you choose another; copies of RSnip from before 0.5.3 keep the Pictures folder's `Screenshots`). After choosing another, Settings offers to move the screenshots and recordings in the previous folder there too, with their edits and search text. On Linux, **Bring in the desktop's screenshots** moves new ones from the desktop's screenshot tool into it; library on the left or along the bottom; **Read text in screenshots for search**; border and drop shadow on exports; **Move old screenshots and recordings to the Recycle Bin** (the Trash on Linux; off by default), after 7, 30 (the default), 90 or 365 days since each was last saved or edited. It runs a minute after RSnip starts and then daily, in the process that pushes automatically, keeps anything an automatic **Push to** destination hasn't received yet, and Settings says how many it would move |
@@ -370,6 +381,13 @@ On Linux:
 
 ```
 rsnip [file]           open the library, optionally with a file selected
+rsnip --region         pick an area of the screen and capture it
+rsnip --full           capture the whole screen
+rsnip --delay N        pick an area to capture in N seconds
+rsnip --text           select an area and copy the text in it (needs Tesseract)
+rsnip --last           capture the same area as last time
+rsnip --gallery [file] open the library, optionally with a file selected
+rsnip --update         check for a newer version and install it (.deb and .rpm installs)
 rsnip --settings       open the Settings window
 rsnip --record         pick an area and record it (run again to stop)
 rsnip --record-screen  pick a screen or window and record it (run again to stop)

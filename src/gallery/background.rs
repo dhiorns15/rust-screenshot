@@ -2,7 +2,8 @@
 //! Ubuntu's GNOME, KDE and most panels show) for recording the screen and opening the library,
 //! Settings and the screenshots folder, that stays when the library is closed. `rsnip --tray` runs
 //! it, and the library starts it (see `platform::start_tray`); `rsnip --tray-quit` or Settings stops
-//! it. `rsnip --record` asks it to record (starting it, without an icon if need be).
+//! it. `rsnip --record` asks it to record, and `rsnip --region` and the like to take a screenshot
+//! (see `screenshot`), starting it, without an icon if need be.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,9 +13,11 @@ use std::time::{Duration, Instant};
 use ksni::blocking::TrayMethods;
 use ksni::menu::{MenuItem, StandardItem};
 
+use super::pick_area::Purpose;
 use super::platform;
 use super::portal::{ScreenCast, Sources};
 use super::recorder::{self, Format, Recording};
+use super::screenshot::{self, Capture};
 use crate::options;
 
 /// What the icon's menu, or another RSnip process, asks for.
@@ -28,28 +31,35 @@ pub enum Command {
     /// Record part of a screen, picked in RSnip's own.
     RecordArea,
     StopRecording,
+    /// Take a screenshot, after a delay if it says so.
+    Capture(Capture),
     Quit,
 }
 
+/// The commands without anything more to say.
 const COMMANDS: [Command; 7] =
     [Command::OpenLibrary, Command::OpenFolder, Command::Settings, Command::RecordScreen, Command::RecordArea, Command::StopRecording, Command::Quit];
 
 impl Command {
     /// As written to the request file.
-    fn name(self) -> &'static str {
+    fn name(self) -> String {
         match self {
-            Command::OpenLibrary => "open",
-            Command::OpenFolder => "folder",
-            Command::Settings => "settings",
-            Command::RecordScreen => "record-screen",
-            Command::RecordArea => "record-area",
-            Command::StopRecording => "stop",
-            Command::Quit => "quit",
+            Command::OpenLibrary => "open".into(),
+            Command::OpenFolder => "folder".into(),
+            Command::Settings => "settings".into(),
+            Command::RecordScreen => "record-screen".into(),
+            Command::RecordArea => "record-area".into(),
+            Command::StopRecording => "stop".into(),
+            Command::Capture(capture) => format!("capture {}", capture.name()),
+            Command::Quit => "quit".into(),
         }
     }
 
     fn parse(name: &str) -> Option<Command> {
-        COMMANDS.into_iter().find(|c| c.name() == name)
+        match name.strip_prefix("capture ") {
+            Some(capture) => Capture::parse(capture).map(Command::Capture),
+            None => COMMANDS.into_iter().find(|c| c.name() == name),
+        }
     }
 }
 
@@ -68,7 +78,17 @@ pub fn quit() {
 /// Asks RSnip in the background to record, starting it if it isn't running. Recording again
 /// stops it, as on Windows.
 pub fn record(area: bool) {
-    let command = if area { Command::RecordArea } else { Command::RecordScreen };
+    ask(if area { Command::RecordArea } else { Command::RecordScreen });
+}
+
+/// Asks RSnip in the background to take a screenshot, starting it if it isn't running: it keeps
+/// the copy on the clipboard, which only lasts as long as the process that made it.
+pub fn capture(capture: Capture) {
+    ask(Command::Capture(capture));
+}
+
+/// Gives `command` to the running icon, or starts one to do it.
+fn ask(command: Command) {
     if platform::tray_running() {
         let _ = std::fs::write(request_file(), command.name());
     } else {
@@ -113,6 +133,8 @@ pub fn run(first: Option<Command>) {
         super::auto_push::start(notify);
     }
     let mut active: Option<Active> = None;
+    // A screenshot was copied here, so the process stays for the clipboard even without an icon.
+    let mut holding = false;
     let mut shown_recording = false;
     let mut brought_in = Instant::now();
     loop {
@@ -130,9 +152,9 @@ pub fn run(first: Option<Command>) {
             let _ = std::fs::remove_file(&requests);
         });
         let command = command.or(requested.as_deref().map(str::trim).and_then(Command::parse));
-        // Recording again stops it.
+        // Recording again stops it, and so does taking a screenshot, as on Windows.
         let command = match command {
-            Some(Command::RecordScreen | Command::RecordArea) if active.is_some() => Some(Command::StopRecording),
+            Some(Command::RecordScreen | Command::RecordArea | Command::Capture(_)) if active.is_some() => Some(Command::StopRecording),
             other => other,
         };
         match command {
@@ -143,13 +165,14 @@ pub fn run(first: Option<Command>) {
             Some(Command::RecordScreen) => active = start_recording(false),
             Some(Command::RecordArea) => active = start_recording(true),
             Some(Command::StopRecording) => finish(active.take()),
+            Some(Command::Capture(capture)) => holding |= screenshot::take(capture),
             None => {}
         }
         // Stopped by the desktop (the shared window closed, say), or too long.
         if active.as_mut().is_some_and(|a| a.recording.ended() || a.recording.started.elapsed() >= recorder::MAX_LENGTH) {
             finish(active.take());
         }
-        if !stay && active.is_none() {
+        if !stay && !holding && active.is_none() {
             break;
         }
         match &icon {
@@ -202,7 +225,7 @@ fn begin(area: bool) -> Result<Option<(Recording, ScreenCast)>, String> {
     let crop = if area {
         let file = std::env::temp_dir().join(format!("rsnip-area-{}.png", std::process::id()));
         frame.save(&file).map_err(|e| e.to_string())?;
-        let picked = pick_area(&file);
+        let picked = pick_area(&file, Purpose::Record);
         let _ = std::fs::remove_file(&file);
         match picked {
             Some(a) if (a.width, a.height) == size => None,
@@ -219,9 +242,9 @@ fn begin(area: bool) -> Result<Option<(Recording, ScreenCast)>, String> {
 }
 
 /// Runs `rsnip --pick-area` on a frame of the screen.
-fn pick_area(frame: &Path) -> Option<recorder::Area> {
+pub(super) fn pick_area(frame: &Path, purpose: Purpose) -> Option<recorder::Area> {
     let exe = std::env::current_exe().ok()?;
-    let out = std::process::Command::new(exe).arg("--pick-area").arg(frame).output().ok()?;
+    let out = std::process::Command::new(exe).arg("--pick-area").arg(frame).arg(purpose.name()).output().ok()?;
     let numbers: Vec<u32> = String::from_utf8_lossy(&out.stdout).split_whitespace().filter_map(|n| n.parse().ok()).collect();
     let [x, y, width, height] = numbers[..] else { return None };
     Some(recorder::Area { x, y, width, height })
@@ -249,7 +272,7 @@ fn finish(active: Option<Active>) {
 }
 
 /// Asks the library to hide or come back (see `App::poll`).
-fn tell_library(request: &str) {
+pub(super) fn tell_library(request: &str) {
     let _ = std::fs::write(super::env::request_file(), request);
 }
 
@@ -353,13 +376,19 @@ fn recording_dot(bgra: &mut [u8], size: i32) {
 
 #[cfg(test)]
 mod tests {
+    use super::screenshot::Mode;
     use super::*;
 
     #[test]
     fn requests_round_trip() {
-        for c in COMMANDS {
-            assert_eq!(Command::parse(c.name()), Some(c));
+        let captures = [Mode::Full, Mode::Region, Mode::Text, Mode::Last].map(|mode| Command::Capture(Capture { mode, delay: 0 }));
+        for c in COMMANDS.into_iter().chain(captures).chain([Command::Capture(Capture { mode: Mode::Region, delay: 5 })]) {
+            assert_eq!(Command::parse(&c.name()), Some(c));
         }
-        assert_eq!(Command::parse("junk"), None);
+        assert_eq!(Command::parse("capture region 5"), Some(Command::Capture(Capture { mode: Mode::Region, delay: 5 })));
+        assert_eq!(Command::parse("capture full"), Some(Command::Capture(Capture { mode: Mode::Full, delay: 0 })), "no delay");
+        for junk in ["junk", "capture", "capture scroll", "capture region soon", "capture region 5 6"] {
+            assert_eq!(Command::parse(junk), None, "{junk}");
+        }
     }
 }

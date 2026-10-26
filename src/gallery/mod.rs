@@ -18,6 +18,8 @@ mod file_clipboard;
 mod portal;
 #[cfg(not(windows))]
 mod recorder;
+#[cfg(not(windows))]
+mod screenshot;
 #[cfg(test)]
 mod settings_tests;
 mod color;
@@ -40,13 +42,41 @@ pub(crate) mod words;
 pub use auto_push::start as start_auto_push;
 pub use settings_window::run as run_settings;
 #[cfg(not(windows))]
-pub use background::{quit as quit_background, record, run as run_background};
-
-/// `rsnip --pick-area <frame>`: prints the area picked on the frame (see `pick_area`).
+pub use background::{capture, quit as quit_background, record, run as run_background};
 #[cfg(not(windows))]
-pub fn pick_area(frame: &Path) {
-    if let Some(a) = pick_area::run(frame) {
+pub use screenshot::{Capture, Mode as CaptureMode};
+
+/// `rsnip --pick-area <frame> [purpose]`: prints the area picked on the frame (see `pick_area`).
+#[cfg(not(windows))]
+pub fn pick_area(frame: &Path, purpose: Option<&str>) {
+    if let Some(a) = pick_area::run(frame, pick_area::Purpose::parse(purpose)) {
         println!("{} {} {} {}", a.x, a.y, a.width, a.height);
+    }
+}
+
+/// `rsnip --update`: checks for a newer version and installs it where RSnip can (a copy from the
+/// .deb or .rpm, as Settings → Updates does), else says where to get it. Exits with 1 if that
+/// failed.
+#[cfg(not(windows))]
+pub fn run_update() {
+    let fail = |what: &str, e: String| {
+        eprintln!("{what}: {e}");
+        std::process::exit(1);
+    };
+    println!("Checking for updates…");
+    let release = match update::check(crate::options::RELEASE_CANDIDATES.read(platform::setting)) {
+        Ok(Some(release)) => release,
+        Ok(None) => return println!("You have the latest version, {}.", update::Version::current()),
+        Err(e) => return fail("Couldn't check", e),
+    };
+    println!("RSnip {} is available (you have {}).", release.version, update::Version::current());
+    let Some(package) = platform::package() else {
+        return println!("This copy wasn't installed from a .deb or .rpm package, so it can't update itself. Download the new version from {}", release.page);
+    };
+    println!("Installing it; you may be asked for your password…");
+    match update::package::install(&release, package) {
+        Ok(()) => println!("Installed. Open RSnip again to use the new version."),
+        Err(e) => fail("Couldn't install the update", e),
     }
 }
 
