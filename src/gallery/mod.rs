@@ -7,6 +7,7 @@ mod auto_push;
 mod background;
 #[cfg(not(windows))]
 mod bring_in;
+mod clean_up;
 #[cfg(all(test, target_os = "linux"))]
 mod desktop_tests;
 #[cfg(not(windows))]
@@ -130,6 +131,11 @@ fn is_library_file(path: &Path) -> bool {
 /// The screenshots and recordings in `dir`, as the library lists them.
 fn library_files(dir: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| is_library_file(p) && p.is_file()).collect()
+}
+
+/// The same, with when each last changed (those that can't be read are left out).
+fn library_files_with_times(dir: &Path) -> Vec<(PathBuf, SystemTime)> {
+    library_files(dir).into_iter().filter_map(|f| Some((f.clone(), std::fs::metadata(&f).and_then(|m| m.modified()).ok()?))).collect()
 }
 
 /// Moves the screenshots and recordings in `from` to `to`, with their edits and search data (see

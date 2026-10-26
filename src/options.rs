@@ -38,6 +38,14 @@ pub const RECORD_HEVC: Flag = Flag { name: "RecordHevc", default: false };
 /// Frames per second for MP4 recordings.
 pub const RECORD_FPS: Choice = Choice { name: "RecordFps", default: 30, values: &[15, 24, 30, 60] };
 
+/// Move screenshots and recordings that haven't changed for `CLEAN_UP_DAYS` days to the Recycle
+/// Bin (the Trash on Linux), unless an automatic push still has to get them (see
+/// `gallery::clean_up`). Owned by the library window, so not in the tray's `Settings`.
+pub const CLEAN_UP: Flag = Flag { name: "CleanUp", default: false };
+pub const CLEAN_UP_DAYS: Choice = Choice { name: "CleanUpDays", default: 30, values: &[7, 30, 90, 365] };
+/// When that last moved any, and how many: seconds since 1970, a space, the count (a text setting).
+pub const CLEAN_UP_LAST: &str = "CleanUpLast";
+
 /// A setting that holds one of a few numbers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Choice {
@@ -106,6 +114,7 @@ mod tests {
         assert!(OPEN_EDITOR.read(|_| Some(7)));
         assert!(!NOTIFY.read(|_| Some(0)));
         assert!(SHOW_MAGNIFIER.read(|_| None), "the magnifier shows unless turned off");
+        assert!(!CLEAN_UP.read(|_| None), "nothing is deleted unless asked for");
     }
 
     #[test]
@@ -113,6 +122,9 @@ mod tests {
         assert_eq!(RECORD_FPS.read(|_| None), 30);
         assert_eq!(RECORD_FPS.read(|_| Some(60)), 60);
         assert_eq!(RECORD_FPS.read(|_| Some(1000)), 30, "not one of the choices");
+        assert_eq!(CLEAN_UP_DAYS.read(|_| None), 30);
+        assert_eq!(CLEAN_UP_DAYS.read(|_| Some(90)), 90);
+        assert_eq!(CLEAN_UP_DAYS.read(|_| Some(0)), 30, "not one of the choices");
     }
 
     #[test]

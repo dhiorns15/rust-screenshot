@@ -3,13 +3,14 @@
 //! background icon on Linux, else the library (whichever claims it first). Every few seconds it
 //! looks in the save folder for what's been saved since the destination was set to Automatically
 //! and hasn't been pushed there since it last changed; a failure is tried again later, and
-//! reported if it keeps failing.
+//! reported if it keeps failing. The same process moves old screenshots and recordings out of the
+//! folder, if Settings says to (see `clean_up`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::{library_files, platform, search};
+use super::{clean_up, library_files_with_times, platform, search};
 use crate::options;
 use crate::push::{self, Destination};
 
@@ -29,8 +30,17 @@ pub fn start(notify: impl Fn(&str, &str) + Send + 'static) {
             std::thread::sleep(EVERY);
         }
         let mut tries = Tries::default();
+        let mut clean_up_at = SystemTime::now() + clean_up::FIRST;
         loop {
-            run_once(&mut tries, SystemTime::now(), &notify);
+            let now = SystemTime::now();
+            run_once(&mut tries, now, &notify);
+            // Counted from when it's turned on, so the first clean-up isn't a day away.
+            if !options::CLEAN_UP.read(platform::setting) {
+                clean_up_at = now + clean_up::FIRST;
+            } else if now >= clean_up_at {
+                clean_up::run(now);
+                clean_up_at = now + clean_up::EVERY;
+            }
             std::thread::sleep(EVERY);
         }
     });
@@ -56,19 +66,22 @@ impl Tries {
     }
 }
 
-fn run_once(tries: &mut Tries, now: SystemTime, notify: &dyn Fn(&str, &str)) {
-    let destinations: Vec<Destination> = platform::text_setting(options::DESTINATIONS)
+/// The destinations set to Automatically.
+pub fn destinations() -> Vec<Destination> {
+    platform::text_setting(options::DESTINATIONS)
         .and_then(|json| serde_json::from_str::<Vec<Destination>>(&json).ok())
         .unwrap_or_default()
         .into_iter()
         .filter(|d| d.auto)
-        .collect();
+        .collect()
+}
+
+fn run_once(tries: &mut Tries, now: SystemTime, notify: &dyn Fn(&str, &str)) {
+    let destinations = destinations();
     if destinations.is_empty() {
         return;
     }
-    let dir = platform::screenshots_dir();
-    let files: Vec<(PathBuf, SystemTime)> =
-        library_files(&dir).into_iter().filter_map(|f| Some((f.clone(), std::fs::metadata(&f).and_then(|m| m.modified()).ok()?))).collect();
+    let files = library_files_with_times(&platform::screenshots_dir());
     for destination in &destinations {
         let due: Vec<PathBuf> = files.iter().filter(|(file, modified)| is_due(destination, file, *modified, now, tries)).map(|(f, _)| f.clone()).collect();
         if due.is_empty() {
@@ -95,16 +108,22 @@ fn run_once(tries: &mut Tries, now: SystemTime, notify: &dyn Fn(&str, &str)) {
     }
 }
 
-/// Whether `file` (last changed at `modified`) should be pushed to `destination` now: it's been
-/// saved since the destination was set to Automatically, it's finished being written, it hasn't
-/// been pushed there since it last changed (edits saved go too), and it isn't waiting to be tried
-/// again.
+/// Whether `file` (last changed at `modified`) should be pushed to `destination` now: it's still
+/// to be pushed there (see `to_push`), it's finished being written, and it isn't waiting to be
+/// tried again.
 fn is_due(destination: &Destination, file: &Path, modified: SystemTime, now: SystemTime, tries: &Tries) -> bool {
-    let Some(since) = destination.auto_since.filter(|_| destination.auto) else { return false };
-    if modified < UNIX_EPOCH + Duration::from_secs(since) || now.duration_since(modified).unwrap_or_default() < SETTLE {
+    if now.duration_since(modified).unwrap_or_default() < SETTLE || tries.waiting(&destination.id, file, now) {
         return false;
     }
-    if tries.waiting(&destination.id, file, now) {
+    to_push(destination, file, modified)
+}
+
+/// Whether `destination` has yet to get `file` (last changed at `modified`) by itself: it's set
+/// to Automatically, the file was saved since then, and it hasn't been pushed there since it last
+/// changed (edits saved go too). That stays so for a push that was given up on.
+pub fn to_push(destination: &Destination, file: &Path, modified: SystemTime) -> bool {
+    let Some(since) = destination.auto_since.filter(|_| destination.auto) else { return false };
+    if modified < UNIX_EPOCH + Duration::from_secs(since) {
         return false;
     }
     // Pushes are noted to the second; one finishes at least SETTLE after the file last changed.

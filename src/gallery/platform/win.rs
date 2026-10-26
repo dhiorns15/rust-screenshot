@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 use image::RgbaImage;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, FILETIME, SYSTEMTIME};
-use windows_sys::Win32::Storage::FileSystem::{GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, INVALID_FILE_ATTRIBUTES};
+use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN, INVALID_FILE_ATTRIBUTES};
 use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
@@ -216,6 +216,18 @@ fn pick(title: &str, current: Option<&Path>, filter: Option<(&str, &str)>) -> Re
     }
 }
 
+/// What deleted files go to, for Settings.
+pub const RECYCLE_BIN: &str = "Recycle Bin";
+
+/// Whether files in `dir` would go to the Recycle Bin: only a fixed drive's do. On a network or
+/// removable drive Windows deletes them for good instead.
+pub fn has_recycle_bin(dir: &Path) -> bool {
+    // The drive's root, e.g. C:\ or \\nas\share\.
+    let root: PathBuf = dir.components().take(2).collect();
+    // DRIVE_FIXED
+    unsafe { GetDriveTypeW(wide_os(root.as_os_str()).as_ptr()) == 3 }
+}
+
 /// Moves a file to the Recycle Bin.
 pub fn recycle(path: &Path) -> bool {
     // pFrom must be double-null-terminated.
@@ -339,4 +351,15 @@ pub fn read_words() -> Option<super::super::env::ReadWords> {
 
 pub fn drag_files(paths: &[PathBuf]) -> Result<(), String> {
     super::super::dragout::drag_files(paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_fixed_drive_has_a_recycle_bin() {
+        assert!(has_recycle_bin(&std::env::temp_dir()));
+        assert!(!has_recycle_bin(Path::new(r"\nas.invalid\shots\RSnip")));
+    }
 }

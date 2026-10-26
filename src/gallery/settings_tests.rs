@@ -14,6 +14,7 @@ use super::theme::Appearance;
 use super::{tests, Dock};
 use crate::crash;
 use crate::options;
+use crate::push::{self, Destination, Kind};
 use crate::shortcuts::{self, Action};
 
 pub const SIZE: Vec2 = Vec2::new(800.0, 580.0);
@@ -337,6 +338,42 @@ fn brings_in_the_desktops_screenshots_when_theyre_elsewhere() {
     toggle(&mut h, title);
     assert!(h.state().env.setting(options::BRING_IN_SINCE).is_some(), "what's taken from now on");
     assert!(requests(&h).contains(&TrayRequest::SettingsChanged));
+}
+
+#[test]
+fn clean_up_is_off_until_asked_for_and_says_how_many_are_old_and_when_it_last_ran() {
+    let title = format!("Move old screenshots and recordings to the {}", super::platform::RECYCLE_BIN);
+    let mut h = settings("settings-clean-up", |env| {
+        let now = std::time::SystemTime::now();
+        for (name, days) in [("a.png", 40), ("b.png", 35), ("c.mp4", 10), ("d.png", 1)] {
+            std::fs::write(env.dir.join(name), b"data").unwrap();
+            std::fs::File::options().write(true).open(env.dir.join(name)).unwrap().set_modified(now - Duration::from_secs(days * 86_400)).unwrap();
+        }
+    });
+    open(&mut h, Section::Library);
+    assert!(!is_on(&h, &title), "off by default");
+    assert!(h.query_by_label_contains("Moved ").is_none(), "hasn't run");
+    assert!(h.query_by_label("2 are older than 30 days").is_some(), "30 days unless chosen");
+    click(&mut h, "7 days");
+    assert_eq!(h.state().env.setting(options::CLEAN_UP_DAYS.name), Some(7));
+    assert!(h.query_by_label("3 are older than 7 days").is_some());
+    click(&mut h, "365 days");
+    assert!(h.query_by_label("Nothing is older than 365 days").is_some());
+    toggle(&mut h, &title);
+    assert!(is_on(&h, &title));
+    assert_eq!(h.state().env.setting(options::CLEAN_UP.name), Some(1));
+    assert!(std::fs::exists(h.state().env.dir.join("a.png")).unwrap(), "Settings only counts");
+
+    // What an automatic destination hasn't received yet doesn't count.
+    let auto = Destination { auto: true, auto_since: Some(1), ..Destination::new(Kind::Immich { server: "https://photos.example.com".into() }) };
+    push::save(&h.state().env, &[auto]);
+    click(&mut h, "30 days");
+    h.get_by_label("Nothing is older than 30 days");
+
+    let two_hours_ago = crate::push::history::now() - 2 * 3600;
+    h.state().env.set_text_setting(options::CLEAN_UP_LAST, &format!("{two_hours_ago} 12"));
+    settle(&mut h);
+    assert!(h.query_by_label(&format!("Moved 12 to the {}, 2 h ago", super::platform::RECYCLE_BIN)).is_some());
 }
 
 #[test]

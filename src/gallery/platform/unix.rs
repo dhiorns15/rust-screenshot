@@ -366,6 +366,15 @@ pub fn pick_file(title: &str, filter: (&str, &str)) -> Result<Option<PathBuf>, S
     super::super::portal::pick_file(title, filter)
 }
 
+/// What deleted files go to, for Settings.
+pub const RECYCLE_BIN: &str = "Trash";
+
+/// Whether files in `dir` would go to the Trash. Where they can't, moving them fails and they stay.
+pub fn has_recycle_bin(_dir: &Path) -> bool {
+    true
+}
+
+/// Moves a file to the Trash.
 pub fn recycle(path: &Path) -> bool {
     trash::delete(path).is_ok()
 }

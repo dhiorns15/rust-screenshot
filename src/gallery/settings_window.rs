@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Ui, Vec2};
 
@@ -154,6 +154,8 @@ pub struct SettingsApp {
     counted: Option<Instant>,
     /// Moving them to the current folder, while it's under way.
     moving: Option<Receiver<Result<MoveReport, String>>>,
+    /// How many are old enough to clean up, for the days it was counted for and when.
+    old: Option<(Instant, u32, usize)>,
     installing: Installing,
     push: push::PushState,
 }
@@ -172,7 +174,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, picking: None, left_behind: None, counted: None, moving: None, installing: Installing::Idle, push: Default::default() }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, push: Default::default() }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -466,6 +468,47 @@ impl SettingsApp {
                 if row(ui, title, "", |ui| theme::switch(ui, &mut on, title)).changed() {
                     self.set(name, on as u32);
                 }
+            }
+        });
+        self.clean_up(ui);
+    }
+
+    /// Moving old screenshots and recordings to the Recycle Bin, and how many that would be.
+    fn clean_up(&mut self, ui: &mut Ui) {
+        let bin = platform::RECYCLE_BIN;
+        let days = options::CLEAN_UP_DAYS.read(|name| self.env.setting(name));
+        // Counted again now and then, as each old one's push record is read.
+        if self.old.is_none_or(|(at, counted_for, _)| counted_for != days || at.elapsed() >= Duration::from_secs(5)) {
+            let files = super::library_files_with_times(&self.env.dir);
+            let due = super::clean_up::due(&files, days, &crate::push::load(&self.env), SystemTime::now());
+            self.old = Some((Instant::now(), days, due.len()));
+        }
+        let old = self.old.map_or(0, |(_, _, n)| n);
+        let found = match old {
+            _ if !platform::has_recycle_bin(&self.env.dir) => format!("RSnip's folder is on a network or removable drive, which has no {bin}, so nothing is moved"),
+            0 => format!("Nothing is older than {days} days"),
+            1 => format!("1 is older than {days} days"),
+            n => format!("{n} are older than {days} days"),
+        };
+        let last = super::clean_up::last_run(self.env.text_setting(options::CLEAN_UP_LAST)).map(|(at, moved)| format!("Moved {moved} to the {bin}, {}", crate::push::history::ago(at, crate::push::history::now())));
+        theme::card(ui, |ui| {
+            let detail = "Anything an automatic Push to destination hasn't received yet stays, so nothing goes before it's backed up";
+            self.flag_row(ui, options::CLEAN_UP, &format!("Move old screenshots and recordings to the {bin}"), detail);
+            ui.separator();
+            row(ui, "After", "Counted from when each was last saved or edited", |ui| {
+                theme::group(ui, |ui| {
+                    // Right to left, so they read shortest to longest.
+                    for &value in options::CLEAN_UP_DAYS.values.iter().rev() {
+                        if ui.add(egui::Button::selectable(days == value, format!("{value} days"))).clicked() && days != value {
+                            self.set(options::CLEAN_UP_DAYS.name, value);
+                        }
+                    }
+                })
+            });
+            let muted = theme::palette(ui).muted;
+            ui.label(RichText::new(found).small().color(muted));
+            if let Some(last) = last {
+                ui.label(RichText::new(last).small().color(muted));
             }
         });
     }
