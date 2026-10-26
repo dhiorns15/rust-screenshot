@@ -134,11 +134,13 @@ fn is_ip(s: &str) -> bool {
 /// A key or token: one with a well-known prefix, a JWT, or a long string that looks random.
 fn is_secret(s: &str) -> bool {
     let from = |prefix: &str, min: usize, ok: fn(char) -> bool| s.strip_prefix(prefix).is_some_and(|rest| rest.len() >= min && rest.chars().all(ok));
-    let word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    // After a well-known prefix any letter goes, as text read off a screen can come back with a
+    // letter or two misread ("jk1Ø12").
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
     from("sk-", 16, word)
-        || ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"].iter().any(|p| from(p, 20, |c| c.is_ascii_alphanumeric()))
+        || ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"].iter().any(|p| from(p, 20, char::is_alphanumeric))
         || from("github_pat_", 20, word)
-        || ["AKIA", "ASIA"].iter().any(|p| from(p, 16, |c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+        || ["AKIA", "ASIA"].iter().any(|p| from(p, 16, char::is_alphanumeric))
         || ["xoxb-", "xoxp-", "xoxa-", "xoxr-", "xoxs-"].iter().any(|p| from(p, 10, word))
         || is_jwt(s)
         || looks_random(s)
@@ -276,6 +278,8 @@ mod tests {
             "xoxb-1234567890-abcdefghij",
             "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk",
             "Zk3jX9qLm2Vb7Rt5Yp8Wc1Nd4Hs6Gf0A",
+            // As Windows read "sk-abc123def456ghi789jkl012" off a screen.
+            "sk-abc123def456ghi789jk1Ø121",
         ];
         for key in keys {
             assert_eq!(found(&[&format!("token {key}")]), [key], "{key}");

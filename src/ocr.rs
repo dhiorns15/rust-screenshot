@@ -57,11 +57,16 @@ fn run(engine: &OcrEngine, img: &Image) -> windows::core::Result<String> {
     Ok(lines.join("\n"))
 }
 
-/// Scales `img` to suit the engine: small captures are enlarged (it reads small UI text far better
-/// at 2×), and anything over its maximum size is shrunk to fit.
+/// Pixels in an image enlarged for the engine, at most: a 2560×1440 screen doubled.
+const MAX_ENLARGED: i64 = 16_000_000;
+
+/// Scales `img` to suit the engine: it's enlarged (the engine reads small text far better at 2×,
+/// such as an editor's at 9 px on a whole screen) unless that would be too big, and anything over
+/// its maximum size is shrunk to fit.
 fn fit_for_ocr(img: &Image, max: i32) -> Image {
     let longest = img.width.max(img.height).max(1);
-    let scale = if longest * 2 <= max.min(2000) { 2.0 } else { (max as f32 / longest as f32).min(1.0) };
+    let doubled = 4 * img.width as i64 * img.height as i64;
+    let scale = if longest * 2 <= max && doubled <= MAX_ENLARGED { 2.0 } else { (max as f32 / longest as f32).min(1.0) };
     if scale == 1.0 {
         return Image { width: img.width, height: img.height, data: img.data.clone() };
     }
@@ -83,7 +88,11 @@ mod tests {
         assert_eq!((small.width, small.height), (600, 80));
         let big = fit_for_ocr(&img(5200, 1000), 2600);
         assert_eq!((big.width, big.height), (2600, 500));
+        let screen = fit_for_ocr(&img(1910, 1018), 10000);
+        assert_eq!((screen.width, screen.height), (3820, 2036), "a whole screen, for its small text");
+        let four_k = fit_for_ocr(&img(3840, 2160), 10000);
+        assert_eq!((four_k.width, four_k.height), (3840, 2160), "too big to enlarge");
         let mid = fit_for_ocr(&img(1500, 900), 2600);
-        assert_eq!((mid.width, mid.height), (1500, 900));
+        assert_eq!((mid.width, mid.height), (1500, 900), "over the engine's maximum enlarged");
     }
 }
