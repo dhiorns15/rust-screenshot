@@ -681,7 +681,12 @@ pub mod tests {
         let (from, to) = trim(&path, &trimmed, Duration::from_millis(1500), Duration::from_millis(2500)).unwrap();
         assert!(from <= Duration::from_millis(1500) && to.abs_diff(Duration::from_millis(2500)) < Duration::from_millis(50), "{from:?}..{to:?}");
         assert!(Movie::open(&trimmed).is_ok());
-        assert!(first_frame(&trimmed, MAX_SIZE).is_some_and(|f| f.size == [320, 240]), "the trimmed copy plays");
+        // Given longer than a thumbnail is, as CI's machines can be slow to decode, and saying why
+        // if it didn't.
+        let decoding = decode(&trimmed, Duration::ZERO, MAX_SIZE, None);
+        let frame = decoding.frames.recv_timeout(Duration::from_secs(30));
+        assert!(frame.as_ref().is_ok_and(|f| f.image.size == [320, 240]), "the trimmed copy plays: {:?}", decoding.failed.lock().unwrap());
+        drop(decoding);
 
         let decoding = decode(&path, Duration::from_millis(1500), MAX_SIZE, None);
         let first = decoding.frames.recv_timeout(Duration::from_secs(10)).expect("a frame");
