@@ -27,12 +27,19 @@ pub fn test(f: &Folder) -> Result<String, String> {
 pub fn put(f: &Folder, name: &str, file: &Path) -> Result<(), String> {
     let url = format!("{}{}", folder(f.url), super::encode(name));
     let content_type = [("Content-Type", http::content_type(file))];
-    let mut reply = send(f, "PUT", &url, &content_type, Body::File(file.to_path_buf()))?;
-    // 409 Conflict: the folder isn't there.
-    if reply.status == 409 {
+    let first = send(f, "PUT", &url, &content_type, Body::File(file.to_path_buf()));
+    // 409 Conflict: the folder isn't there. A server can say so before a big file is all sent and
+    // hang up, which looks like no reply at all, so then it's asked whether the folder is there.
+    let missing = match &first {
+        Ok(reply) => reply.status == 409,
+        Err(_) => send(f, "PROPFIND", &folder(f.url), &[("Depth", "0")], Body::Empty).is_ok_and(|r| r.status == 404),
+    };
+    let reply = if missing {
         make_folder(f, &folder(f.url), 0)?;
-        reply = send(f, "PUT", &url, &content_type, Body::File(file.to_path_buf()))?;
-    }
+        send(f, "PUT", &url, &content_type, Body::File(file.to_path_buf()))?
+    } else {
+        first?
+    };
     if reply.is_success() { Ok(()) } else { Err(problem(reply)) }
 }
 
@@ -110,5 +117,52 @@ mod tests {
         assert_eq!(parent("https://h/dav/Shots/").as_deref(), Some("https://h/dav/"));
         assert_eq!(parent("https://h/dav/").as_deref(), Some("https://h/"));
         assert_eq!(parent("https://h/"), None);
+    }
+
+    /// A server that answers each request with the next status, the first one as soon as it has
+    /// the request's headers, hanging up without reading the rest (as rclone does with a 409).
+    fn hasty_server(statuses: &'static [&'static str]) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/dav/Shots", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            for (i, status) in statuses.iter().enumerate() {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut data = Vec::new();
+                let mut chunk = [0u8; 8192];
+                let end = loop {
+                    let n = stream.read(&mut chunk).unwrap();
+                    data.extend_from_slice(&chunk[..n]);
+                    if let Some(at) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break at + 4;
+                    }
+                };
+                let head = String::from_utf8_lossy(&data[..end]).into_owned();
+                if i > 0 {
+                    // Read the body as a server normally would.
+                    let length = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap())).unwrap_or(0);
+                    while data.len() < end + length {
+                        let n = stream.read(&mut chunk).unwrap();
+                        data.extend_from_slice(&chunk[..n]);
+                    }
+                }
+                asked.push(head.lines().next().unwrap().split(' ').take(2).collect::<Vec<_>>().join(" "));
+                stream.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+            }
+            asked
+        });
+        (url, handle)
+    }
+
+    #[test]
+    fn makes_the_folder_when_the_server_hangs_up_on_a_big_file() {
+        let file = std::env::temp_dir().join(format!("rsnip-webdav-big-{}.png", std::process::id()));
+        std::fs::write(&file, vec![7u8; 8 * 1024 * 1024]).unwrap();
+        let (url, asked) = hasty_server(&["409 Conflict", "404 Not Found", "201 Created", "201 Created"]);
+        let pushed = put(&Folder { url: &url, user: "me", password: "pw" }, "a.png", &file);
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(pushed, Ok(()));
+        assert_eq!(asked.join().unwrap(), ["PUT /dav/Shots/a.png", "PROPFIND /dav/Shots/", "MKCOL /dav/Shots/", "PUT /dav/Shots/a.png"]);
     }
 }
