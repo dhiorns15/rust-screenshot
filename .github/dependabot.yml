@@ -1,5 +1,6 @@
-# Monthly pull requests for newer GitHub Actions and crates. Cargo's minor and patch updates come
-# in one pull request; a major update gets its own.
+# Monthly pull requests for newer GitHub Actions and crates. Crates that only work at the same
+# version as each other (egui's, the windows crates) come together; the rest's minor and patch
+# updates come in one pull request, and any other major update gets its own.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -11,5 +12,9 @@ updates:
     schedule:
       interval: monthly
     groups:
+      egui:
+        patterns: [egui, egui_*, eframe]
+      windows:
+        patterns: [windows, windows-core]
       minor-and-patch:
         update-types: [minor, patch]
