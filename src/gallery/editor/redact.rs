@@ -69,15 +69,15 @@ impl Editor {
 /// Where the sensitive things are in `words`: one box for each, around all the words it spans.
 pub fn find(words: &[Word]) -> Vec<Rect> {
     let mut found = Vec::new();
-    for line in words.chunk_by(|a, b| a.line == b.line) {
-        let texts: Vec<&str> = line.iter().map(|w| w.text.as_str()).collect();
+    for line in rows(words) {
+        let texts: Vec<&str> = line.iter().map(|(text, _)| text.as_str()).collect();
         let mut claimed = vec![false; line.len()];
         let mut claim = |first: usize, len: usize| {
             if claimed[first..first + len].iter().any(|&c| c) {
                 return;
             }
             claimed[first..first + len].fill(true);
-            found.push(line[first..first + len].iter().skip(1).fold(line[first].rect, |all, w| all.union(w.rect)));
+            found.push(line[first..first + len].iter().skip(1).fold(line[first].1, |all, (_, rect)| all.union(*rect)));
         };
         for (i, text) in texts.iter().enumerate() {
             if candidates(text).any(|c| is_email(c) || is_ip(c) || is_secret(c)) {
@@ -93,6 +93,39 @@ pub fn find(words: &[Word]) -> Vec<Rect> {
         }
     }
     found
+}
+
+/// The text as it looks on the screen: each row of it, left to right, as the words (with where they
+/// are) a reader would see. Windows' OCR returns small text in fragments ("test@example." "com,")
+/// and even on different lines, so words are put in a row by where they are rather than by the line
+/// they came with, and ones with hardly a gap between them are joined into one.
+fn rows(words: &[Word]) -> Vec<Vec<(String, Rect)>> {
+    let mut rows: Vec<Vec<&Word>> = Vec::new();
+    for word in words {
+        // The same row when the middles are less than half the taller one's height apart.
+        let same_row = |last: &&Word| (last.rect.center().y - word.rect.center().y).abs() * 2.0 <= last.rect.height().max(word.rect.height());
+        match rows.iter_mut().rev().find(|row| row.last().is_some_and(same_row)) {
+            Some(row) => row.push(word),
+            None => rows.push(vec![word]),
+        }
+    }
+    rows.into_iter()
+        .map(|mut row| {
+            row.sort_by(|a, b| a.rect.min.x.total_cmp(&b.rect.min.x));
+            let mut joined: Vec<(String, Rect)> = Vec::new();
+            for word in row {
+                match joined.last_mut() {
+                    // Words are a letter or so apart; the fragments of one are touching.
+                    Some((text, rect)) if word.rect.min.x - rect.max.x < rect.height().max(word.rect.height()) / 3.0 => {
+                        text.push_str(&word.text);
+                        *rect = rect.union(word.rect);
+                    }
+                    _ => joined.push((word.text.clone(), word.rect)),
+                }
+            }
+            joined
+        })
+        .collect()
 }
 
 const QUOTES: [char; 3] = ['"', '\'', '`'];
@@ -332,6 +365,72 @@ mod tests {
         let boxes = find(&words);
         // "+1 555 123 4567" runs from the start of "+1" to the end of "4567"; 10 px per letter.
         assert_eq!(boxes, [Rect::from_min_max(egui::pos2(60.0, 10.0), egui::pos2(210.0, 30.0)), Rect::from_min_max(egui::pos2(60.0, 40.0), egui::pos2(120.0, 60.0))]);
+    }
+
+    /// Small text as Windows reads it: 10 px tall, 6 px a letter, `(gap before, text, line)` for each
+    /// piece, 14 px between rows.
+    fn pieces(row: usize, pieces: &[(f32, &str, usize)]) -> Vec<Word> {
+        let mut x = 20.0;
+        pieces
+            .iter()
+            .map(|&(gap, text, line)| {
+                x += gap;
+                let rect = Rect::from_min_size(egui::pos2(x, 100.0 + row as f32 * 14.0), egui::vec2(text.len() as f32 * 6.0, 10.0));
+                x += rect.width();
+                Word { text: text.to_owned(), rect, line }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn puts_text_read_in_pieces_back_together() {
+        // Each of these came back on a line of its own, though they're all in one row.
+        let words = pieces(
+            0,
+            &[
+                (0.0, "email", 6),
+                (6.0, "me", 6),
+                (6.0, "at", 6),
+                (6.0, "test@example.", 6),
+                (1.0, "com,", 6),
+                (6.0, "server", 8),
+                (6.0, "192.168", 8),
+                (0.0, ".1", 10),
+                (2.0, ".", 11),
+                (0.0, "20,", 11),
+                (6.0, "key", 12),
+                (6.0, "sk-abc123def456ghi789jk1Ø121", 14),
+            ],
+        );
+        let at = |from: usize, to: usize| words[from..=to].iter().skip(1).fold(words[from].rect, |all, w| all.union(w.rect));
+        assert_eq!(find(&words), [at(3, 4), at(6, 9), at(11, 11)]);
+    }
+
+    #[test]
+    fn rows_are_kept_apart_and_words_are_found_wherever_they_are_listed() {
+        // Two rows 14 px apart, read right to left and the lower one first.
+        let mut words = pieces(1, &[(0.0, "ip", 0), (6.0, "10.0.0", 1), (0.0, ".1", 2)]);
+        words.extend(pieces(0, &[(0.0, "a@b.io", 3)]));
+        words.reverse();
+        let top = pieces(0, &[(0.0, "a@b.io", 3)])[0].rect;
+        let low = pieces(1, &[(0.0, "ip", 0), (6.0, "10.0.0", 1), (0.0, ".1", 2)]);
+        assert_eq!(find(&words), [top, low[1].rect.union(low[2].rect)]);
+        // The end of one row and the start of the next aren't a word.
+        let words = [pieces(0, &[(0.0, "mail", 0), (6.0, "a@b", 0)]), pieces(1, &[(0.0, ".io", 1)])].concat();
+        assert!(find(&words).is_empty());
+        let words = [pieces(0, &[(0.0, "ip", 0), (6.0, "10.0.0", 0)]), pieces(1, &[(0.0, ".1", 1)])].concat();
+        assert!(find(&words).is_empty());
+    }
+
+    #[test]
+    fn words_with_a_space_between_them_stay_apart() {
+        // A letter's width of gap is a space, not a break in a word.
+        assert!(find(&pieces(0, &[(0.0, "at", 0), (6.0, "10", 0), (6.0, ".0.0.1", 0)])).is_empty());
+        assert!(find(&pieces(0, &[(0.0, "mail", 0), (6.0, "a@b", 0), (6.0, "io", 0)])).is_empty());
+        assert!(find(&pieces(0, &[(0.0, "version", 0), (6.0, "1.2", 0), (6.0, ".3", 0)])).is_empty());
+        // Nor are card numbers split into pieces of a word: these are four groups.
+        let words = pieces(0, &[(0.0, "4111", 0), (6.0, "1111", 0), (6.0, "1111", 0), (6.0, "1111", 0)]);
+        assert_eq!(find(&words), [words[0].rect.union(words[3].rect)]);
     }
 
     fn editor(lines: &[&'static str]) -> Editor {
