@@ -1,0 +1,15 @@
+# Monthly pull requests for newer GitHub Actions and crates. Cargo's minor and patch updates come
+# in one pull request; a major update gets its own.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
