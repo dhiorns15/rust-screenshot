@@ -42,7 +42,7 @@ windows = { version = "0.62", features = ["Media_Ocr", "Graphics_Imaging", "Stor
 windows-core = "0.62"
 
 [target.'cfg(windows)'.dependencies.windows-sys]
-version = "0.59"
+version = "0.61"
 features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
