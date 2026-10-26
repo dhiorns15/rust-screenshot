@@ -237,8 +237,13 @@ impl Doc {
     }
 
     pub fn add(&mut self, shape: Shape) {
+        self.add_all([shape]);
+    }
+
+    /// Adds all of `shapes` as one undo step.
+    pub fn add_all(&mut self, shapes: impl IntoIterator<Item = Shape>) {
         let mut next = self.current().clone();
-        next.shapes.push(shape);
+        next.shapes.extend(shapes);
         self.push(next);
     }
 
@@ -914,6 +919,16 @@ mod tests {
         doc.undo();
         assert!(!doc.dirty());
         assert_eq!(doc.next_step_number(), 1);
+    }
+
+    #[test]
+    fn adds_several_shapes_in_one_undo_step() {
+        let mut doc = Doc::from_image(RgbaImage::new(40, 30));
+        let redact = |x: f32| Shape::Redact { rect: Rect::from_min_size(Pos2::new(x, 0.0), Vec2::splat(5.0)), color: Color32::BLACK };
+        doc.add_all([redact(0.0), redact(10.0), redact(20.0)]);
+        assert_eq!(doc.current().shapes.len(), 3);
+        doc.undo();
+        assert!(doc.current().shapes.is_empty() && !doc.can_undo());
     }
 
     #[test]

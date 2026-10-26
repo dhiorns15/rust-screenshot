@@ -329,6 +329,63 @@ fn copy_text_says_when_theres_none() {
     assert!(shows(&h, "No text found in this image"));
 }
 
+/// Opens the Redact tool on screenshot a, with `lines` of text "read" from it, and clicks Auto-redact.
+fn auto_redact(name: &str, lines: &[&str]) -> Harness<'static, App> {
+    let mut h = harness_at(name, 1.0 / 60.0);
+    *h.state().env.sandboxed().words.lock().unwrap() = super::words::example(lines);
+    click(&mut h, "Redact");
+    click(&mut h, &label(icon::MAGIC_WAND, "Auto-redact"));
+    // Reads the text first, then covers what it finds.
+    for _ in 0..100 {
+        settle(&mut h);
+        if h.state().editor.as_ref().unwrap().auto_redact_note().is_some() {
+            break;
+        }
+    }
+    settle(&mut h);
+    h
+}
+
+#[test]
+fn auto_redact_covers_what_it_finds_in_one_undo_step() {
+    let mut h = auto_redact("kittest-auto-redact", &["Mail dan@example.com now", "server 10.0.0.1 and 555-123-4567"]);
+    let shapes = |h: &Harness<App>| h.state().editor.as_ref().unwrap().doc.current().shapes.clone();
+    let color = h.state().tools.color();
+    let rects: Vec<_> = shapes(&h)
+        .into_iter()
+        .map(|s| match s {
+            super::doc::Shape::Redact { rect, color: c } if c == color => rect,
+            _ => panic!("not a redact box in the tool's colour"),
+        })
+        .collect();
+    assert_eq!(rects.len(), 3);
+    // "dan@example.com" starts 60 px in, and is 150 px wide; boxes have 2 px around them.
+    assert_eq!(rects[0], Rect::from_min_max(Pos2::new(58.0, 8.0), Pos2::new(212.0, 32.0)));
+    assert!(shows(&h, "Redacted 3: undo brings them back"));
+
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    settle(&mut h);
+    assert!(shapes(&h).is_empty(), "one undo takes them all back");
+    assert!(!shows(&h, "Redacted 3: undo brings them back"));
+}
+
+#[test]
+fn auto_redact_says_when_theres_nothing_to_redact() {
+    let h = auto_redact("kittest-auto-redact-nothing", &["Nothing secret here", "version 1.2.3"]);
+    assert!(h.state().editor.as_ref().unwrap().doc.current().shapes.is_empty());
+    assert!(shows(&h, "Nothing to redact"));
+}
+
+#[test]
+fn auto_redact_needs_text_reading() {
+    let mut h = harness_at("kittest-auto-redact-unavailable", 1.0 / 60.0);
+    click(&mut h, "Redact");
+    assert!(shows(&h, &label(icon::MAGIC_WAND, "Auto-redact")));
+    h.state_mut().editor.as_mut().unwrap().reader = None;
+    settle(&mut h);
+    assert!(!shows(&h, &label(icon::MAGIC_WAND, "Auto-redact")));
+}
+
 fn library_with_text(name: &str, text: &str, setup: impl FnOnce(&Env) + 'static) -> (Harness<'static, App>, PathBuf) {
     let dir = fixtures(name);
     let env = Env::sandbox(dir.clone());

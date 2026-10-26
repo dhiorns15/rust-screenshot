@@ -4,6 +4,7 @@ mod copy_text;
 mod crop;
 mod handles;
 mod preview;
+mod redact;
 mod select;
 #[cfg(test)]
 mod tests;
@@ -51,6 +52,7 @@ pub struct Editor {
     recognised: Option<copy_text::Recognised>,
     /// Text is being selected by dragging across it.
     text_drag: bool,
+    auto_redact: Option<redact::AutoRedact>,
 }
 
 impl Editor {
@@ -72,6 +74,7 @@ impl Editor {
             reader: None,
             recognised: None,
             text_drag: false,
+            auto_redact: None,
         }
     }
 
@@ -112,9 +115,10 @@ impl Editor {
     pub fn ui(&mut self, ui: &mut Ui, tools: &mut ToolState, font: Option<&FontVec>) {
         self.sync_selection(tools);
         self.update_texture(ui.ctx(), font);
-        if tools.tool == Tool::CopyText {
+        if tools.tool == Tool::CopyText || self.auto_redacting() {
             self.read_text(ui.ctx(), font);
         }
+        self.finish_auto_redact(ui.ctx(), tools.colors[Tool::Redact as usize]);
         let size = self.doc.size();
         let avail = ui.available_size();
         let fit = ((avail.x - 16.0) / size.x).min((avail.y - 16.0) / size.y).clamp(0.02, 1.0);

@@ -71,7 +71,7 @@ impl Editor {
     }
 
     /// The words read from the image as it is now.
-    fn words(&self) -> &[Word] {
+    pub(super) fn words(&self) -> &[Word] {
         match &self.recognised {
             Some(Recognised { version, reading: Reading::Done(Ok(words)), .. }) if *version == self.doc.version => words,
             _ => &[],

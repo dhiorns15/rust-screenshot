@@ -867,6 +867,8 @@ impl App {
                 ui.add(egui::Slider::new(self.tools.width_mut(), 1.0..=24.0).step_by(1.0).fixed_decimals(0));
             } else if self.tools.tool == Tool::CopyText {
                 self.copy_text_options(ui);
+            } else if self.tools.tool == Tool::Redact {
+                self.redact_options(ui);
             }
             let selected = self.tools.selection.is_some();
             if selected {
@@ -878,8 +880,11 @@ impl App {
                     }
                 }
             }
+            let redacted = self.editor.as_ref().filter(|_| self.tools.tool == Tool::Redact).and_then(|e| e.auto_redact_note());
             let hint = if selected {
                 "Drag to move it, or drag its handles to resize it. Esc deselects it"
+            } else if let Some(note) = redacted {
+                note
             } else {
                 TOOLS.iter().find(|t| t.0 == self.tools.tool).map_or("", |t| t.3)
             };
@@ -926,6 +931,23 @@ impl App {
         }
         if ui.add_enabled(any, egui::Button::new("Select all")).on_hover_text("Ctrl+A").clicked() {
             editor.select_all_text();
+        }
+    }
+
+    /// The Redact tool's Auto-redact button, where the system can read text.
+    fn redact_options(&mut self, ui: &mut egui::Ui) {
+        let Some(editor) = &mut self.editor else { return };
+        if editor.reader.is_none() {
+            return;
+        }
+        let auto = egui::Button::new(theme::label(icon::MAGIC_WAND, "Auto-redact"));
+        let hover = "Cover every email address, IP address, API key or token, card number and phone number found in the text, in one step";
+        if ui.add_enabled(!editor.auto_redacting(), auto).on_hover_text(hover).clicked() {
+            editor.start_auto_redact();
+        }
+        if editor.auto_redacting() {
+            ui.spinner();
+            ui.label(RichText::new("Reading text…").color(theme::palette(ui).muted));
         }
     }
 
