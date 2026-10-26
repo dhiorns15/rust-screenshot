@@ -496,8 +496,7 @@ pub fn hevc_available() -> bool {
 pub const TEXT_RECOGNITION: &str = "Tesseract";
 
 /// Tesseract's text recognition on an image file, for search, if it's installed. It reads the
-/// whole library in the background, so on one core at the lowest priority: by itself Tesseract
-/// takes every core for each screenshot.
+/// whole library in the background, so at the lowest priority.
 pub fn ocr() -> Option<super::super::env::Ocr> {
     on_path("tesseract").then(|| {
         std::sync::Arc::new(|path: &Path| {
@@ -527,9 +526,11 @@ fn tesseract(img: &RgbaImage, background: bool) -> Result<Vec<super::super::word
     let rgb = image::DynamicImage::ImageRgba8(img.clone()).to_rgb8();
     rgb.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| e.to_string())?;
     let mut command = Command::new("tesseract");
+    // On one core it's several times faster: on several, its threads mostly spin waiting for each
+    // other, worst on a virtual machine (0.15 s rather than 0.58 s, on all four of one's cores).
+    command.env("OMP_THREAD_LIMIT", "1");
     if background {
         use std::os::unix::process::CommandExt;
-        command.env("OMP_THREAD_LIMIT", "1");
         // SAFETY: only setpriority, which is async-signal-safe, between fork and exec.
         unsafe {
             command.pre_exec(|| {
