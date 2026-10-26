@@ -79,7 +79,7 @@ arboard = { version = "3", default-features = false, features = ["image-data", "
 eframe = { version = "0.36", default-features = false, features = ["x11", "wayland"] }
 libc = "0.2"
 # Copying files to the clipboard in every format a file manager or chat reads (arboard has one).
-x11rb = "0.13"
+x11rb = "0.14"
 trash = "5"
 
 [dev-dependencies]
