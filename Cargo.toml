@@ -18,7 +18,7 @@ png = "0.17"
 [dependencies]
 ab_glyph = "0.2"
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow"] }
-egui = { version = "0.36", default-features = false, features = ["serde"] }
+egui = { version = "0.37", default-features = false, features = ["serde"] }
 egui-phosphor = "0.14"
 gif = "0.13"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
