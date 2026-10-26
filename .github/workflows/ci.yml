@@ -8,6 +8,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Checking out and uploading the test snapshots is all it does.
+permissions:
+  contents: read
+
 jobs:
   windows:
     runs-on: windows-latest
