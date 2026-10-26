@@ -13,7 +13,8 @@ updates:
       interval: monthly
     groups:
       egui:
-        patterns: [egui, egui_*, eframe]
+        # egui-phosphor (the icons) is only released for an egui version some time after it.
+        patterns: [egui, egui_*, egui-phosphor, eframe]
       windows:
         patterns: [windows, windows-core]
       minor-and-patch:
