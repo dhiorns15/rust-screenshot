@@ -5,8 +5,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use eframe::egui::ColorImage;
-use windows::core::{GUID, HSTRING, PROPVARIANT};
+use windows::core::{GUID, HSTRING};
 use windows::Win32::Media::MediaFoundation::*;
+use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 use super::{fit, Frame, Sink};

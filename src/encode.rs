@@ -102,7 +102,7 @@ impl Mp4 {
         let mut codec: *mut std::ffi::c_void = std::ptr::null_mut();
         if writer.GetServiceForStream(stream, &windows::core::GUID::zeroed(), &ICodecAPI::IID, &mut codec).is_ok() && !codec.is_null() {
             let codec = ICodecAPI::from_raw(codec);
-            let _ = codec.SetValue(&CODECAPI_AVEncMPVGOPSize, &windows::core::VARIANT::from(fps));
+            let _ = codec.SetValue(&CODECAPI_AVEncMPVGOPSize, &windows::Win32::System::Variant::VARIANT::from(fps));
         }
         writer.BeginWriting()?;
         Ok(Mp4 { writer, stream, width, height, frame_time: 10_000_000 / fps as i64, last: None })

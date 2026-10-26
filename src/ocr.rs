@@ -49,7 +49,7 @@ fn read(engine: &OcrEngine, img: &Image) -> windows::core::Result<OcrResult> {
     writer.WriteBytes(&img.data)?;
     let buffer = writer.DetachBuffer()?;
     let bitmap = SoftwareBitmap::CreateCopyWithAlphaFromBuffer(&buffer, BitmapPixelFormat::Bgra8, img.width, img.height, BitmapAlphaMode::Ignore)?;
-    engine.RecognizeAsync(&bitmap)?.get()
+    engine.RecognizeAsync(&bitmap)?.join()
 }
 
 fn run(engine: &OcrEngine, img: &Image) -> windows::core::Result<String> {

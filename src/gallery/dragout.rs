@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-use windows::core::{implement, HRESULT, HSTRING};
-use windows::Win32::Foundation::{BOOL, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK};
+use windows::core::{implement, BOOL, HRESULT, HSTRING};
+use windows::Win32::Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK};
 use windows::Win32::System::Com::{CoTaskMemFree, IDataObject};
 use windows::Win32::System::Ole::{DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, DROPEFFECT, DROPEFFECT_COPY};
 use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
@@ -111,5 +111,16 @@ mod tests {
         let has_hdrop = rx.recv().unwrap();
         std::fs::remove_file(&path).unwrap();
         assert!(has_hdrop, "CF_HDROP offered");
+    }
+
+    #[test]
+    fn the_drag_ends_on_release_or_escape() {
+        let source: IDropSource = DropSource.into();
+        unsafe {
+            assert_eq!(source.QueryContinueDrag(true, MK_LBUTTON), DRAGDROP_S_CANCEL);
+            assert_eq!(source.QueryContinueDrag(false, MODIFIERKEYS_FLAGS(0)), DRAGDROP_S_DROP);
+            assert_eq!(source.QueryContinueDrag(false, MK_LBUTTON), S_OK);
+            assert_eq!(source.GiveFeedback(DROPEFFECT_COPY), DRAGDROP_S_USEDEFAULTCURSORS);
+        }
     }
 }
