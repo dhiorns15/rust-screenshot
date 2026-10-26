@@ -93,6 +93,8 @@ fn explain(stderr: &str) -> String {
         "Couldn't find that server: check the host name".into()
     } else if all.contains("Connection refused") || all.contains("timed out") {
         "Couldn't connect to the server: check the host and port, and that SSH is running there".into()
+    } else if all.contains("Connection reset") || all.contains("Connection closed by") {
+        "The server closed the connection: check that it's running and reachable from this computer".into()
     } else {
         match lines.last() {
             Some(last) => format!("sftp: {last}"),
@@ -137,6 +139,9 @@ mod tests {
     fn explains_the_usual_failures() {
         assert!(explain("user@h: Permission denied (publickey,password).\r\nConnection closed").contains("ssh-copy-id"));
         assert!(explain("ssh: Could not resolve hostname nope: Name or service not known").contains("host name"));
+        for said in ["Read from remote host nas: Connection reset by peer", "Connection closed by 10.0.0.5 port 22", "client_loop: send disconnect: Connection reset"] {
+            assert!(explain(said).starts_with("The server closed the connection"), "{said}");
+        }
         assert_eq!(explain("sftp> put a b\nremote open(\"b\"): Permission denied\n"), "sftp: remote open(\"b\"): Permission denied");
     }
 }

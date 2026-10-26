@@ -149,6 +149,9 @@ fn explain(e: &FtpError) -> String {
         _ if UNTRUSTED.iter().any(|t| tls.to_ascii_lowercase().contains(t)) => {
             "The server's certificate isn't one this computer trusts (a self-signed one, say): choose Edit, then Trust the server's certificate".into()
         }
+        FtpError::ConnectionError(e) if crate::http::dropped(e.kind()) => {
+            "The server closed the connection: check that it's running and reachable from this computer".into()
+        }
         FtpError::ConnectionError(e) => format!("Couldn't connect to the server: check its name and port, and that FTPS is on there ({e})"),
         FtpError::SecureError(e) => format!("Couldn't set up TLS with the server: {e}"),
         FtpError::UnexpectedResponse(r) if matches!(r.status, Status::FileUnavailable | Status::BadFilename) => {
@@ -267,5 +270,9 @@ mod tests {
             assert!(explain(&FtpError::SecureError(untrusted.into())).contains("Trust the server's certificate"), "{untrusted}");
         }
         assert!(explain(&FtpError::ConnectionError(std::io::ErrorKind::ConnectionRefused.into())).starts_with("Couldn't connect"));
+        for kind in [std::io::ErrorKind::ConnectionReset, std::io::ErrorKind::ConnectionAborted] {
+            let closed = "The server closed the connection: check that it's running and reachable from this computer";
+            assert_eq!(explain(&FtpError::ConnectionError(kind.into())), closed, "{kind:?}");
+        }
     }
 }

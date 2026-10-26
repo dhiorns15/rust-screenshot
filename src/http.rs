@@ -126,7 +126,7 @@ pub fn request(method: &str, url: &str, headers: &[(&str, &str)], body: Body) ->
     };
     let request = builder.body(sending).map_err(|e| format!("Couldn't send a request to {host}: {e}"))?;
 
-    let mut reply = agent.run(request).map_err(|e| format!("Couldn't reach {host}: {e}"))?;
+    let mut reply = agent.run(request).map_err(|e| explain(host, &e))?;
     let status = reply.status().as_u16();
     let headers = reply
         .headers()
@@ -138,8 +138,38 @@ pub fn request(method: &str, url: &str, headers: &[(&str, &str)], body: Body) ->
         .with_config()
         .limit(MAX_REPLY)
         .read_to_vec()
-        .map_err(|e| format!("Couldn't reach {host}: {e}"))?;
+        .map_err(|e| explain(host, &e))?;
     Ok(Response { status, headers, body })
+}
+
+/// A request that failed, as the user is told: plainly where a server went quiet in one of the
+/// usual ways, else in ureq's words.
+fn explain(host: &str, e: &ureq::Error) -> String {
+    let kind = match e {
+        ureq::Error::Io(e) => Some(kind_of(e)),
+        ureq::Error::Timeout(_) => Some(io::ErrorKind::TimedOut),
+        _ => None,
+    };
+    match kind {
+        Some(kind) if dropped(kind) => format!("{host} closed the connection: check that it's running and reachable from this computer"),
+        Some(io::ErrorKind::ConnectionRefused) => format!("{host} refused the connection: check the address and port, and that the server is running"),
+        Some(io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) => {
+            format!("{host} didn't answer in time: check that it's running and reachable from this computer")
+        }
+        _ => format!("Couldn't reach {host}: {e}"),
+    }
+}
+
+/// Whether an io error of this kind is the other end ending the connection: reset or aborted
+/// (Windows 10054 and 10053, Linux ECONNRESET and ECONNABORTED), a write to one that's gone, or
+/// hanging up before it answered. (Also used by the other pushes that talk to a server.)
+pub fn dropped(kind: io::ErrorKind) -> bool {
+    matches!(kind, io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted | io::ErrorKind::BrokenPipe | io::ErrorKind::UnexpectedEof)
+}
+
+/// What an io error is about, looking through ones wrapped in others (TLS libraries do that).
+fn kind_of(e: &io::Error) -> io::ErrorKind {
+    e.get_ref().and_then(|inner| inner.downcast_ref::<io::Error>()).map_or(e.kind(), kind_of)
 }
 
 /// The server in an address, for messages: "https://user@example.com:8443/a?b" is "example.com:8443".
@@ -446,11 +476,68 @@ c"), "a'bc");
     }
 
     #[test]
-    fn says_when_the_server_cant_be_reached() {
+    fn says_when_the_server_refuses() {
         // A port nothing listens on: bind one, then let it go.
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let error = request("GET", &format!("http://127.0.0.1:{port}/x"), &[], Body::Empty).unwrap_err();
-        assert!(error.starts_with(&format!("Couldn't reach 127.0.0.1:{port}: ")), "{error}");
+        assert_eq!(error, format!("127.0.0.1:{port} refused the connection: check the address and port, and that the server is running"));
+    }
+
+    #[test]
+    fn says_when_the_server_hangs_up_before_answering() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/x", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || drop(listener.accept().unwrap()));
+        let error = request("GET", &url, &[], Body::Empty).unwrap_err();
+        server.join().unwrap();
+        assert!(error.ends_with(" closed the connection: check that it's running and reachable from this computer"), "{error}");
+        assert!(error.starts_with("127.0.0.1:"), "{error}");
+    }
+
+    #[test]
+    fn says_when_the_server_resets_a_push() {
+        // Closing a socket with part of the upload unread resets the connection (as a server
+        // does that turns an upload away).
+        let contents = vec![7u8; 32 * 1024 * 1024];
+        let path = temp_file("reset.mp4", &contents);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/up", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut chunk = [0u8; 4096];
+            let mut head = Vec::new();
+            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut chunk).unwrap();
+                assert!(n > 0);
+                head.extend_from_slice(&chunk[..n]);
+            }
+        });
+        let error = request("PUT", &url, &[], Body::File(path)).unwrap_err();
+        server.join().unwrap();
+        assert_eq!(
+            error,
+            format!("{} closed the connection: check that it's running and reachable from this computer", host_of(&url))
+        );
+    }
+
+    #[test]
+    fn explains_how_a_server_went_quiet() {
+        let io = |kind: io::ErrorKind| ureq::Error::Io(kind.into());
+        let closed = "h:1 closed the connection: check that it's running and reachable from this computer";
+        for kind in [io::ErrorKind::ConnectionReset, io::ErrorKind::ConnectionAborted, io::ErrorKind::BrokenPipe, io::ErrorKind::UnexpectedEof] {
+            assert_eq!(explain("h:1", &io(kind)), closed, "{kind:?}");
+        }
+        // Wrapped in another error, as a TLS layer may.
+        let wrapped = ureq::Error::Io(io::Error::other(io::Error::from(io::ErrorKind::ConnectionReset)));
+        assert_eq!(explain("h:1", &wrapped), closed);
+        assert_eq!(explain("h:1", &io(io::ErrorKind::ConnectionRefused)), "h:1 refused the connection: check the address and port, and that the server is running");
+        let slow = "h:1 didn't answer in time: check that it's running and reachable from this computer";
+        assert_eq!(explain("h:1", &io(io::ErrorKind::TimedOut)), slow);
+        assert_eq!(explain("h:1", &ureq::Error::Timeout(ureq::Timeout::Connect)), slow);
+        // Anything else keeps ureq's own words.
+        assert_eq!(explain("h:1", &ureq::Error::HostNotFound), "Couldn't reach h:1: host not found");
+        assert_eq!(explain("h:1", &io(io::ErrorKind::PermissionDenied)), "Couldn't reach h:1: io: permission denied");
     }
 
     #[test]

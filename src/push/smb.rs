@@ -173,6 +173,8 @@ mod platform {
             "The server has no share by that name".into()
         } else if has("NT_STATUS_ACCESS_DENIED") {
             "The share didn't let RSnip in, or write there: check the user and what it may do".into()
+        } else if has("NT_STATUS_CONNECTION_RESET") || has("NT_STATUS_CONNECTION_DISCONNECTED") || has("NT_STATUS_CONNECTION_ABORTED") {
+            "Lost touch with the server: check that it's on and reachable from this computer".into()
         } else if has("Connection to") || has("NT_STATUS_HOST_UNREACHABLE") || has("NT_STATUS_IO_TIMEOUT") || has("NT_STATUS_CONNECTION_REFUSED") {
             "Couldn't reach the server: check its name, and that file sharing is on there".into()
         } else {
@@ -219,6 +221,7 @@ mod tests {
         assert_eq!(platform::explain(Some("session setup failed: NT_STATUS_LOGON_FAILURE\n")), "The server didn't accept the user name or password");
         assert_eq!(platform::explain(Some("tree connect failed: NT_STATUS_BAD_NETWORK_NAME")), "The server has no share by that name");
         assert!(platform::explain(Some("do_connect: Connection to nohost failed (Error NT_STATUS_NOT_FOUND)")).starts_with("Couldn't reach"));
+        assert!(platform::explain(Some("do_connect: Connection to nas failed (Error NT_STATUS_CONNECTION_RESET)")).starts_with("Lost touch"));
         assert!(platform::explain(None).contains("install the smbclient package"));
     }
 

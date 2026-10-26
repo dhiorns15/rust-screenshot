@@ -9,6 +9,10 @@ the desktop's keyring (GNOME Keyring, KWallet: any Secret Service), never in RSn
 Give RSnip its own key, token or app password where the service has them, with no more than it
 needs, so it can be taken back without changing anything else.
 
+Where a server drops the connection (a reset, say, or a restart mid-upload) RSnip says *… closed
+the connection*: check that it's running and reachable from this computer, and that nothing between
+(a firewall, a proxy, a size limit) is turning the upload away.
+
 - [SFTP](#sftp)
 - [WebDAV](#webdav)
 - [S3-compatible](#s3-compatible)
