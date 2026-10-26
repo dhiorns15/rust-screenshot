@@ -156,7 +156,8 @@ offered it like any update:
    test is skipped.
 2. Install it and try what changed, on Windows and on a Linux desktop.
 3. If something's wrong, fix it and tag `vX.Y.Z-rc2` (the version stays X.Y.Z). When it's right,
-   tag `vX.Y.Z` on the same commit as the last candidate.
+   tag `vX.Y.Z` on the same commit as the last candidate. Once it's published, the workflow deletes
+   the candidates' releases, keeping their tags.
 
 A candidate's Linux packages are version `X.Y.Z~rcN`, which apt and rpm put before `X.Y.Z`, so
 each candidate and then the release install over the one before (`build-packages.sh` reads the

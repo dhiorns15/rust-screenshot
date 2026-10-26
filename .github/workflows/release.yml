@@ -99,3 +99,22 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # Once a release is out in full, its candidates' pages only clutter the list of releases: they're
+  # deleted, and their tags kept (the release notes and links to their commits still work).
+  candidates:
+    needs: [linux, update]
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Delete this release's candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release list --exclude-drafts --limit 100 --json tagName,isPrerelease \
+              --jq ".[] | select(.isPrerelease) | .tagName | select(startswith(\"$GITHUB_REF_NAME-rc\"))" |
+              while read -r tag; do
+                  echo "Deleting $tag (keeping the tag)"
+                  gh release delete "$tag" --yes
+              done
