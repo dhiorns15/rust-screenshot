@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use eframe::egui::{self, Color32, RichText, Ui};
+use eframe::egui::{self, Align, Color32, Layout, RichText, Ui};
 
 use super::{row, SettingsApp};
-use crate::gallery::env::{PickedFolder, TrayRequest};
+use crate::gallery::env::{PickedFolder, PushEvent, TrayRequest};
 use crate::gallery::theme::{self, icon};
 use crate::push::history::{self, Entry};
 use crate::push::{self, Destination, Kind};
@@ -31,6 +31,18 @@ pub struct PushState {
     importing: Option<PickedFolder>,
     /// The push history, and when it was read.
     history: Option<(Instant, Vec<Entry>)>,
+    /// A failed push being tried again, by hand.
+    retrying: Option<Retrying>,
+}
+
+struct Retrying {
+    /// The destination's id and name, and the file's name.
+    id: String,
+    to: String,
+    file: String,
+    events: Receiver<PushEvent>,
+    /// Whether it went, and the link to it there if it has one.
+    pushed: Option<Option<String>>,
 }
 
 enum Test {
@@ -229,6 +241,8 @@ impl SettingsApp {
             return;
         }
         let (muted, now) = (theme::palette(ui).muted, history::now());
+        let destinations = if entries.iter().any(|e| e.error.is_some()) { push::load(&self.env) } else { Vec::new() };
+        let mut retry = None;
         ui.add_space(6.0);
         ui.label(RichText::new("Recent pushes").strong());
         theme::card(ui, |ui| {
@@ -236,15 +250,42 @@ impl SettingsApp {
                 if i > 0 {
                     ui.separator();
                 }
-                ui.label(format!("{} to {}", e.file, e.name));
                 let how = if e.auto { "automatically" } else { "by hand" };
                 let (text, color) = match &e.error {
                     None => (format!("Pushed {how}, {}", history::ago(e.at, now)), muted),
                     Some(error) => (format!("Failed {how}, {}: {error}", history::ago(e.at, now)), error_color()),
                 };
-                ui.add(egui::Label::new(RichText::new(text).small().color(color)).wrap());
+                // Only the newest push of a file to a place is worth trying again.
+                let retryable = e.error.is_some() && !entries[..i].iter().any(|newer| newer.id == e.id && newer.file == e.file);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if retryable {
+                            let destination = destinations.iter().find(|d| d.id == e.id);
+                            let file = self.env.dir.join(&e.file);
+                            let this = self.push.retrying.as_ref().is_some_and(|r| r.id == e.id && r.file == e.file);
+                            let (enabled, why) = match destination {
+                                None => (false, "This place was removed from Push to"),
+                                Some(_) if !file.is_file() => (false, "The file isn't in RSnip's folder any more"),
+                                Some(_) => (self.push.retrying.is_none(), "Still pushing"),
+                            };
+                            let button = ui.add_enabled(enabled, egui::Button::new(if this { "Retrying…" } else { "Retry" }));
+                            if button.on_disabled_hover_text(why).clicked() {
+                                retry = destination.map(|d| (d.clone(), file));
+                            }
+                        }
+                        ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                            ui.label(format!("{} to {}", e.file, e.name));
+                            ui.add(egui::Label::new(RichText::new(text).small().color(color)).wrap());
+                        });
+                    });
+                });
             }
         });
+        if let Some((destination, file)) = retry {
+            let name = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let events = self.env.push_files(ui.ctx(), &destination, vec![file]);
+            self.push.retrying = Some(Retrying { id: destination.id, to: destination.name, file: name, events, pushed: None });
+        }
     }
 
     /// Opens the form for a new destination, or asks for the ShareX file to make it from.
@@ -288,6 +329,7 @@ impl SettingsApp {
                 }
             }
         }
+        self.poll_retry();
         let mut failed = None;
         self.push.forgetting.retain(|rx| match rx.try_recv() {
             Ok(result) => {
@@ -322,6 +364,31 @@ impl SettingsApp {
         });
         if let Some(destination) = saved {
             self.commit(destination);
+        }
+    }
+
+    /// Takes in how the retry is going; when it's done, the new row is shown at once, and the link
+    /// copied as for a push from the library.
+    fn poll_retry(&mut self) {
+        let Some(r) = &mut self.push.retrying else { return };
+        let mut done = false;
+        for event in r.events.try_iter() {
+            match event {
+                PushEvent::Pushed(_, link) => r.pushed = Some(link),
+                PushEvent::Done => done = true,
+                PushEvent::Pushing(_) | PushEvent::Failed(..) => {}
+            }
+        }
+        if !done {
+            return;
+        }
+        let Some(r) = self.push.retrying.take() else { return };
+        self.push.history = None;
+        match r.pushed {
+            Some(Some(link)) => self.copy(&link, &format!("Pushed {} to {}, link copied", r.file, r.to)),
+            Some(None) => self.note = Some(format!("Pushed {} to {}", r.file, r.to)),
+            // The new row says what went wrong.
+            None => {}
         }
     }
 

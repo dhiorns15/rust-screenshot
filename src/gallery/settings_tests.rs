@@ -672,6 +672,86 @@ fn recent_pushes_say_what_went_and_what_failed() {
     assert!(h.query_by_label("Failed by hand, just now: Immich didn't accept the API key").is_some());
 }
 
+/// A place called "Photos" that `b.png` (in the library's folder, if `exists`) failed to be pushed to.
+fn failed_push(env: &mut Env, exists: bool, saved: bool) -> crate::push::Destination {
+    use crate::push::history::{self, Entry};
+    let d = crate::push::Destination { name: "Photos".into(), ..crate::push::Destination::new(crate::push::Kind::immich()) };
+    let file = env.dir.join("b.png");
+    if exists {
+        std::fs::write(&file, b"png").unwrap();
+    }
+    if saved {
+        crate::push::save(env, std::slice::from_ref(&d));
+    }
+    history::record(&env.history_file, &Entry::new(&d, &file, true, Some("Immich didn't accept the API key".into())));
+    d
+}
+
+#[test]
+fn a_failed_push_can_be_tried_again() {
+    let mut h = settings("settings-push-retry", |env| {
+        failed_push(env, true, true);
+    });
+    open(&mut h, Section::Destinations);
+    assert!(is_enabled(&h, "Retry"));
+    click(&mut h, "Retry");
+    let pushed = h.state().env.sandboxed().pushed.clone();
+    assert_eq!(pushed.len(), 1);
+    assert_eq!(pushed[0].0, "Photos");
+    assert_eq!(pushed[0].1.file_name().unwrap(), "b.png");
+    assert!(h.query_by_label("Pushed by hand, just now").is_some(), "a new row");
+    assert!(h.query_by_label("Failed automatically, just now: Immich didn't accept the API key").is_some(), "the old one stays");
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some("https://example.com/b.png"));
+    assert!(h.query_by_label("Pushed b.png to Photos, link copied").is_some());
+    assert!(h.query_by_label("Retry").is_none(), "the newest is a success");
+}
+
+#[test]
+fn a_retry_that_fails_shows_a_new_row_with_its_own_retry() {
+    let mut h = settings("settings-push-retry-fails", |env| {
+        failed_push(env, true, true);
+    });
+    h.state().env.sandboxed().push_result = Some(Err("Still no".into()));
+    open(&mut h, Section::Destinations);
+    click(&mut h, "Retry");
+    assert!(h.query_by_label("Failed by hand, just now: Still no").is_some());
+    assert_eq!(h.get_all_by_label("Retry").count(), 1, "only on the newest");
+    assert!(is_enabled(&h, "Retry"));
+}
+
+#[test]
+fn a_failed_push_cant_be_retried_without_its_file_or_place() {
+    let mut h = settings("settings-push-retry-file", |env| {
+        failed_push(env, false, true);
+    });
+    open(&mut h, Section::Destinations);
+    assert!(!is_enabled(&h, "Retry"), "the file is gone");
+    click(&mut h, "Retry");
+    assert!(h.state().env.sandboxed().pushed.is_empty());
+
+    let mut h = settings("settings-push-retry-place", |env| {
+        failed_push(env, true, false);
+    });
+    open(&mut h, Section::Destinations);
+    assert!(!is_enabled(&h, "Retry"), "the place was removed");
+    click(&mut h, "Retry");
+    assert!(h.state().env.sandboxed().pushed.is_empty());
+}
+
+#[test]
+fn only_the_newest_push_of_a_file_to_a_place_can_be_retried() {
+    use crate::push::history::{self, Entry};
+    let mut h = settings("settings-push-retry-older", |env| {
+        let d = failed_push(env, true, true);
+        let file = env.dir.join("b.png");
+        // A newer failure of the same file to the same place, and an older one of another file.
+        history::record(&env.history_file, &Entry::new(&d, &file, false, Some("Timed out".into())));
+        history::record(&env.history_file, &Entry::new(&d, &env.dir.join("c.png"), false, Some("Too big".into())));
+    });
+    open(&mut h, Section::Destinations);
+    assert_eq!(h.get_all_by_label("Retry").count(), 2, "b.png's second failure, and c.png's");
+}
+
 #[test]
 fn removing_asks_first_and_forgets_the_secret() {
     let mut h = settings("settings-push-remove", |_| {});
