@@ -13,7 +13,7 @@ inspect = ["eframe/inspection"]
 
 [build-dependencies]
 embed-resource = "3"
-png = "0.17"
+png = "0.18"
 
 [dependencies]
 ab_glyph = "0.2"
@@ -36,7 +36,7 @@ rustls-platform-verifier = "0.7"
 
 # Capture, tray, OCR, pinning and recording: Windows only.
 [target.'cfg(windows)'.dependencies]
-png = "0.17"
+png = "0.18"
 windows = { version = "0.62", features = ["Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Foundation", "Foundation_Collections", "Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant", "Win32_System_SystemServices", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_Media_MediaFoundation"] }
 # What windows' #[implement] (dragging files out of the library) names; it moves with windows.
 windows-core = "0.62"
