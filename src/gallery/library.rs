@@ -1,5 +1,6 @@
 //! The library panel: screenshots grouped by date, with multi-select, drag-out and bulk actions.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -16,21 +17,51 @@ const COLUMN_WIDTH: f32 = THUMB.x + 16.0;
 const LABEL_HEIGHT: f32 = 20.0;
 /// Space between dates in the filmstrip.
 const GROUP_GAP: f32 = 14.0;
+/// A folded date in the filmstrip: just its heading, as a chip.
+const FOLDED_WIDTH: f32 = 120.0;
+/// Where the folded dates are kept, one a line.
+pub const FOLDED_SETTING: &str = "CollapsedGroups";
 /// The bottom library panel: header row, date labels, thumbnails, scroll bar and margins.
 pub const STRIP_HEIGHT: f32 = 34.0 + LABEL_HEIGHT + ROW_HEIGHT + 16.0;
 
-/// Where each filmstrip column starts, with a gap where the date changes; and the total width.
-fn strip_columns(labels: &[String]) -> (Vec<f32>, f32) {
+/// Where each filmstrip column starts, with a gap where the date changes; and the total width. A
+/// folded date is one narrow column, which all its screenshots share.
+fn strip_columns(labels: &[String], folded: &HashSet<String>) -> (Vec<f32>, f32) {
     let mut xs = Vec::with_capacity(labels.len());
     let mut x = 0.0;
+    // Where this date's first column started.
+    let mut start = 0.0;
     for (n, label) in labels.iter().enumerate() {
-        if n > 0 && *label != labels[n - 1] {
-            x += GROUP_GAP;
+        let is_folded = folded.contains(label);
+        if n == 0 || *label != labels[n - 1] {
+            if n > 0 {
+                x += GROUP_GAP;
+            }
+            start = x;
+            if is_folded {
+                x += FOLDED_WIDTH;
+            }
         }
-        xs.push(x);
-        x += COLUMN_WIDTH;
+        if is_folded {
+            xs.push(start);
+        } else {
+            xs.push(x);
+            x += COLUMN_WIDTH;
+        }
     }
     (xs, x)
+}
+
+/// The folded dates as they're kept in the settings, one a line. "Today" is never kept, so the
+/// newest screenshots are always there to see when the library opens.
+pub(super) fn parse_folded(text: &str) -> HashSet<String> {
+    text.lines().map(str::trim).filter(|l| !l.is_empty() && *l != "Today").map(String::from).collect()
+}
+
+fn folded_text(folded: &HashSet<String>) -> String {
+    let mut labels: Vec<&str> = folded.iter().map(String::as_str).filter(|l| *l != "Today").collect();
+    labels.sort_unstable();
+    labels.join("\n")
 }
 
 /// Where the label of a date spanning `start..end` goes when the strip is scrolled to `scroll`: at
@@ -102,7 +133,8 @@ pub fn range(order: &[PathBuf], a: &PathBuf, b: &PathBuf) -> Vec<PathBuf> {
 }
 
 enum Row {
-    Header(String),
+    /// A date, and how many screenshots it has.
+    Header(String, usize),
     /// Index into `App::entries`.
     Item(usize),
 }
@@ -110,7 +142,7 @@ enum Row {
 impl Row {
     fn height(&self) -> f32 {
         match self {
-            Row::Header(_) => HEADER_HEIGHT,
+            Row::Header(..) => HEADER_HEIGHT,
             Row::Item(_) => ROW_HEIGHT,
         }
     }
@@ -124,6 +156,8 @@ enum Action {
     /// Push this (or the selected ones, if it's one of them) there.
     Push(PathBuf, Box<crate::push::Destination>),
     CopyLink(String),
+    /// Fold or unfold a date.
+    ToggleGroup(String),
 }
 
 impl App {
@@ -167,8 +201,10 @@ impl App {
         let labels: Vec<String> = visible.iter().map(|&i| group_label(Day::local(self.entries[i].modified), today)).collect();
         let action = if bottom { self.strip(ui, &visible, &labels) } else { self.list(ui, &visible, &labels) };
 
-        let order: Vec<PathBuf> = visible.iter().map(|&i| self.entries[i].path.clone()).collect();
+        // What's in view, for Shift+click and for what actions apply to: not what's folded away.
+        let order: Vec<PathBuf> = visible.iter().zip(&labels).filter(|(_, label)| !self.folded(label)).map(|(&i, _)| self.entries[i].path.clone()).collect();
         match action {
+            Some(Action::ToggleGroup(label)) => self.toggle_group(&label),
             Some(Action::Click(path, mods)) => self.click(path, mods, &order),
             Some(Action::Drag(path)) => {
                 let paths = self.targets(&path, &order);
@@ -198,6 +234,77 @@ impl App {
             },
             None => {}
         }
+    }
+
+    fn searching(&self) -> bool {
+        !self.filter.trim().is_empty()
+    }
+
+    /// Searching shows everything that matches, folded dates or not.
+    fn folded(&self, label: &str) -> bool {
+        !self.searching() && self.collapsed.contains(label)
+    }
+
+    /// What a date's heading says: whether it's folded (not while searching, when it can't be),
+    /// the date, and how many screenshots it has.
+    fn heading_text(&self, label: &str, count: usize) -> String {
+        if self.searching() {
+            return format!("{label} ({count})");
+        }
+        let caret = if self.folded(label) { icon::CARET_RIGHT } else { icon::CARET_DOWN };
+        format!("{caret} {label} ({count})")
+    }
+
+    /// How wide a date's heading is, with a little room around it.
+    fn heading_width(&self, ui: &egui::Ui, label: &str, count: usize) -> f32 {
+        let text = ui.painter().layout_no_wrap(self.heading_text(label, count), egui::FontId::proportional(13.0), Color32::WHITE);
+        text.size().x + 8.0
+    }
+
+    /// A date's heading, with its text at the bottom left of `rect`. Clicking it folds the date.
+    fn heading(&self, ui: &mut egui::Ui, rect: Rect, label: &str, count: usize) -> Option<Action> {
+        let mut color = theme::palette(ui).muted;
+        let mut action = None;
+        if !self.searching() {
+            let response = ui.interact(rect, ui.id().with(("group", label)), Sense::click());
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{label}, {count}")));
+            if response.hovered() {
+                color = theme::palette(ui).text;
+                ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if response.clicked() {
+                action = Some(Action::ToggleGroup(label.to_owned()));
+            }
+        }
+        let at = rect.left_bottom() + Vec2::new(4.0, -4.0);
+        ui.painter().text(at, Align2::LEFT_BOTTOM, self.heading_text(label, count), egui::FontId::proportional(13.0), color);
+        action
+    }
+
+    /// A folded date in the filmstrip: a chip in place of its thumbnails.
+    fn chip(&self, ui: &mut egui::Ui, rect: Rect, label: &str, count: usize) -> Option<Action> {
+        let response = ui.interact(rect, ui.id().with(("group", label)), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{label}, {count}")));
+        let p = theme::palette(ui);
+        let fill = if response.hovered() { p.hover } else { p.raised };
+        ui.painter().rect_filled(rect, 8.0, fill);
+        let center = rect.center();
+        ui.painter().text(center - Vec2::new(0.0, 24.0), Align2::CENTER_CENTER, icon::CARET_RIGHT, egui::FontId::proportional(16.0), p.muted);
+        ui.painter().text(center, Align2::CENTER_CENTER, label, egui::FontId::proportional(12.0), p.text);
+        ui.painter().text(center + Vec2::new(0.0, 18.0), Align2::CENTER_CENTER, format!("({count})"), egui::FontId::proportional(12.0), p.muted);
+        response.clicked().then(|| Action::ToggleGroup(label.to_owned()))
+    }
+
+    /// Folds or unfolds a date, and remembers it. What's open in the editor stays open.
+    fn toggle_group(&mut self, label: &str) {
+        if !self.collapsed.remove(label) {
+            self.collapsed.insert(label.to_owned());
+            // Out of sight, so not selected: a bulk action shouldn't reach what can't be seen.
+            let today = Day::local(SystemTime::now());
+            let hidden: Vec<&PathBuf> = self.entries.iter().filter(|e| group_label(Day::local(e.modified), today) == label).map(|e| &e.path).collect();
+            self.selected.retain(|p| !hidden.contains(&p));
+        }
+        self.env.set_text_setting(FOLDED_SETTING, &folded_text(&self.collapsed));
     }
 
     /// Where the library goes (left or bottom), and the screenshots folder; added right to left.
@@ -242,9 +349,12 @@ impl App {
         let mut rows = Vec::new();
         for (n, &i) in visible.iter().enumerate() {
             if n == 0 || labels[n] != labels[n - 1] {
-                rows.push(Row::Header(labels[n].clone()));
+                let count = labels[n..].iter().take_while(|l| **l == labels[n]).count();
+                rows.push(Row::Header(labels[n].clone(), count));
             }
-            rows.push(Row::Item(i));
+            if !self.folded(&labels[n]) {
+                rows.push(Row::Item(i));
+            }
         }
         let total: f32 = rows.iter().map(Row::height).sum();
 
@@ -259,9 +369,11 @@ impl App {
                 if y + h >= viewport.min.y && y <= viewport.max.y {
                     let rect = Rect::from_min_size(origin + Vec2::new(0.0, y), Vec2::new(width, h));
                     match row {
-                        Row::Header(label) => {
-                            let at = rect.left_bottom() + Vec2::new(4.0, -8.0);
-                            ui.painter().text(at, Align2::LEFT_BOTTOM, label, egui::FontId::proportional(13.0), theme::palette(ui).muted);
+                        Row::Header(label, count) => {
+                            let text = Rect::from_min_max(rect.min, rect.max - Vec2::new(0.0, 4.0));
+                            if let Some(done) = self.heading(ui, text, label, *count) {
+                                action = Some(done);
+                            }
                         }
                         Row::Item(i) => {
                             if let Some(done) = self.item(ui, rect, *i) {
@@ -279,7 +391,8 @@ impl App {
     /// The bottom filmstrip: thumbnails side by side, with each date's label above its first one
     /// (kept in view while its screenshots are). Only columns in view are drawn.
     fn strip(&mut self, ui: &mut egui::Ui, visible: &[usize], labels: &[String]) -> Option<Action> {
-        let (xs, total) = strip_columns(labels);
+        let folded = if self.searching() { HashSet::new() } else { self.collapsed.clone() };
+        let (xs, total) = strip_columns(labels, &folded);
 
         let mut action = None;
         egui::ScrollArea::horizontal().auto_shrink(false).show_viewport(ui, |ui, viewport| {
@@ -296,11 +409,19 @@ impl App {
             while n < visible.len() {
                 // One date's columns: n..end.
                 let end = (n..visible.len()).find(|&m| labels[m] != labels[n]).unwrap_or(visible.len());
-                let (start_x, end_x) = (xs[n], xs[end - 1] + COLUMN_WIDTH);
-                if end_x >= viewport.min.x && start_x <= viewport.max.x {
+                let is_folded = folded.contains(&labels[n]);
+                let (start_x, end_x) = (xs[n], if is_folded { xs[n] + FOLDED_WIDTH } else { xs[end - 1] + COLUMN_WIDTH });
+                if end_x >= viewport.min.x && start_x <= viewport.max.x && is_folded {
+                    let rect = Rect::from_min_size(origin + Vec2::new(start_x, LABEL_HEIGHT + 8.0), Vec2::new(FOLDED_WIDTH, THUMB.y));
+                    if let Some(done) = self.chip(ui, rect, &labels[n], end - n) {
+                        action = Some(done);
+                    }
+                } else if end_x >= viewport.min.x && start_x <= viewport.max.x {
                     let label_x = sticky_label_x(start_x, end_x, viewport.min.x);
-                    let at = origin + Vec2::new(label_x + 4.0, LABEL_HEIGHT - 4.0);
-                    ui.painter().text(at, Align2::LEFT_BOTTOM, &labels[n], egui::FontId::proportional(13.0), theme::palette(ui).muted);
+                    let heading = Rect::from_min_size(origin + Vec2::new(label_x, 0.0), Vec2::new(self.heading_width(ui, &labels[n], end - n), LABEL_HEIGHT));
+                    if let Some(done) = self.heading(ui, heading, &labels[n], end - n) {
+                        action = Some(done);
+                    }
                     for m in n..end {
                         if xs[m] + COLUMN_WIDTH >= viewport.min.x && xs[m] <= viewport.max.x {
                             let rect = Rect::from_min_size(origin + Vec2::new(xs[m], LABEL_HEIGHT), Vec2::new(COLUMN_WIDTH, ROW_HEIGHT));
@@ -485,11 +606,30 @@ mod tests {
     #[test]
     fn filmstrip_gaps_only_where_the_date_changes() {
         let labels: Vec<String> = ["Today", "Today", "Yesterday", "March 2026", "March 2026"].map(String::from).into();
-        let (xs, total) = strip_columns(&labels);
+        let (xs, total) = strip_columns(&labels, &HashSet::new());
         let c = COLUMN_WIDTH;
         assert_eq!(xs, [0.0, c, 2.0 * c + GROUP_GAP, 3.0 * c + 2.0 * GROUP_GAP, 4.0 * c + 2.0 * GROUP_GAP]);
         assert_eq!(total, 5.0 * c + 2.0 * GROUP_GAP);
-        assert_eq!(strip_columns(&[]), (vec![], 0.0));
+        assert_eq!(strip_columns(&[], &HashSet::new()), (vec![], 0.0));
+    }
+
+    #[test]
+    fn a_folded_date_is_one_narrow_column() {
+        let labels: Vec<String> = ["Today", "Yesterday", "Yesterday", "Yesterday", "March 2026"].map(String::from).into();
+        let folded: HashSet<String> = ["Yesterday".to_string(), "Last year".to_string()].into();
+        let (xs, total) = strip_columns(&labels, &folded);
+        let (c, f) = (COLUMN_WIDTH, FOLDED_WIDTH);
+        let yesterday = c + GROUP_GAP;
+        assert_eq!(xs, [0.0, yesterday, yesterday, yesterday, yesterday + f + GROUP_GAP]);
+        assert_eq!(total, yesterday + f + GROUP_GAP + c);
+    }
+
+    #[test]
+    fn folded_dates_are_kept_without_today() {
+        let folded: HashSet<String> = ["Yesterday", "March 2026", "Today"].map(String::from).into();
+        assert_eq!(folded_text(&folded), "March 2026\nYesterday");
+        assert_eq!(parse_folded("March 2026\nToday\n\n  Yesterday \n"), ["March 2026", "Yesterday"].map(String::from).into());
+        assert!(parse_folded("").is_empty());
     }
 
     #[test]

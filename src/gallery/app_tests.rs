@@ -33,8 +33,18 @@ fn harness(name: &str) -> Harness<'static, App> {
 
 /// With `step_dt` seconds per frame (kittest's default is 0.25 s, too slow for a double click).
 fn harness_at(name: &str, step_dt: f32) -> Harness<'static, App> {
-    let dir = fixtures(name);
-    let mut h = Harness::builder().with_size(SIZE).with_step_dt(step_dt).build_eframe(move |cc| App::new(&cc.egui_ctx, Env::sandbox(dir), None));
+    harness_set_up(name, step_dt, |_| {})
+}
+
+/// With `setup` run on the sandbox (its settings) before the window opens.
+fn harness_with(name: &str, setup: impl FnOnce(&Env) + 'static) -> Harness<'static, App> {
+    harness_set_up(name, 0.25, setup)
+}
+
+fn harness_set_up(name: &str, step_dt: f32, setup: impl FnOnce(&Env) + 'static) -> Harness<'static, App> {
+    let env = Env::sandbox(fixtures(name));
+    setup(&env);
+    let mut h = Harness::builder().with_size(SIZE).with_step_dt(step_dt).build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
     settle(&mut h);
     h
 }
@@ -180,6 +190,73 @@ fn library_moves_to_the_bottom_and_back() {
     click(&mut h, "Library on the left");
     assert!(h.state().dock == Dock::Left);
     assert_eq!(h.state().env.setting(Dock::SETTING), Some(Dock::Left.to_setting()));
+}
+
+#[test]
+fn dates_fold_and_unfold_in_either_layout() {
+    for (dock, name) in [(Dock::Left, "kittest-fold-left"), (Dock::Bottom, "kittest-fold-bottom")] {
+        let mut h = harness_with(name, move |env| env.set_setting(Dock::SETTING, dock.to_setting()));
+        assert!(shows(&h, "Today, 2") && shows(&h, "Yesterday, 1") && shows(&h, "Screenshot c"), "dates with how many they have");
+
+        click(&mut h, "Yesterday, 1");
+        assert!(!shows(&h, "Screenshot c"), "folded away");
+        assert!(shows(&h, "Yesterday, 1") && shows(&h, "Screenshot a") && shows(&h, "Screenshot b"), "its heading stays, the rest is untouched");
+
+        click(&mut h, "Yesterday, 1");
+        assert!(shows(&h, "Screenshot c"), "unfolded again");
+    }
+}
+
+#[test]
+fn folding_the_open_ones_date_leaves_it_open_but_not_selected() {
+    let mut h = harness("kittest-fold-open");
+    click(&mut h, "Screenshot a");
+    assert_eq!(h.state().selected.len(), 1);
+    click(&mut h, "Today, 2");
+    assert!(!shows(&h, "Screenshot a"));
+    assert!(h.state().selected.is_empty(), "not selected where it can't be seen");
+    assert!(h.state().editor.as_ref().is_some_and(|e| e.doc.path.ends_with("Screenshot a.png")), "still open in the editor");
+}
+
+#[test]
+fn shift_click_skips_what_is_folded_away() {
+    let mut h = harness("kittest-fold-range");
+    // Older than a month, so its own date, below yesterday's.
+    let old = h.state().env.dir.join("Screenshot e.png");
+    image::RgbaImage::from_pixel(320, 200, image::Rgba([90, 90, 90, 255])).save(&old).unwrap();
+    std::fs::File::options().write(true).open(&old).unwrap().set_modified(SystemTime::now() - Duration::from_secs(400 * 24 * 60 * 60)).unwrap();
+    h.state_mut().rescan();
+    click(&mut h, "Yesterday, 1");
+    click(&mut h, "Screenshot a");
+    h.get_by_label("Screenshot e").click_modifiers(Modifiers::SHIFT);
+    settle(&mut h);
+    let names: HashSet<String> = h.state().selected.iter().map(|p| p.file_stem().unwrap().to_string_lossy().into_owned()).collect();
+    assert_eq!(names, ["Screenshot a", "Screenshot b", "Screenshot e"].map(String::from).into(), "not c, which is folded");
+}
+
+#[test]
+fn folded_dates_are_remembered_except_today() {
+    let mut h = harness("kittest-fold-saved");
+    click(&mut h, "Yesterday, 1");
+    click(&mut h, "Today, 2");
+    let saved = h.state().env.text_setting(library::FOLDED_SETTING).unwrap();
+    assert_eq!(saved, "Yesterday", "Today is always there when the library opens");
+
+    // A new window with the same settings.
+    let h = harness_with("kittest-fold-saved-again", move |env| env.set_text_setting(library::FOLDED_SETTING, &format!("Today\n{saved}")));
+    assert!(!shows(&h, "Screenshot c") && shows(&h, "Yesterday, 1"), "still folded");
+    assert!(shows(&h, "Screenshot a") && shows(&h, "Screenshot b"), "Today isn't, even if it was kept");
+}
+
+#[test]
+fn searching_shows_what_is_folded_away() {
+    let mut h = harness("kittest-fold-search");
+    click(&mut h, "Yesterday, 1");
+    assert!(!shows(&h, "Screenshot c"));
+    search(&mut h, "screenshot");
+    assert!(shows(&h, "Screenshot c"), "a match is shown, folded or not");
+    assert!(shows(&h, "Screenshot a") && shows(&h, "Screenshot b"));
+    assert!(!shows(&h, "Yesterday, 1"), "headings can't be folded while searching");
 }
 
 #[test]
@@ -726,10 +803,11 @@ mod snapshots {
             .with_pixels_per_point(1.0)
             .wgpu()
             .build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
-        // Until every thumbnail has loaded and every screenshot's text has been read.
+        // Until every thumbnail shown has loaded and every screenshot's text has been read.
         for _ in 0..200 {
             settle(&mut h);
-            if h.state().thumbs.len() == h.state().entries.len() && h.state().reading.is_empty() {
+            let app = h.state();
+            if (app.thumbs.len() == app.entries.len() || (!app.thumbs.is_empty() && app.requested.is_empty())) && app.reading.is_empty() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -766,6 +844,13 @@ mod snapshots {
     fn library_on_the_left() {
         let _gpu = super::super::tests::gpu();
         snapshot(&mut library("snap-left"), "library_left");
+    }
+
+    #[test]
+    fn library_with_a_date_folded() {
+        let _gpu = super::super::tests::gpu();
+        let mut h = window(fixtures("snap-folded"), SIZE, |env| env.set_text_setting(library::FOLDED_SETTING, "Yesterday"));
+        snapshot(&mut h, "library_folded");
     }
 
     #[test]

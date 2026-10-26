@@ -259,6 +259,8 @@ struct App {
     /// Where Shift+click ranges start.
     anchor: Option<PathBuf>,
     dock: Dock,
+    /// Dates folded in the library, by their heading (see `library::parse_folded`).
+    collapsed: HashSet<String>,
     /// What's known about each listed screenshot for search (see `search`).
     metas: HashMap<PathBuf, search::Meta>,
     /// When each one's meta file last changed, so a change made elsewhere (the automatic pusher
@@ -336,6 +338,7 @@ impl App {
             selected: HashSet::new(),
             anchor: None,
             dock: Dock::from_setting(env.setting(Dock::SETTING)),
+            collapsed: library::parse_folded(&env.text_setting(library::FOLDED_SETTING).unwrap_or_default()),
             metas: HashMap::new(),
             meta_times: HashMap::new(),
             reading: HashSet::new(),

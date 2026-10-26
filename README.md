@@ -299,8 +299,11 @@ Search finds screenshots by the words in them, the app and window they were capt
 recognition (Tesseract on Linux), in the background, and keeps it beside the screenshots in the hidden
 `.rsnip` folder; nothing leaves your computer. Hover a result to see where it came from and the line that
 matched. On Linux without Tesseract, search uses names only.
-The library groups screenshots by date (Today, Yesterday, This week, …). Ctrl+click and Shift+click
-select several, to copy them as files, delete them, pin them or drag them out together.
+The library groups screenshots by date (Today, Yesterday, This week, …), each heading saying how many
+it has. Click a heading to fold that date away, and again to bring it back; RSnip remembers which
+are folded (Today always starts unfolded), and a search shows what matches even in a folded date.
+Ctrl+click and Shift+click select several, to copy them as files, delete them, pin them or drag them
+out together.
 Recordings appear with an MP4/GIF badge and play in the library (below).
 Drag a library thumbnail into Explorer, a chat app or an email to drop the file there.
 Right-click a library thumbnail to open it externally, show it in Explorer, pin it, or move it to the Recycle Bin.
