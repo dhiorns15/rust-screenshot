@@ -300,8 +300,8 @@ here* / *End here*, and *Save trimmed copy* saves it beside the original as "…
 cut without re-encoding, so it's instant and loses nothing, but the cut starts on the keyframe at or
 before the start (recordings have one every second); GIFs are cut to the frame. On Linux, playing
 MP4s needs GStreamer's H.264 decoder (`gstreamer1.0-libav` on Debian and Ubuntu, which the `.deb`
-recommends). For a recording, *Copy* copies the file, to paste into a folder, chat or email
-(Windows), and *Export* saves a copy to another folder or shows it in its folder, selected (as
+recommends). For a recording, *Copy* copies the file, to paste into a folder, chat or email,
+and *Export* saves a copy to another folder or shows it in its folder, selected (as
 *Show in folder* does for screenshots, and in the library's right-click menu).
 
 ### Push to other places
