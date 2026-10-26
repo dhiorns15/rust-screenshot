@@ -271,6 +271,14 @@ editor, or in the player for a recording. The arrow keys move the selection, Ctr
 shown and Esc clears it. Search, dragging a thumbnail out, the right-click menu and the buttons for
 several selected ones work as in the library.
 
+In a window at least 900 pixels wide the gallery has an info panel on the right (drag its edge to
+resize it). For the selected screenshot or recording it shows a larger preview, its name, kind,
+dimensions (and length, for a recording), file size, date and time, the app and window it was
+captured from, where it has been pushed (with *Copy link* where the place gives one), whether it
+has annotations you can still edit, and the start of the text read from it (*Copy text* copies all
+of it), with *Open*, *Show in folder*, *Copy as file* and *Delete*. With several selected it adds up
+their size and offers the same bulk actions as the toolbar.
+
 | Tool | Key | |
 | --- | --- | --- |
 | Select | V | click an annotation to select it; drag to move it, drag its handles to resize it (arrows: drag either end) |

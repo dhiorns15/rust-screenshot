@@ -299,6 +299,12 @@ pub fn host() -> Host {
 
 /// The local calendar date of `t` as (year, month, day).
 pub fn local_date(t: SystemTime) -> (i32, u32, u32) {
+    let (year, month, day, ..) = local_time(t);
+    (year, month, day)
+}
+
+/// The local date and time of `t` as (year, month, day, hour, minute).
+pub fn local_time(t: SystemTime) -> (i32, u32, u32, u32, u32) {
     // FILETIME counts 100 ns ticks since 1601.
     let since_1970 = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
     let ticks = since_1970.as_nanos() as u64 / 100 + 116_444_736_000_000_000;
@@ -309,7 +315,7 @@ pub fn local_date(t: SystemTime) -> (i32, u32, u32) {
             local = utc;
         }
     }
-    (local.wYear as i32, local.wMonth as u32, local.wDay as u32)
+    (local.wYear as i32, local.wMonth as u32, local.wDay as u32, local.wHour as u32, local.wMinute as u32)
 }
 
 pub fn pin(img: &RgbaImage) -> Result<(), String> {

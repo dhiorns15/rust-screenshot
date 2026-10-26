@@ -380,6 +380,20 @@ fn layer_paths(path: &Path) -> Option<(PathBuf, PathBuf)> {
     Some((dir.join(format!("{name}.json")), dir.join(format!("{name}.base.png"))))
 }
 
+/// Whether `path` has saved annotations that still match it, so it opens editable: what
+/// `load_layers` would find, without decoding the base image or the shapes.
+pub fn has_layers(path: &Path) -> bool {
+    /// The start of a `Layers` file.
+    #[derive(Deserialize)]
+    struct Stamped {
+        version: u32,
+        png: FileStamp,
+    }
+    let Some((json, base)) = layer_paths(path) else { return false };
+    let Some(stamped) = std::fs::read(json).ok().and_then(|b| serde_json::from_slice::<Stamped>(&b).ok()) else { return false };
+    stamped.version == 1 && FileStamp::of(path).is_some_and(|now| now == stamped.png) && base.exists()
+}
+
 fn load_layers(path: &Path) -> Option<Snapshot> {
     let (json, base) = layer_paths(path)?;
     let layers: Layers = serde_json::from_slice(&std::fs::read(json).ok()?).ok()?;
@@ -966,6 +980,35 @@ mod tests {
         // Changing the PNG elsewhere makes the layers stale, so it opens flat.
         RgbaImage::from_pixel(60, 40, image::Rgba([0, 0, 0, 255])).save(&path).unwrap();
         assert!(Doc::open(&path).unwrap().current().shapes.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn has_layers_only_while_the_saved_edits_match_the_file() {
+        let dir = std::env::temp_dir().join(format!("rsnip-has-layers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shot.png");
+        RgbaImage::from_pixel(60, 40, image::Rgba([200, 200, 200, 255])).save(&path).unwrap();
+        assert!(!has_layers(&path), "never edited");
+
+        let mut doc = Doc::open(&path).unwrap();
+        doc.add(Shape::Redact { rect: Rect::from_min_size(Pos2::new(5.0, 5.0), Vec2::splat(10.0)), color: Color32::BLACK });
+        render(doc.current(), None).save(&path).unwrap();
+        doc.mark_saved(path.clone());
+        doc.save_layers(false).unwrap();
+        assert!(has_layers(&path));
+
+        let (json, base) = layer_paths(&path).unwrap();
+        std::fs::remove_file(&base).unwrap();
+        assert!(!has_layers(&path), "the original image is gone");
+        doc.save_layers(false).unwrap();
+        assert!(has_layers(&path));
+        std::fs::write(&json, b"not json").unwrap();
+        assert!(!has_layers(&path), "damaged");
+        doc.save_layers(false).unwrap();
+
+        RgbaImage::from_pixel(60, 40, image::Rgba([0, 0, 0, 255])).save(&path).unwrap();
+        assert!(!has_layers(&path), "the picture changed elsewhere");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

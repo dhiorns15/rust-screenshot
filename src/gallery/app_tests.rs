@@ -532,6 +532,132 @@ fn a_narrow_window_keeps_every_gallery_toolbar_button_clear() {
     }
 }
 
+/// The gallery with Screenshot b noted as captured from Chrome, read to say "Invoice 2026 / Total
+/// due", and pushed to Immich, which has a link. Returns it and Screenshot b's path.
+fn described(name: &str) -> (Harness<'static, App>, PathBuf) {
+    let dir = fixtures(name);
+    let env = Env::sandbox(dir.clone());
+    env.sandboxed().ocr_text.lock().unwrap().insert("Screenshot b.png".into(), "Invoice 2026\nTotal due".into());
+    env.set_setting(Page::SETTING, Page::Gallery.to_setting());
+    let immich = crate::push::Destination::new(crate::push::Kind::Immich { server: "https://photos.example.com".into() });
+    crate::push::save(&env, std::slice::from_ref(&immich));
+    let mut h = Harness::builder().with_size(SIZE).build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
+    for _ in 0..200 {
+        settle(&mut h);
+        if h.state().reading.is_empty() {
+            break;
+        }
+    }
+    let b = dir.join("Screenshot b.png");
+    super::search::record_source(&b, "Google Chrome", "Invoices - Acme");
+    super::search::record_push(&b, &immich.id, Some("https://example.com/b".into())).unwrap();
+    h.state_mut().rescan();
+    settle(&mut h);
+    (h, b)
+}
+
+#[test]
+fn the_info_panel_describes_a_screenshot() {
+    let (mut h, b) = described("kittest-info");
+    assert!(shows(&h, "Select a screenshot or recording to see its details."), "nothing selected yet");
+    click(&mut h, "Screenshot b");
+    let entry = h.state().entries.iter().find(|e| e.path == b).unwrap();
+    let (len, modified) = (entry.len, entry.modified);
+    for text in [
+        "Screenshot b.png".to_string(),
+        "PNG screenshot".into(),
+        "320 × 200 px".into(),
+        super::info::human_size(len),
+        super::info::date_and_time(modified),
+        "Google Chrome — Invoices - Acme".into(),
+        "Immich".into(),
+        "Invoice 2026\nTotal due".into(),
+    ] {
+        assert!(shows(&h, &text), "{text:?}");
+    }
+    assert!(!shows(&h, "Edited") && !shows(&h, "Length"), "not edited, and nothing to play");
+
+    click(&mut h, "Copy link");
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some("https://example.com/b"));
+    click(&mut h, "Copy text");
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some("Invoice 2026\nTotal due"));
+    click(&mut h, "Show in folder");
+    assert_eq!(h.state().env.sandboxed().shown_in_folder, std::slice::from_ref(&b));
+    click(&mut h, "Copy as file");
+    assert_eq!(h.state().env.sandboxed().copied_files, std::slice::from_ref(&b));
+    assert!(shows(&h, "Delete"));
+
+    // What isn't known is left out.
+    click(&mut h, "Screenshot a");
+    assert!(shows(&h, "Screenshot a.png") && !shows(&h, "From") && !shows(&h, "Pushed to") && !shows(&h, "Text"));
+
+    click(&mut h, "Open");
+    assert!(h.state().page == Page::Editor && h.state().editor.as_ref().is_some_and(|e| e.doc.path.ends_with("Screenshot a.png")));
+}
+
+#[test]
+fn the_info_panel_says_when_a_screenshot_has_annotations() {
+    let mut h = gallery("kittest-info-edited");
+    let a = h.state().env.dir.join("Screenshot a.png");
+    let mut doc = super::doc::Doc::open(&a).unwrap();
+    doc.add(super::doc::Shape::Redact { rect: egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0)), color: egui::Color32::BLACK });
+    render(doc.current(), None).save(&a).unwrap();
+    doc.mark_saved(a.clone());
+    doc.save_layers(false).unwrap();
+    h.state_mut().rescan();
+    click(&mut h, "Screenshot a");
+    assert!(shows(&h, "With annotations you can still change"));
+    click(&mut h, "Screenshot b");
+    assert!(!shows(&h, "Edited"), "only the one that has them");
+}
+
+#[test]
+fn the_info_panel_describes_a_recording() {
+    let (mut h, gif) = with_recording("kittest-info-recording");
+    click(&mut h, "Gallery");
+    click(&mut h, "Recording z");
+    let (width, height) = super::player::info(&gif).size.unwrap();
+    for text in ["Recording z.gif".to_string(), "GIF recording".into(), "0:02".into(), format!("{width} × {height} px")] {
+        assert!(shows(&h, &text), "{text:?}");
+    }
+    assert!(shows(&h, "Length"));
+}
+
+#[test]
+fn the_info_panel_totals_several_selected() {
+    let mut h = gallery("kittest-info-several");
+    click(&mut h, "Screenshot a");
+    h.get_by_label("Screenshot c").click_modifiers(Modifiers::COMMAND);
+    settle(&mut h);
+    let total: u64 = h.state().entries.iter().filter(|e| e.name != "Screenshot b").map(|e| e.len).sum();
+    assert!(shows(&h, &format!("2 selected, {} in all", super::info::human_size(total))));
+    assert!(shows(&h, "Delete (2)") && !shows(&h, "Screenshot a.png"), "the bulk actions, not one's details");
+
+    click(&mut h, "Copy as files (2)");
+    let names: Vec<String> = h.state().env.sandboxed().copied_files.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    assert_eq!(names, ["Screenshot a.png", "Screenshot c.png"]);
+}
+
+#[test]
+fn the_info_panel_needs_a_wide_window() {
+    let mut h = gallery("kittest-info-narrow");
+    click(&mut h, "Screenshot a");
+    assert!(shows(&h, "Show in folder"));
+    h.set_size(Vec2::new(800.0, 600.0));
+    settle(&mut h);
+    assert!(!shows(&h, "Show in folder") && shows(&h, "Screenshot a"), "the gallery keeps the room");
+    h.set_size(SIZE);
+    settle(&mut h);
+    assert!(shows(&h, "Show in folder"));
+}
+
+#[test]
+fn the_library_page_has_no_info_panel() {
+    let mut h = harness("kittest-info-editor");
+    click(&mut h, "Screenshot b");
+    assert!(!shows(&h, "Show in folder") && !shows(&h, "File size"));
+}
+
 #[test]
 fn the_gallery_has_the_right_click_menu() {
     let mut h = gallery("kittest-gallery-menu");
@@ -1149,6 +1275,30 @@ mod snapshots {
         let _gpu = super::super::tests::gpu();
         let mut h = window(fixtures("snap-gallery"), SIZE, |env| env.set_setting(Page::SETTING, Page::Gallery.to_setting()));
         snapshot(&mut h, "gallery");
+    }
+
+    #[test]
+    fn the_gallery_with_a_screenshot_described() {
+        let _gpu = super::super::tests::gpu();
+        let dir = fixtures("snap-gallery-info");
+        // Taller than usual, to show all three dates. On a day long gone, so the date shown
+        // does not change from one day to the next.
+        let b = dir.join("Screenshot b.png");
+        let taken = SystemTime::UNIX_EPOCH + Duration::from_secs(1_579_080_600);
+        std::fs::File::options().write(true).open(&b).unwrap().set_modified(taken).unwrap();
+        let immich = crate::push::Destination::new(crate::push::Kind::Immich { server: "https://photos.example.com".into() });
+        super::super::search::record_source(&b, "Google Chrome", "Invoices - Acme");
+        super::super::search::record_push(&b, &immich.id, Some("https://example.com/b".into())).unwrap();
+        let mut meta = super::super::search::load(&b);
+        meta.text = Some("Invoice 2026\nTotal due: 1,240.00\nPay by 30 November".into());
+        meta.stamp = super::super::doc::FileStamp::of(&b);
+        super::super::search::save(&b, &meta).unwrap();
+        let mut h = window(dir, Vec2::new(1280.0, 900.0), move |env| {
+            env.set_setting(Page::SETTING, Page::Gallery.to_setting());
+            crate::push::save(env, std::slice::from_ref(&immich));
+        });
+        click(&mut h, "Screenshot b");
+        snapshot(&mut h, "gallery_info");
     }
 
     #[test]

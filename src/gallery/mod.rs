@@ -28,6 +28,7 @@ mod doc;
 mod dragout;
 #[allow(clippy::module_inception)]
 mod gallery;
+mod info;
 mod library;
 mod platform;
 mod player;
@@ -297,6 +298,8 @@ struct App {
     descending: bool,
     /// A gallery item the keyboard moved the selection to, to scroll into view.
     reveal: Option<PathBuf>,
+    /// What the gallery's info panel read from the file it shows (see `info`).
+    details: Option<info::Details>,
     /// Dates folded in the library, by their heading (see `library::parse_folded`).
     collapsed: HashSet<String>,
     /// What's known about each listed screenshot for search (see `search`).
@@ -383,6 +386,7 @@ impl App {
             sort,
             descending: sort.descending(env.setting(gallery::Sort::DESCENDING)),
             reveal: None,
+            details: None,
             collapsed: library::parse_folded(&env.text_setting(library::FOLDED_SETTING).unwrap_or_default()),
             metas: HashMap::new(),
             meta_times: HashMap::new(),
@@ -1291,6 +1295,15 @@ impl eframe::App for App {
             .frame(egui::Frame::NONE.fill(p.panel).inner_margin(egui::Margin::symmetric(10, 4)))
             .show(ui, |ui| self.status_bar(ui));
         let library = egui::Frame::NONE.fill(p.panel).inner_margin(egui::Margin::same(10));
+        // Beside the gallery, if the window has the room.
+        if gallery && ui.available_width() >= info::MIN_WINDOW {
+            egui::Panel::right("info")
+                .frame(library)
+                .resizable(true)
+                .default_size(280.0)
+                .size_range(220.0..=420.0)
+                .show(ui, |ui| self.info(ui));
+        }
         match self.dock {
             _ if gallery => {}
             Dock::Left => {

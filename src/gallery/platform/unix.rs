@@ -467,10 +467,16 @@ pub fn new_path(dir: &Path, kind: &str, ext: &str) -> PathBuf {
 
 /// The local calendar date of `t` as (year, month, day).
 pub fn local_date(t: SystemTime) -> (i32, u32, u32) {
+    let (year, month, day, ..) = local_time(t);
+    (year, month, day)
+}
+
+/// The local date and time of `t` as (year, month, day, hour, minute).
+pub fn local_time(t: SystemTime) -> (i32, u32, u32, u32, u32) {
     let secs = t.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs() as libc::time_t);
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     unsafe { libc::localtime_r(&secs, &mut tm) };
-    (tm.tm_year + 1900, tm.tm_mon as u32 + 1, tm.tm_mday as u32)
+    (tm.tm_year + 1900, tm.tm_mon as u32 + 1, tm.tm_mday as u32, tm.tm_hour as u32, tm.tm_min as u32)
 }
 
 pub fn pin(_img: &RgbaImage) -> Result<(), String> {
