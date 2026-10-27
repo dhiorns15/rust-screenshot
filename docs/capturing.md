@@ -37,8 +37,9 @@ Voicemeeter or Elgato Wave Link, apps play to the mixer's own channels (Sonar's 
 Chat, say), and only the headphones or speakers it plays to have them all. If the output you
 picked isn't connected, RSnip records the default one and says so.
 
-The sound is AAC, 48 kHz stereo. Quiet stretches are recorded as silence, so the sound stays in
-step with the picture however long nothing plays.
+On Windows the sound is AAC, 48 kHz stereo. Quiet stretches are recorded as silence, so the sound
+stays in step with the picture however long nothing plays. On Linux it's AAC in MP4s and Opus in
+WebMs, and comes from the desktop's sound server: see [Sound](linux.md#sound) in RSnip on Linux.
 
 If the microphone can't be used, RSnip records without it and says so when the recording is
 saved. The usual reason is Windows' own privacy setting: under *Settings → Privacy & security →

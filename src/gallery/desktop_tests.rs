@@ -33,14 +33,17 @@ const SCREEN: (u32, u32) = (640, 480);
 #[derive(Default)]
 struct Picker {
     cancel: bool,
+    /// Shares a screen that's still: a new frame every few seconds, as GNOME sends one only when
+    /// something on it changes.
+    still: bool,
     asked: Vec<HashMap<String, OwnedValue>>,
 }
 
 /// The stand-in for GNOME's screen-cast picker: it shares a test picture, or cancels.
 struct ScreenCastBackend {
     picker: Arc<Mutex<Picker>>,
-    /// Asks for a new test picture, and gets back its PipeWire node.
-    screens: Mutex<Sender<Sender<u32>>>,
+    /// Asks for a new test picture (still or not), and gets back its PipeWire node.
+    screens: Mutex<Sender<(Sender<u32>, bool)>>,
 }
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.ScreenCast")]
@@ -62,12 +65,15 @@ impl ScreenCastBackend {
         _parent_window: String,
         _options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
-        if std::mem::take(&mut self.picker.lock().unwrap().cancel) {
+        let mut picker = self.picker.lock().unwrap();
+        if std::mem::take(&mut picker.cancel) {
             return (1, HashMap::new());
         }
+        let still = std::mem::take(&mut picker.still);
+        drop(picker);
         // A stream of its own each time, as GNOME starts one for each recording.
         let (tx, rx) = channel();
-        self.screens.lock().unwrap().send(tx).unwrap();
+        self.screens.lock().unwrap().send((tx, still)).unwrap();
         let node = rx.recv().unwrap();
         let props = HashMap::from([("size", Value::from((SCREEN.0 as i32, SCREEN.1 as i32))), ("source_type", Value::from(1u32))]);
         let streams = Value::from(vec![(node, props)]);
@@ -187,7 +193,7 @@ fn desktop() -> &'static Desktop {
         // Where recordings (and `pactl`) find the sound server the services start.
         std::env::set_var("PULSE_SERVER", sound_server(&runtime));
         // The services live as long as this thread: until the tests end.
-        let (screens, requests) = channel::<Sender<u32>>();
+        let (screens, requests) = channel::<(Sender<u32>, bool)>();
         let dir = runtime.clone();
         std::thread::spawn(move || run_services(&dir, requests));
         let picker = Arc::new(Mutex::new(Picker::default()));
@@ -232,7 +238,7 @@ fn service(program: &str, args: &[&str], runtime: &Path, log: &str) -> Child {
 /// end. Each picture has a viewer of its own as long as it's shared: RSnip connects to it more than
 /// once (a frame first, then the recording), and GStreamer's PipeWire output, unlike GNOME's, stops
 /// when its last viewer leaves.
-fn run_services(runtime: &Path, requests: Receiver<Sender<u32>>) {
+fn run_services(runtime: &Path, requests: Receiver<(Sender<u32>, bool)>) {
     let mut running = vec![service("pipewire", &[], runtime, "pipewire.log")];
     wait_for(|| runtime.join("pipewire-0").exists(), "PipeWire's socket");
     running.push(service("wireplumber", &[], runtime, "wireplumber.log"));
@@ -242,13 +248,13 @@ fn run_services(runtime: &Path, requests: Receiver<Sender<u32>>) {
     wait_for(|| runtime.join("pulse/native").exists(), "the sound server's socket");
     running.push(service("gst-launch-1.0", &["-q", "audiotestsrc", "is-live=true", "volume=0.5", "!", "pulsesink"], runtime, "tone.log"));
     let mut screen: Vec<Child> = Vec::new();
-    for (n, reply) in requests.into_iter().enumerate() {
+    for (n, (reply, still)) in requests.into_iter().enumerate() {
         for mut old in screen.drain(..) {
             let _ = old.kill();
             let _ = old.wait();
         }
         // BGRx, as GNOME shares the screen (a source without a format can't be negotiated).
-        let caps = format!("video/x-raw,format=BGRx,width={},height={},framerate=30/1", SCREEN.0, SCREEN.1);
+        let caps = format!("video/x-raw,format=BGRx,width={},height={},framerate={}", SCREEN.0, SCREEN.1, if still { "1/5" } else { "30/1" });
         let name = format!("rsnip-test-screen-{n}");
         let props = format!("stream-properties=props,media.class=Video/Source,node.name={name}");
         let source = ["-q", "videotestsrc", "is-live=true", "pattern=ball", "!", &caps, "!", "pipewiresink", "mode=provide", &props];
@@ -410,6 +416,46 @@ fn desktop_records_the_computers_sound() {
     assert!(has(b"vide") && has(b"soun") && has(b"mp4a"), "a video and a sound track");
     let level = sound_level(&recorded.path).expect("sound that plays");
     assert!((-30.0..0.0).contains(&level), "the tone, at {level} dB");
+}
+
+/// How much sound an MP4 has, in seconds, by decoding it: sound that was lost (a gap in its times)
+/// doesn't count.
+fn sound_seconds(path: &Path) -> f64 {
+    let raw = path.with_extension("raw");
+    let status = Command::new("gst-launch-1.0")
+        .args(["-q", "filesrc"])
+        .arg(format!("location={}", path.display()))
+        .args(["!", "qtdemux", "name=d", "d.audio_0", "!", "decodebin", "!", "audioconvert", "!", "audioresample", "!", "audio/x-raw,format=S16LE,rate=48000,channels=2", "!", "filesink"])
+        .arg(format!("location={}", raw.display()))
+        .status()
+        .unwrap();
+    assert!(status.success(), "the sound decodes");
+    let bytes = std::fs::metadata(&raw).unwrap().len();
+    let _ = std::fs::remove_file(raw);
+    bytes as f64 / (48_000.0 * 4.0)
+}
+
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_records_sound_over_a_still_screen() {
+    let desktop = desktop();
+    // Narration over a slide, say: the screen sends a frame every 5 s, the sound plays throughout.
+    desktop.picker.lock().unwrap().still = true;
+    let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
+    let dir = temp_dir("still");
+    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None };
+    let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
+    let started = Instant::now();
+    std::thread::sleep(Duration::from_secs(12));
+    let recorded = recording.stop().expect("recording finishes");
+    let length = started.elapsed().as_secs_f64();
+    assert_eq!(recorded.note, None);
+    let file = std::fs::read(&recorded.path).unwrap();
+    let seconds = mp4_seconds(&file).expect("a finished MP4");
+    let sound = sound_seconds(&recorded.path);
+    eprintln!("recorded for {length:.1} s: the file is {seconds:.1} s long, with {sound:.1} s of sound");
+    assert!(sound > length - 1.5, "{sound:.1} s of sound for {length:.1} s of recording");
+    assert!((-30.0..0.0).contains(&sound_level(&recorded.path).expect("sound that plays")));
 }
 
 /// How many programs are playing sound on the test sound server (the test tone is one).

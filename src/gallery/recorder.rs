@@ -214,22 +214,28 @@ fn plan_sound(format: &Format, audio: Result<AudioEncoder, String>, has: &impl F
         Some(None) => notes.push("No microphone was found, so it was recorded without one."),
         Some(Some(_)) => notes.push("The chosen microphone isn't connected, so it was recorded without one."),
     }
-    if wanted.len() > 1 && !has("audiomixer") {
-        // The mixer is in plugins-base, so this is a broken install more than anything.
-        return none("Mixing sound needs GStreamer's audiomixer (gstreamer1.0-plugins-base on Debian and Ubuntu), so it was recorded without sound.".into());
+    if !wanted.is_empty() && !(has("audiomixer") && has("audiotestsrc")) {
+        // Both are in plugins-base, so this is a broken install more than anything.
+        return none("Mixing sound needs GStreamer's audiomixer and audiotestsrc (gstreamer1.0-plugins-base on Debian and Ubuntu), so it was recorded without sound.".into());
     }
     let note = (!notes.is_empty()).then(|| notes.join(" "));
     ((!wanted.is_empty()).then_some(Sound { sources: wanted, encoder }), note)
 }
 
-/// The pipeline for `sound`, ending in the muxer `mux`: each source as 48 kHz stereo, mixed.
+/// Silence, mixed in with the sound: the mixer is live, so it goes on without a source that sends
+/// nothing (a microphone xrdp doesn't redirect, say), and keeps the sound in step meanwhile, as on
+/// Windows.
+const SILENCE: &str = "audiotestsrc wave=silence is-live=true";
+
+/// The pipeline for `sound`, ending in the muxer `mux`: each source as 48 kHz stereo, mixed with
+/// silence.
 fn audio_pipeline(sound: &Sound) -> String {
-    let chain = |source: &String| format!("{source} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! queue");
-    let encode = format!("audioconvert ! {} ! queue ! mux.", sound.encoder.settings);
-    match sound.sources.as_slice() {
-        [only] => format!("{} ! {encode}", chain(only)),
-        many => format!("{} audiomixer name=mix ! {encode}", many.iter().map(|s| format!("{} ! mix.", chain(s))).collect::<Vec<_>>().join(" ")),
-    }
+    let chain = |source: &str| format!("{source} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! queue ! mix.");
+    let sources: Vec<String> = sound.sources.iter().map(String::as_str).chain([SILENCE]).map(chain).collect();
+    // The muxer waits for the video, which comes only when the screen changes (see `source`), so
+    // the encoded sound waits in a queue with no limit (it's small) rather than holding up the
+    // sources, which would lose what they hear meanwhile.
+    format!("{} audiomixer name=mix ! audioconvert ! {} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=0 ! mux.", sources.join(" "), sound.encoder.settings)
 }
 
 /// What's missing for recording sound, for Settings: `mp4` if recordings are MP4s, `pactl` if
@@ -392,10 +398,11 @@ fn record_test_picture(encoder: &Encoder, audio: Option<&AudioEncoder>, path: &P
     let sound = audio.map(|&encoder| Sound { sources: vec!["audiotestsrc is-live=true wave=sine".into()], encoder });
     let args = video_pipeline("videotestsrc is-live=true ! videoconvert", (320, 240), area, 30, encoder, sound.as_ref(), path);
     let mut child = Command::new("gst-launch-1.0").args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("Couldn't start GStreamer: {e}"))?;
+    let said = said(&mut child);
     std::thread::sleep(length);
     unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
     if !child.wait().map_err(|e| e.to_string())?.success() {
-        return Err(failure(&mut child));
+        return Err(failure(said));
     }
     match std::fs::metadata(path) {
         Ok(m) if m.len() > 1000 => Ok(()),
@@ -467,8 +474,9 @@ fn gif_pipeline(node: u32, frame: (u32, u32), area: Option<Area>) -> (Vec<String
     (args(&["-q", "-e"], &pipeline, None), (w, h))
 }
 
-/// Runs `gst-launch-1.0` with `args`, reading PipeWire from `pipewire`.
-fn launch(args: &[String], pipewire: OwnedFd, stdout: Stdio) -> Result<Child, String> {
+/// Runs `gst-launch-1.0` with `args`, reading PipeWire from `pipewire`, and what it says (see
+/// `said`).
+fn launch(args: &[String], pipewire: OwnedFd, stdout: Stdio) -> Result<(Child, Option<JoinHandle<String>>), String> {
     let fd = pipewire.as_raw_fd();
     let mut command = Command::new("gst-launch-1.0");
     command.args(args).stdin(Stdio::null()).stdout(stdout).stderr(Stdio::piped());
@@ -476,39 +484,57 @@ fn launch(args: &[String], pipewire: OwnedFd, stdout: Stdio) -> Result<Child, St
     unsafe {
         command.pre_exec(move || if libc::dup2(fd, PIPEWIRE_FD) < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
     }
-    let child = command.spawn().map_err(|e| format!("Couldn't start GStreamer: {e}"))?;
+    let mut child = command.spawn().map_err(|e| format!("Couldn't start GStreamer: {e}"))?;
     drop(pipewire);
-    Ok(child)
+    let said = said(&mut child);
+    Ok((child, said))
+}
+
+/// Reads what a pipeline says on its standard error as it comes, so it never fills the pipe and
+/// holds the pipeline up (with GST_DEBUG set it says a lot), keeping the end of it.
+fn said(child: &mut Child) -> Option<JoinHandle<String>> {
+    let mut stderr = child.stderr.take()?;
+    Some(std::thread::spawn(move || {
+        let (mut kept, mut chunk) = (Vec::new(), [0; 4096]);
+        while let Ok(n @ 1..) = stderr.read(&mut chunk) {
+            kept.extend_from_slice(&chunk[..n]);
+            kept.drain(..kept.len().saturating_sub(16 * 1024));
+        }
+        String::from_utf8_lossy(&kept).into_owned()
+    }))
+}
+
+/// The last thing a pipeline that has ended said (see `said`), if anything.
+fn last_line(said: Option<JoinHandle<String>>) -> Option<String> {
+    let err = said.and_then(|s| s.join().ok())?;
+    err.lines().rev().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string())
 }
 
 /// What a failed pipeline said, last line first.
-fn failure(child: &mut Child) -> String {
-    let mut err = String::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_string(&mut err);
-    }
-    let line = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("it stopped").trim();
-    format!("GStreamer couldn't record: {line}")
+fn failure(said: Option<JoinHandle<String>>) -> String {
+    format!("GStreamer couldn't record: {}", last_line(said).as_deref().unwrap_or("it stopped"))
 }
 
 /// One frame of what's shared: to know its size, and to pick an area on.
 pub fn snapshot(cast: &ScreenCast) -> Result<image::RgbaImage, String> {
     let file = std::env::temp_dir().join(format!("rsnip-frame-{}.png", std::process::id()));
     let pipeline = format!("{} ! video/x-raw,format=RGBA ! pngenc snapshot=true ! filesink", source(cast.node));
-    let mut child = launch(&args(&["-q"], &pipeline, Some(&file)), cast.connect()?, Stdio::null())?;
+    let (mut child, said) = launch(&args(&["-q"], &pipeline, Some(&file)), cast.connect()?, Stdio::null())?;
     let deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
         }
         if Instant::now() > deadline {
+            // Waited for too, or it stays behind in the background process until that quits.
             let _ = child.kill();
+            let _ = child.wait();
             return Err("The screen recording sent no picture".into());
         }
         std::thread::sleep(Duration::from_millis(50));
     };
     if !status.success() {
-        return Err(failure(&mut child));
+        return Err(failure(said));
     }
     let frame = image::open(&file).map(|i| i.to_rgba8()).map_err(|e| format!("Couldn't read the first frame: {e}"));
     let _ = std::fs::remove_file(&file);
@@ -517,6 +543,8 @@ pub fn snapshot(cast: &ScreenCast) -> Result<image::RgbaImage, String> {
 
 pub struct Recording {
     child: Child,
+    /// What the pipeline says (see `said`).
+    said: Option<JoinHandle<String>>,
     pub path: PathBuf,
     /// Where it's written until it's finished (see `working_path`).
     working: PathBuf,
@@ -541,11 +569,11 @@ pub fn start(cast: &ScreenCast, frame: (u32, u32), area: Option<Area>, format: F
         let path = name("gif");
         let working = super::working_path(&path)?;
         let (args, size) = gif_pipeline(cast.node, frame, area);
-        let mut child = launch(&args, cast.connect()?, Stdio::piped())?;
+        let (mut child, said) = launch(&args, cast.connect()?, Stdio::piped())?;
         let frames = child.stdout.take().expect("piped");
         let file = std::fs::File::create(&working).map_err(|e| format!("Couldn't create {}: {e}", working.display()))?;
         let gif = std::thread::spawn(move || write_gif(frames, file, size));
-        let mut recording = Recording { child, path, working, started: Instant::now(), gif: Some(gif), note: None };
+        let mut recording = Recording { child, said, path, working, started: Instant::now(), gif: Some(gif), note: None };
         running(&mut recording)?;
         return Ok(recording);
     }
@@ -554,17 +582,23 @@ pub fn start(cast: &ScreenCast, frame: (u32, u32), area: Option<Area>, format: F
     let mut notes: Vec<String> = [video_note, sound_note].into_iter().flatten().collect();
     let path = name(encoder.extension);
     let working = super::working_path(&path)?;
+    let mut sound_error = None;
     loop {
         let args = video_pipeline(&source(cast.node), frame, area, format.fps.clamp(1, 60), &encoder, sound.as_ref(), &working);
-        let child = launch(&args, cast.connect()?, Stdio::null())?;
-        let mut recording = Recording { child, path: path.clone(), working: working.clone(), started: Instant::now(), gif: None, note: (!notes.is_empty()).then(|| notes.join(" ")) };
+        let (child, said) = launch(&args, cast.connect()?, Stdio::null())?;
+        let mut recording = Recording { child, said, path: path.clone(), working: working.clone(), started: Instant::now(), gif: None, note: None };
         match running(&mut recording) {
-            Ok(()) => return Ok(recording),
+            Ok(()) => {
+                // It was the sound only if it records without.
+                notes.extend(sound_error.map(|error| format!("Sound couldn't be recorded, so it was recorded without it. ({error})")));
+                recording.note = (!notes.is_empty()).then(|| notes.join(" "));
+                return Ok(recording);
+            }
             // The sound is the likeliest thing to stop it (the sound server went away, a device
             // is busy), and shouldn't stop the recording: it starts again without.
             Err(error) if sound.is_some() => {
                 sound = None;
-                notes.push(format!("Sound couldn't be recorded, so it was recorded without it. ({error})"));
+                sound_error = Some(error);
             }
             Err(error) => return Err(error),
         }
@@ -576,11 +610,22 @@ pub fn start(cast: &ScreenCast, frame: (u32, u32), area: Option<Area>, format: F
 fn running(recording: &mut Recording) -> Result<(), String> {
     std::thread::sleep(Duration::from_millis(800));
     if recording.child.try_wait().map_err(|e| e.to_string())?.is_some() {
-        let error = failure(&mut recording.child);
+        let error = failure(recording.said.take());
         let _ = std::fs::remove_file(&recording.working);
         return Err(error);
     }
     Ok(())
+}
+
+/// Whether a video whose pipeline didn't end properly (it failed, or had to be killed) can be
+/// kept: mp4mux writes an MP4's index (moov) last, and nothing plays one without it (a reserved
+/// index at the start would mean megabytes more in every file); a WebM plays without its end.
+fn playable(path: &Path) -> bool {
+    if path.extension().is_some_and(|e| e == "mp4") {
+        crate::mp4::Movie::open(path).is_ok()
+    } else {
+        std::fs::metadata(path).is_ok_and(|m| m.len() > 1000)
+    }
 }
 
 impl Recording {
@@ -588,25 +633,38 @@ impl Recording {
     pub fn stop(mut self) -> Result<Recorded, String> {
         unsafe { libc::kill(self.child.id() as i32, libc::SIGINT) };
         let deadline = Instant::now() + Duration::from_secs(20);
+        let mut late = false;
         let status = loop {
             if let Some(status) = self.child.try_wait().map_err(|e| e.to_string())? {
                 break status;
             }
             if Instant::now() > deadline {
+                late = true;
                 let _ = self.child.kill();
                 break self.child.wait().map_err(|e| e.to_string())?;
             }
             std::thread::sleep(Duration::from_millis(50));
         };
-        if let Some(gif) = self.gif.take() {
+        let gif = self.gif.take();
+        let is_gif = gif.is_some();
+        if let Some(gif) = gif {
             gif.join().unwrap_or_else(|_| Err("The GIF encoder stopped unexpectedly".into()))?;
         }
-        let written = std::fs::metadata(&self.working).is_ok_and(|m| m.len() > 0);
-        if !status.success() && !written {
-            return Err(failure(&mut self.child));
+        let mut note = self.note;
+        if !status.success() {
+            let why = if late { Some("it took more than 20 seconds".to_string()) } else { last_line(self.said.take()) };
+            let why = why.map_or(String::new(), |w| format!(" ({w})"));
+            // RSnip's own encoder finishes a GIF, whatever the pipeline did.
+            let kept = if is_gif { std::fs::metadata(&self.working).is_ok_and(|m| m.len() > 0) } else { playable(&self.working) };
+            if !kept {
+                let _ = std::fs::remove_file(&self.working);
+                return Err(format!("GStreamer stopped before it finished the recording{why}, so it can't be played"));
+            }
+            let stopped = format!("GStreamer stopped before it finished the recording{why}, so its end may be missing.");
+            note = Some(note.map_or(stopped.clone(), |n| format!("{n} {stopped}")));
         }
         super::finish_recording(&self.working, &self.path)?;
-        Ok(Recorded { path: self.path, note: self.note })
+        Ok(Recorded { path: self.path, note })
     }
 
     /// The pipeline ended by itself (the shared window closed, say).
@@ -714,22 +772,24 @@ mod tests {
 
     #[test]
     fn sound_comes_from_the_monitor_and_the_microphone() {
-        let computer = "pulsesrc device=@DEFAULT_MONITOR@ do-timestamp=true ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! queue";
-        let default_mic = "pulsesrc do-timestamp=true ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! queue";
-        let chosen_mic = "pulsesrc device=alsa_input.usb-Headset.mono do-timestamp=true ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! queue";
-        let aac = "audioconvert ! fdkaacenc bitrate=160000 ! queue ! mux.";
+        let lane = "audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! queue ! mix.";
+        let computer = format!("pulsesrc device=@DEFAULT_MONITOR@ do-timestamp=true ! {lane}");
+        let default_mic = format!("pulsesrc do-timestamp=true ! {lane}");
+        let chosen_mic = format!("pulsesrc device=alsa_input.usb-Headset.mono do-timestamp=true ! {lane}");
+        // Silence, so neither the mixer nor the muxer waits for a source that sends nothing.
+        let silence = format!("audiotestsrc wave=silence is-live=true ! {lane}");
+        // The encoded sound waits for the video as long as it takes.
+        let unbounded = "queue max-size-buffers=0 max-size-bytes=0 max-size-time=0 ! mux.";
+        let aac = format!("audiomixer name=mix ! audioconvert ! fdkaacenc bitrate=160000 ! {unbounded}");
         let pipeline = |format: Format, mp4| audio_pipeline(&sound_for(&format, mp4));
-        // One source goes straight to the encoder; more are mixed first.
-        assert_eq!(pipeline(asked(true, None), true), format!("{computer} ! {aac}"));
-        assert_eq!(pipeline(asked(false, Some(None)), true), format!("{default_mic} ! {aac}"));
-        assert_eq!(pipeline(asked(false, Some(Some("alsa_input.usb-Headset.mono"))), true), format!("{chosen_mic} ! {aac}"));
-        assert_eq!(pipeline(asked(true, Some(None)), true), format!("{computer} ! mix. {default_mic} ! mix. audiomixer name=mix ! {aac}"));
-        assert_eq!(
-            pipeline(asked(true, Some(Some("alsa_input.usb-Headset.mono"))), true),
-            format!("{computer} ! mix. {chosen_mic} ! mix. audiomixer name=mix ! {aac}")
-        );
+        // Every source is mixed, with the silence.
+        assert_eq!(pipeline(asked(true, None), true), format!("{computer} {silence} {aac}"));
+        assert_eq!(pipeline(asked(false, Some(None)), true), format!("{default_mic} {silence} {aac}"));
+        assert_eq!(pipeline(asked(false, Some(Some("alsa_input.usb-Headset.mono"))), true), format!("{chosen_mic} {silence} {aac}"));
+        assert_eq!(pipeline(asked(true, Some(None)), true), format!("{computer} {default_mic} {silence} {aac}"));
+        assert_eq!(pipeline(asked(true, Some(Some("alsa_input.usb-Headset.mono"))), true), format!("{computer} {chosen_mic} {silence} {aac}"));
         // WebM has Opus.
-        assert_eq!(pipeline(asked(true, None), false), format!("{computer} ! audioconvert ! opusenc bitrate=160000 ! queue ! mux."));
+        assert_eq!(pipeline(asked(true, None), false), format!("{computer} {silence} audiomixer name=mix ! audioconvert ! opusenc bitrate=160000 ! {unbounded}"));
     }
 
     #[test]
@@ -793,7 +853,7 @@ mod tests {
             let (sound, note) = plan_sound(format, audio_encoder(true, &has), &has, &|| server.clone());
             (sound.map(|s| s.sources.len()), note)
         };
-        let installed = &["avenc_aac", "pulsesrc", "audiomixer"];
+        let installed = &["avenc_aac", "pulsesrc", "audiomixer", "audiotestsrc"];
         // Nothing asked for, nothing to say.
         assert_eq!(plan(&asked(false, None), &[], None), (None, None));
         assert_eq!(plan(&asked(true, Some(None)), installed, server()), (Some(2), None));
@@ -811,9 +871,9 @@ mod tests {
         );
         // A speaker's monitor isn't a microphone.
         assert_eq!(plan(&asked(false, Some(Some("alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"))), installed, server()).0, None);
-        // Mixing needs the mixer; one source doesn't.
-        assert!(plan(&asked(true, Some(None)), &["avenc_aac", "pulsesrc"], server()).1.unwrap().starts_with("Mixing sound needs GStreamer's audiomixer"));
-        assert_eq!(plan(&asked(true, None), &["avenc_aac", "pulsesrc"], server()), (Some(1), None));
+        // Even one source is mixed (with silence), which needs the mixer and the silence.
+        assert!(plan(&asked(true, Some(None)), &["avenc_aac", "pulsesrc", "audiotestsrc"], server()).1.unwrap().starts_with("Mixing sound needs GStreamer's audiomixer and audiotestsrc"));
+        assert_eq!(plan(&asked(true, None), &["avenc_aac", "pulsesrc", "audiomixer"], server()).0, None);
     }
 
     #[test]
@@ -897,6 +957,68 @@ mod tests {
             let marker = if encoder.extension == "mp4" { &b"mp4a"[..] } else { b"A_OPUS" };
             let file = std::fs::read(&path).unwrap();
             assert_eq!(file.windows(marker.len()).any(|w| w == marker), audio.is_some(), "{} has sound if it can", encoder.element);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A sound source that sends nothing (a microphone xrdp doesn't redirect, say; here an appsrc
+    /// never fed) doesn't hold the recording up: the silence mixed in keeps it going, and it
+    /// finishes when it's stopped.
+    #[test]
+    fn a_silent_sound_source_doesnt_hold_up_the_recording() {
+        let (encoder, _) = encoder(false);
+        let audio = audio_encoder(encoder.extension == "mp4", &installed);
+        if available().is_err() || !installed("videotestsrc") || encoder.extension != "mp4" || audio.is_err() {
+            return eprintln!("skipped: no GStreamer MP4 with sound");
+        }
+        let dir = std::env::temp_dir().join(format!("rsnip-silent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (path, working) = (dir.join("Recording.mp4"), dir.join("working.mp4"));
+        let nothing = "appsrc is-live=true format=time caps=audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved";
+        let sound = Sound { sources: vec![nothing.into()], encoder: audio.unwrap() };
+        let args = video_pipeline("videotestsrc is-live=true ! videoconvert", (320, 240), None, 30, &encoder, Some(&sound), &working);
+        let mut child = Command::new("gst-launch-1.0").args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+        let said = said(&mut child);
+        std::thread::sleep(Duration::from_secs(2));
+        let recording = Recording { child, said, path: path.clone(), working, started: Instant::now(), gif: None, note: None };
+        let recorded = recording.stop().expect("it finishes");
+        assert_eq!(recorded.note, None, "it ended properly");
+        let movie = crate::mp4::Movie::open(&path).unwrap();
+        assert!(movie.has_sound() && movie.duration() > Duration::from_millis(1000), "the picture, with a sound track: {:?}", movie.duration());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A recording whose pipeline dies part way (killed here, as a crash would) isn't said to be
+    /// saved when it can't be played: an MP4 has no index then. A WebM plays, so it's kept, with a
+    /// note.
+    #[test]
+    fn a_pipeline_that_dies_doesnt_save_a_broken_file() {
+        if available().is_err() || !installed("videotestsrc") {
+            return eprintln!("skipped: no GStreamer");
+        }
+        let dir = std::env::temp_dir().join(format!("rsnip-died-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mp4, _) = encoder(false);
+        for encoder in [mp4, WEBM].into_iter().filter(|e| e.parts().all(installed)) {
+            let path = dir.join(format!("Recording.{}", encoder.extension));
+            let working = dir.join(format!("working.{}", encoder.extension));
+            let args = video_pipeline("videotestsrc is-live=true ! videoconvert", (320, 240), None, 30, &encoder, None, &working);
+            let mut child = Command::new("gst-launch-1.0").args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+            let said = said(&mut child);
+            std::thread::sleep(Duration::from_millis(1500));
+            child.kill().unwrap();
+            let recording = Recording { child, said, path: path.clone(), working: working.clone(), started: Instant::now(), gif: None, note: Some("Noted.".into()) };
+            let stopped = recording.stop();
+            if encoder.extension == "mp4" {
+                assert_eq!(stopped.err().as_deref(), Some("GStreamer stopped before it finished the recording, so it can't be played"));
+                assert!(!path.exists() && !working.exists(), "nothing left behind");
+            } else {
+                let note = stopped.expect("a WebM plays unfinished").note.unwrap();
+                assert_eq!(note, "Noted. GStreamer stopped before it finished the recording, so its end may be missing.");
+                if installed("vp8dec") {
+                    super::super::player::can_play(&path).unwrap();
+                }
+            }
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

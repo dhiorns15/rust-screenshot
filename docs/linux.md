@@ -70,10 +70,17 @@ need an AAC encoder: `fdkaacenc`, `avenc_aac` (in `gstreamer1.0-libav`) or `voaa
 `.rpm` recommend them, and `install.sh` checks for them. Ubuntu doesn't have
 `fdkaacenc`, but the other two are there.
 
-Sound never stops a recording: if there's no AAC encoder, the sound server can't be reached, or
-the microphone isn't connected, RSnip records without that part and says so in the "Recording
-saved" notification. `rsnip --check-recording` also records a test tone and says whether sound
-works, and which microphones it found.
+Sound doesn't stop a recording from starting: if there's no AAC encoder, the sound server can't be
+reached, the microphone isn't connected, or the sound fails as the recording starts, RSnip records
+without that part and says so in the "Recording saved" notification. Quiet stretches, a still
+screen and a microphone that sends nothing are recorded as silence, so the sound stays in step with
+the picture. `rsnip --check-recording` also records a test tone and says whether sound works, and
+which microphones it found.
+
+If GStreamer stops part way through a recording (the sound server goes away, say), an MP4 can't be
+played, because its index is written when it's finished: RSnip says it couldn't save the recording
+rather than keeping a file that won't open. A WebM is kept, and the notification says its end may
+be missing.
 
 
 ## The icon in the top bar or panel
