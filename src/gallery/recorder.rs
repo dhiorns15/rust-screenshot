@@ -362,7 +362,7 @@ pub fn check(hevc: bool) -> Result<String, String> {
     let audio = audio_encoder(encoder.extension == "mp4", &|e| installed(e));
     let asked = Format { gif: false, hevc, fps: 30, sound: Some(None), microphone: None };
     let sound_note = plan_sound(&asked, audio.clone(), &|e| installed(e), &sources).1;
-    let dir = std::env::temp_dir().join(format!("rsnip-check-{}", std::process::id()));
+    let dir = super::platform::runtime_dir().join(format!("check-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
     let path = dir.join(format!("check.{}", encoder.extension));
     let recorded = record_test_picture(&encoder, audio.as_ref().ok(), &path, Duration::from_millis(1500));
@@ -517,7 +517,7 @@ fn failure(said: Option<JoinHandle<String>>) -> String {
 
 /// One frame of what's shared: to know its size, and to pick an area on.
 pub fn snapshot(cast: &ScreenCast) -> Result<image::RgbaImage, String> {
-    let file = std::env::temp_dir().join(format!("rsnip-frame-{}.png", std::process::id()));
+    let file = super::platform::runtime_dir().join(format!("frame-{}.png", std::process::id()));
     let pipeline = format!("{} ! video/x-raw,format=RGBA ! pngenc snapshot=true ! filesink", source(cast.node));
     let (mut child, said) = launch(&args(&["-q"], &pipeline, Some(&file)), cast.connect()?, Stdio::null())?;
     let deadline = Instant::now() + Duration::from_secs(10);

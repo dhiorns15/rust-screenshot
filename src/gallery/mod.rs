@@ -54,6 +54,8 @@ pub use settings_window::run as run_settings;
 pub use background::{capture, quit as quit_background, record, run as run_background};
 #[cfg(not(windows))]
 pub use screenshot::{Capture, Mode as CaptureMode};
+#[cfg(not(windows))]
+pub use platform::runtime_dir;
 
 /// `rsnip --pick-area <frame> [purpose]`: prints the area picked on the frame (see `pick_area`).
 #[cfg(not(windows))]
@@ -623,6 +625,10 @@ impl App {
     fn copy_as_file(&mut self) {
         let Some(img) = self.rendered() else { return };
         let name = self.editor.as_ref().unwrap().doc.path.file_name().unwrap_or_default().to_owned();
+        // On Linux in this user's own folder (see `runtime_dir`), as /tmp is shared.
+        #[cfg(not(windows))]
+        let dir = platform::runtime_dir().join("copied");
+        #[cfg(windows)]
         let dir = std::env::temp_dir().join("RSnip");
         let path = dir.join(name).with_extension("png");
         let result = std::fs::create_dir_all(&dir)

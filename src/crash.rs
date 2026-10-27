@@ -32,7 +32,16 @@ pub fn dir() -> PathBuf {
     } else {
         var("XDG_STATE_HOME").or_else(|| var("HOME").map(|h| h.join(".local").join("state"))).map(|d| d.join("rsnip"))
     };
-    base.unwrap_or_else(|| std::env::temp_dir().join("rsnip")).join("crashes")
+    base.unwrap_or_else(fallback_dir).join("crashes")
+}
+
+/// Where reports go without a home folder: on Linux this user's own folder (see `runtime_dir`),
+/// not the shared /tmp, where another user could have made `rsnip` first.
+fn fallback_dir() -> PathBuf {
+    #[cfg(not(windows))]
+    return crate::gallery::runtime_dir();
+    #[cfg(windows)]
+    return std::env::temp_dir().join("rsnip");
 }
 
 /// Writes a report for every panic, then reports it as before (on a console, if there is one).
@@ -595,6 +604,14 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn reports_without_a_home_folder_stay_out_of_the_shared_temp_folder() {
+        let dir = fallback_dir();
+        assert_eq!(dir, crate::gallery::runtime_dir());
+        assert_ne!(dir, std::env::temp_dir().join("rsnip"));
+    }
 
     fn panic_at(time: u64) -> Panic {
         Panic {
