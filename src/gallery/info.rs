@@ -13,8 +13,9 @@ use super::{doc, platform, player, theme, App, Entry};
 pub(super) const MIN_WINDOW: f32 = 900.0;
 /// How much of a screenshot's text the panel shows.
 const TEXT_SHOWN: usize = 300;
-/// And of its description; the rest is there when it's hovered.
-const DESCRIPTION_SHOWN: usize = 360;
+/// And of its description, which is shown whole: a description is a few hundred characters, so this
+/// only keeps a runaway answer from filling the panel (the rest is there when it's hovered).
+const DESCRIPTION_SHOWN: usize = 2000;
 /// The preview is never taller than this.
 const PREVIEW_HEIGHT: f32 = 260.0;
 

@@ -112,16 +112,20 @@ pub fn matches(query: &str, name: &str, meta: &Meta) -> bool {
     words(query).iter().all(|w| fields.iter().any(|f| f.contains(w.as_str())))
 }
 
-/// The first line of text, or else of the description, with a word of `query` in it, shortened.
-pub fn matched_line<'a>(query: &str, meta: &'a Meta) -> Option<&'a str> {
+/// The first line of text, or else of the description, with a word of `query` in it, shortened (a
+/// description's first line is a sentence or two, so it gets more room than a line of text).
+pub fn matched_line(query: &str, meta: &Meta) -> Option<String> {
+    fn found<'a>(text: &'a Option<String>, words: &[String]) -> Option<&'a str> {
+        text.iter().flat_map(|t| t.lines()).map(str::trim).find(|l| {
+            let l = l.to_lowercase();
+            words.iter().any(|w| l.contains(w.as_str()))
+        })
+    }
     let words = words(query);
-    let line = [&meta.text, &meta.description].into_iter().flatten().flat_map(|t| t.lines()).map(str::trim).find(|l| {
-        let l = l.to_lowercase();
-        words.iter().any(|w| l.contains(w.as_str()))
-    })?;
-    Some(match line.char_indices().nth(120) {
-        Some((end, _)) => &line[..end],
-        None => line,
+    let (line, max) = found(&meta.text, &words).map(|l| (l, 120)).or_else(|| found(&meta.description, &words).map(|l| (l, 400)))?;
+    Some(match line.char_indices().nth(max) {
+        Some((end, _)) => format!("{}…", line[..end].trim_end()),
+        None => line.to_owned(),
     })
 }
 
@@ -166,8 +170,8 @@ mod tests {
         assert!(matches("BAR chart", "Screenshot 1", &m));
         assert!(matches("revenue q3 chrome", "Screenshot 1", &m), "any field, any word");
         assert!(!matches("pie", "Screenshot 1", &m));
-        assert_eq!(matched_line("revenue", &m), Some("Keywords: chart, revenue"));
-        assert_eq!(matched_line("q3", &m), Some("Q3"), "the text first");
+        assert_eq!(matched_line("revenue", &m).as_deref(), Some("Keywords: chart, revenue"));
+        assert_eq!(matched_line("q3", &m).as_deref(), Some("Q3"), "the text first");
         assert_eq!(describe("revenue", &m).unwrap(), "Google Chrome — Sales\n“Keywords: chart, revenue”");
     }
 
@@ -192,11 +196,16 @@ mod tests {
     #[test]
     fn describes_the_source_and_the_matching_line() {
         let m = meta("Google Chrome", "Invoices - Acme", "Total due\n   Invoice #42 for March  ");
-        assert_eq!(matched_line("invoice", &m), Some("Invoice #42 for March"));
+        assert_eq!(matched_line("invoice", &m).as_deref(), Some("Invoice #42 for March"));
         assert_eq!(describe("invoice", &m).unwrap(), "Google Chrome — Invoices - Acme\n“Invoice #42 for March”");
         assert_eq!(describe("", &Meta::default()), None);
         let long = meta("", "", &"x".repeat(500));
-        assert_eq!(matched_line("x", &long).unwrap().len(), 120);
+        assert_eq!(matched_line("x", &long), Some(format!("{}…", "x".repeat(120))));
+        // A description's first line has more room.
+        let mut described = Meta { description: Some(format!("{}\nKeywords: y", "y".repeat(500))), ..Meta::default() };
+        assert_eq!(matched_line("y", &described), Some(format!("{}…", "y".repeat(400))));
+        described.description = Some("A short one.".into());
+        assert_eq!(matched_line("short", &described).as_deref(), Some("A short one."));
     }
 
     #[test]

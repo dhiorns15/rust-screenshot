@@ -1560,6 +1560,13 @@ fn the_info_panel_shows_the_description_and_which_model_wrote_it() {
     assert!(shows(&h, "Invoice 2026\nTotal due"), "and the text read from it");
     click(&mut h, "Screenshot a");
     assert!(!shows(&h, "Description") && !shows(&h, "Described by claude-opus-5-5"), "only what has one");
+
+    // A long one, as Claude writes them (some 350 to 700 characters), is shown whole.
+    let long = format!("{}\nKeywords: terminal, Rust, cargo build, release folder, rsnip, rust-screenshot", "A Windows desktop with a terminal building a Rust project. ".repeat(10));
+    super::search::record_description(&b, &long, "claude-sonnet-5-5").unwrap();
+    h.state_mut().metas.insert(b.clone(), super::search::load(&b));
+    click(&mut h, "Screenshot b");
+    assert!(shows(&h, long.trim()), "keywords and all");
 }
 
 #[test]

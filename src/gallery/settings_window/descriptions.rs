@@ -22,8 +22,8 @@ use crate::options;
 
 type Answer<T> = Receiver<Result<T, String>>;
 
-/// How much of the test's description is shown.
-const SAMPLE_SHOWN: usize = 300;
+/// How much of the test's description is shown: all of one, unless the answer runs away.
+const SAMPLE_SHOWN: usize = 2000;
 
 #[derive(Default)]
 pub struct DescribeState {
