@@ -764,6 +764,25 @@ fn a_crash_since_last_time_is_mentioned_once() {
     assert!(h.query_by_label("RSnip closed unexpectedly. Report it").is_none());
 }
 
+#[test]
+fn a_new_version_is_installed_from_settings_where_it_can_be() {
+    let release = crate::update::Release { version: crate::update::Version::new(99, 0, 0), page: "https://example.com/v99".into(), installer: None, deb: None, rpm: None };
+    for can_install in [true, false] {
+        let mut h = harness(&format!("kittest-update-{can_install}"));
+        h.state().env.sandboxed().can_install = can_install;
+        h.state_mut().newer = Some(release.clone());
+        settle(&mut h);
+        h.get_by_label("RSnip 99.0.0 is available").click();
+        settle(&mut h);
+        let sandbox = h.state().env.sandboxed();
+        if can_install {
+            assert_eq!((sandbox.update_settings_opened, sandbox.opened.len()), (1, 0), "Settings → Updates, to install it");
+        } else {
+            assert_eq!((sandbox.update_settings_opened, &sandbox.opened[..]), (0, &[std::path::PathBuf::from("https://example.com/v99")][..]), "the download page");
+        }
+    }
+}
+
 /// A library whose sandbox "reads" `text` in Screenshot b, once the reader has finished.
 /// Opens the Copy text tool on screenshot a, with `lines` of text "read" from it, and waits for it.
 fn copy_text(name: &str, lines: &[&str]) -> Harness<'static, App> {

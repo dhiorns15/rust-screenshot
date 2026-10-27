@@ -132,6 +132,13 @@ pub fn open_recording_settings() {
     }
 }
 
+/// Opens the Settings window on Updates, checking for one.
+pub fn open_update_settings() {
+    if let Ok(exe) = std::env::current_exe() {
+        reap(Command::new(exe).args(["--settings", "--updates"]).spawn());
+    }
+}
+
 /// Opens the library window.
 pub fn open_library() {
     spawn_self(&[]);

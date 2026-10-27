@@ -127,6 +127,11 @@ pub fn open_recording_settings() {
     spawn_self(&["--settings", "--recording"]);
 }
 
+/// Opens the Settings window on Updates, checking for one.
+pub fn open_update_settings() {
+    spawn_self(&["--settings", "--updates"]);
+}
+
 /// Where the capture panel goes: where it was last moved to (`moved_to`, its top left), if that's
 /// still on a screen; else by `at` (where the tray icon was clicked), else by the cursor. Either
 /// way inside the work area of that screen.

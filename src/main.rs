@@ -167,6 +167,7 @@ mod tests {
         assert_eq!(action("--settings"), Action::Settings);
         assert_eq!(action("--settings --system-info"), Action::Settings, "Settings, on System info");
         assert_eq!(action("--settings --recording"), Action::Settings, "Settings, on Recording");
+        assert_eq!(action("--settings --updates"), Action::Settings, "Settings, on Updates");
         assert_eq!(action("--capture-panel"), Action::CapturePanel);
         assert_eq!(action("--tray"), Action::Tray);
         assert_eq!(action("--record"), Action::Record);

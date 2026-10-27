@@ -96,6 +96,7 @@ pub struct Sandbox {
     pub settings_opened: usize,
     pub system_info_opened: usize,
     pub recording_settings_opened: usize,
+    pub update_settings_opened: usize,
     pub library_opened: usize,
     /// Captures started straight away (from a capture panel that stays open).
     pub captures_started: Vec<&'static str>,
@@ -422,6 +423,15 @@ impl Env {
         match &self.sandbox {
             Some(s) => s.borrow_mut().recording_settings_opened += 1,
             None => platform::open_recording_settings(),
+        }
+    }
+
+    /// Opens Settings on Updates, checking for one (from the library's "is available" link, where
+    /// this copy can install it).
+    pub fn open_update_settings(&self) {
+        match &self.sandbox {
+            Some(s) => s.borrow_mut().update_settings_opened += 1,
+            None => platform::open_update_settings(),
         }
     }
 

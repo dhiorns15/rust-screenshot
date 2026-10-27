@@ -143,7 +143,7 @@ editor, bind a key to a command such as `grim -g "$(slurp)" ~/RSnip/shot-$(date 
 Settings live in `~/.config/rsnip/settings.json`, or open *Settings* from the library. When a new
 version is out, the library's status bar links to it. It checks once each time the library opens,
 using `curl` or, if that isn't installed (as on Ubuntu), `wget`; turn it off in *Settings → Updates*.
-If RSnip came from its `.deb` or `.rpm`, *Settings → Updates → Install* downloads the new package,
+If RSnip came from its `.deb` or `.rpm`, the link opens *Settings → Updates*, where *Install* downloads the new package,
 checks it against GitHub's SHA-256, installs it with your package manager (asking for your
 password) and offers to restart RSnip. Otherwise, download the new version and run `./install.sh`
 again.

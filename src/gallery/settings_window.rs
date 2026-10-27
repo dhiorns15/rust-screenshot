@@ -52,8 +52,10 @@ pub fn run() {
         ..Default::default()
     };
     // `--system-info`: opened to report a crash. `--recording`: from the capture panel.
+    // `--updates`: from the library's "is available" link, to install it.
     let system_info = std::env::args().any(|a| a == "--system-info");
     let recording = std::env::args().any(|a| a == "--recording");
+    let updates = std::env::args().any(|a| a == "--updates");
     let _ = eframe::run_native(
         TITLE,
         options,
@@ -63,6 +65,9 @@ pub fn run() {
                 app.section = Section::SystemInfo;
             } else if recording {
                 app.section = Section::Recording;
+            } else if updates {
+                app.section = Section::Updates;
+                app.update = UpdateCheck::Checking(app.env.check_for_update(&cc.egui_ctx));
             }
             Ok(Box::new(app))
         }),

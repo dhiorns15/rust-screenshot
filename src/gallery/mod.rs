@@ -1215,8 +1215,13 @@ impl App {
                 }
                 if let Some(release) = &self.newer {
                     let link = ui.link(format!("RSnip {} is available", release.version));
-                    if link.on_hover_text(&release.page).clicked() {
-                        platform::open(Path::new(&release.page));
+                    // Installed where this copy can (from the .deb or .rpm), else downloaded.
+                    if self.env.can_install_update() {
+                        if link.on_hover_text("Install it from Settings → Updates").clicked() {
+                            self.env.open_update_settings();
+                        }
+                    } else if link.on_hover_text(&release.page).clicked() {
+                        self.env.open(Path::new(&release.page));
                     }
                 }
                 let Some(editor) = self.editor.as_mut().filter(|_| editing) else { return };
