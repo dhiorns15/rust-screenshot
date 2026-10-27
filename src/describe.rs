@@ -163,6 +163,9 @@ fn describe_jpeg(service: &Service, model: &str, jpeg: &[u8]) -> Result<Describe
                     {"type": "text", "text": PROMPT},
                 ]}],
             });
+            if NO_EFFORT.iter().any(|m| is_model(model, m)) {
+                body.as_object_mut().map(|b| b.remove("output_config"));
+            }
             let mut headers = anthropic_headers(service);
             if takes_fallback(model) {
                 headers.push(("anthropic-beta", ANTHROPIC_FALLBACK.to_owned()));
@@ -194,9 +197,11 @@ fn takes_fallback(model: &str) -> bool {
     FALLBACK_MODELS.iter().any(|m| is_model(model, m))
 }
 
-/// Whether `model` is `id`, or a dated snapshot of it (`id-20261001`).
+/// Whether `model` is `id`, or a dated snapshot of it (Anthropic's `id-20261001`, OpenAI's
+/// `id-2026-10-01`).
 fn is_model(model: &str, id: &str) -> bool {
-    model == id || model.strip_prefix(id).and_then(|rest| rest.strip_prefix('-')).is_some_and(|date| !date.is_empty() && date.bytes().all(|b| b.is_ascii_digit()))
+    let dated = |date: &str| date.starts_with(|c: char| c.is_ascii_digit()) && date.bytes().all(|b| b.is_ascii_digit() || b == b'-');
+    model == id || model.strip_prefix(id).and_then(|rest| rest.strip_prefix('-')).is_some_and(dated)
 }
 
 /// Sends a request to the service, and returns the reply if it succeeded.
@@ -307,25 +312,81 @@ pub fn models(service: &Service) -> Result<Vec<Model>, Problem> {
 }
 
 /// Whether an OpenAI model id is one that takes an image and answers in text: GPT models, except
-/// those for making images, speech, embeddings, search and the like.
+/// those for making images, speech, embeddings, search and the like, and the first ones, which
+/// read text only (GPT-3.5, and GPT-4 before GPT-4 Turbo).
 fn reads_images(id: &str) -> bool {
     const NOT: [&str; 8] = ["image", "realtime", "audio", "tts", "transcribe", "embedding", "search", "live"];
-    id.starts_with("gpt-") && !NOT.iter().any(|word| id.contains(word))
+    let text_only = id.starts_with("gpt-3.5") || ((id == "gpt-4" || id.starts_with("gpt-4-")) && !is_model(id, "gpt-4-turbo"));
+    id.starts_with("gpt-") && !text_only && !NOT.iter().any(|word| id.contains(word))
 }
 
 // What it costs.
 
-/// Dollars per million tokens in and out, for the models whose prices are known.
-const PRICES: [(Provider, &str, f64, f64); 8] = [
-    (Provider::Anthropic, "claude-opus-5-5", 4.0, 20.0),
-    (Provider::Anthropic, "claude-sonnet-5-5", 2.0, 10.0),
-    (Provider::Anthropic, "claude-haiku-5-5", 0.10, 0.50),
-    (Provider::Anthropic, "claude-fable-5-1", 10.0, 50.0),
-    (Provider::OpenAi, "gpt-6-astra", 10.0, 50.0),
-    (Provider::OpenAi, "gpt-6.1-sol", 2.0, 10.0),
-    (Provider::OpenAi, "gpt-6.1-terra", 1.0, 5.0),
-    (Provider::OpenAi, "gpt-6-luna", 0.10, 0.50),
+/// How a model counts a picture's tokens.
+#[derive(Clone, Copy)]
+enum Vision {
+    /// Claude's: about a token for each 750 pixels.
+    Pixels,
+    /// 32 pixel patches, at most 2500, times this.
+    Patches(f64),
+    /// This many, and this many more for each 512 pixel tile once the shorter side is at most 768.
+    Tiles(f64, f64),
+}
+
+use Vision::{Patches, Pixels, Tiles};
+
+/// Dollars per million tokens in and out, and how pictures are counted, for the models whose prices
+/// are known: what each provider lists (with Anthropic's and OpenAI's prices as of October 2026).
+const PRICES: [(Provider, &str, f64, f64, Vision); 45] = [
+    (Provider::Anthropic, "claude-fable-5-1", 10.0, 50.0, Pixels),
+    (Provider::Anthropic, "claude-mythos-5-1", 10.0, 50.0, Pixels),
+    (Provider::Anthropic, "claude-fable-5", 10.0, 50.0, Pixels),
+    (Provider::Anthropic, "claude-mythos-5", 10.0, 50.0, Pixels),
+    (Provider::Anthropic, "claude-opus-5-5", 4.0, 20.0, Pixels),
+    (Provider::Anthropic, "claude-opus-5", 5.0, 25.0, Pixels),
+    (Provider::Anthropic, "claude-opus-4-8", 5.0, 25.0, Pixels),
+    (Provider::Anthropic, "claude-opus-4-7", 5.0, 25.0, Pixels),
+    (Provider::Anthropic, "claude-opus-4-6", 5.0, 25.0, Pixels),
+    (Provider::Anthropic, "claude-opus-4-5", 5.0, 25.0, Pixels),
+    (Provider::Anthropic, "claude-sonnet-5-5", 2.0, 10.0, Pixels),
+    (Provider::Anthropic, "claude-sonnet-5", 2.0, 10.0, Pixels),
+    (Provider::Anthropic, "claude-sonnet-4-6", 3.0, 15.0, Pixels),
+    (Provider::Anthropic, "claude-sonnet-4-5", 3.0, 15.0, Pixels),
+    (Provider::Anthropic, "claude-haiku-5-5", 0.10, 0.50, Pixels),
+    (Provider::Anthropic, "claude-haiku-4-5", 1.0, 5.0, Pixels),
+    (Provider::OpenAi, "gpt-6-astra", 10.0, 50.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-6.1-sol", 2.0, 10.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-6.1-terra", 1.0, 5.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-6-sol", 2.0, 10.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-6-luna", 0.10, 0.50, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5.6-sol", 4.0, 20.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5.6-terra", 2.0, 12.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5.6-luna", 0.20, 1.20, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5.5", 5.0, 30.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5.5-pro", 30.0, 180.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5.4", 2.50, 15.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5.4-pro", 30.0, 180.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5.4-mini", 0.75, 4.50, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5.4-nano", 0.20, 1.25, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5.3-codex", 1.75, 14.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5.2", 1.75, 14.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5.2-pro", 21.0, 168.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5.1", 1.25, 10.0, Tiles(70.0, 140.0)),
+    (Provider::OpenAi, "gpt-5", 1.25, 10.0, Tiles(70.0, 140.0)),
+    (Provider::OpenAi, "gpt-5-pro", 15.0, 120.0, Tiles(70.0, 140.0)),
+    (Provider::OpenAi, "gpt-5-mini", 0.25, 2.0, Patches(1.2)),
+    (Provider::OpenAi, "gpt-5-nano", 0.05, 0.40, Patches(1.5)),
+    (Provider::OpenAi, "gpt-4.1", 2.0, 8.0, Tiles(85.0, 170.0)),
+    (Provider::OpenAi, "gpt-4.1-mini", 0.40, 1.60, Patches(1.62)),
+    (Provider::OpenAi, "gpt-4.1-nano", 0.10, 0.40, Patches(2.46)),
+    (Provider::OpenAi, "gpt-4o", 2.50, 10.0, Tiles(85.0, 170.0)),
+    (Provider::OpenAi, "gpt-4o-2024-05-13", 5.0, 15.0, Tiles(85.0, 170.0)),
+    (Provider::OpenAi, "gpt-4o-mini", 0.15, 0.60, Tiles(2833.0, 5667.0)),
+    (Provider::OpenAi, "gpt-4-turbo", 10.0, 30.0, Tiles(85.0, 170.0)),
 ];
+
+/// The Claude models that don't take an effort level (they don't think unless asked to).
+const NO_EFFORT: [&str; 2] = ["claude-sonnet-4-5", "claude-haiku-4-5"];
 
 /// The prompt, in tokens.
 const PROMPT_TOKENS: f64 = 120.0;
@@ -343,13 +404,18 @@ pub const TYPICAL_SIZE: (u32, u32) = (1920, 1080);
 /// What it costs, about, to describe a screenshot of `size` pixels, in dollars (`None` for a model
 /// whose price isn't known).
 pub fn cost(provider: Provider, model: &str, size: (u32, u32)) -> Option<f64> {
-    let (_, _, input, output) = PRICES.iter().find(|(p, id, ..)| *p == provider && is_model(model, id))?;
+    let ours = PRICES.iter().filter(|(p, ..)| *p == provider);
+    // "gpt-4o-2024-05-13" has a price of its own; other snapshots have their model's.
+    let (.., input, output, vision) = ours.clone().find(|(_, id, ..)| model == *id).or_else(|| ours.clone().find(|(_, id, ..)| is_model(model, id)))?;
     let (width, height) = fit(size.0, size.1);
-    let image = match provider {
-        // About a token for each 750 pixels.
-        Provider::Anthropic => (f64::from(width) * f64::from(height) / 750.0).ceil(),
-        // 32 pixel patches, at most 2500, and a fifth more.
-        Provider::OpenAi => (f64::from(width.div_ceil(32)) * f64::from(height.div_ceil(32))).min(2500.0) * 1.2,
+    let (w, h) = (f64::from(width), f64::from(height));
+    let image = match *vision {
+        Pixels => (w * h / 750.0).ceil(),
+        Patches(times) => (f64::from(width.div_ceil(32)) * f64::from(height.div_ceil(32))).min(2500.0) * times,
+        Tiles(base, tile) => {
+            let shrink = (768.0 / w.min(h)).min(1.0);
+            base + tile * ((w * shrink / 512.0).ceil() * (h * shrink / 512.0).ceil())
+        }
     };
     Some(((image + PROMPT_TOKENS) * input + answer_tokens(provider) * output) / 1_000_000.0)
 }
@@ -543,6 +609,19 @@ mod tests {
     }
 
     #[test]
+    fn models_without_effort_levels_arent_given_one() {
+        let reply = || json!({"model": "m", "stop_reason": "end_turn", "content": [{"type": "text", "text": "A page."}]}).to_string();
+        let (server, requests) = serve_each(vec![("200 OK", "", reply()), ("200 OK", "", reply()), ("200 OK", "", reply())]);
+        let service = at(Provider::Anthropic, &server);
+        for model in ["claude-haiku-4-5-20251001", "claude-sonnet-4-5", "claude-sonnet-4-6"] {
+            describe(&service, model, &big_shot("effort")).unwrap();
+        }
+        let bodies: Vec<Value> = requests.join().unwrap().iter().map(json).collect();
+        assert!(bodies[0].get("output_config").is_none() && bodies[1].get("output_config").is_none(), "they'd refuse it");
+        assert_eq!(bodies[2]["output_config"], json!({"effort": "low"}));
+    }
+
+    #[test]
     fn the_model_that_answered_is_the_one_noted() {
         let reply = json!({"model": "claude-sonnet-5-5", "stop_reason": "end_turn", "content": [{"type": "text", "text": "A page."}]}).to_string();
         let (server, _) = serve_each(vec![("200 OK", "", reply)]);
@@ -679,11 +758,16 @@ mod tests {
 
     #[test]
     fn openai_models_are_the_ones_that_read_images_and_write_text() {
-        let ids = ["gpt-6.1-sol", "whisper-1", "gpt-6-luna", "gpt-image-2", "gpt-realtime-2", "gpt-6-audio", "gpt-6-mini-tts", "gpt-6-transcribe", "text-embedding-4", "gpt-6-search", "gpt-6-live", "o9", "gpt-6-astra"];
+        let ids = [
+            "gpt-6.1-sol", "whisper-1", "gpt-6-luna", "gpt-image-2", "gpt-realtime-2", "gpt-6-audio", "gpt-6-mini-tts", "gpt-6-transcribe", "text-embedding-4", "gpt-6-search", "gpt-6-live", "o9", "gpt-6-astra",
+            // Text only.
+            "gpt-3.5-turbo", "gpt-3.5-turbo-0125", "gpt-4", "gpt-4-0613", "gpt-4-turbo-preview",
+            "gpt-4-turbo", "gpt-4-turbo-2024-04-09", "gpt-4o",
+        ];
         let data: Vec<Value> = ids.iter().map(|id| json!({"id": id, "object": "model"})).collect();
         let (server, requests) = serve_each(vec![("200 OK", "", json!({"object": "list", "data": data}).to_string())]);
         let found = models(&at(Provider::OpenAi, &server)).unwrap();
-        assert_eq!(found.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol"]);
+        assert_eq!(found.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["gpt-4-turbo", "gpt-4-turbo-2024-04-09", "gpt-4o", "gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol"]);
         let request = requests.join().unwrap().remove(0);
         assert_eq!((request.method.as_str(), request.path.as_str(), request.header("Authorization")), ("GET", "/v1/models", Some("Bearer sk-test-key")));
     }
@@ -707,6 +791,16 @@ mod tests {
         // (49 × 28 patches × 1.2 + 120) × $2 + 100 × $10, per million.
         assert_eq!(about(Provider::OpenAi, "gpt-6.1-sol"), Some(0.45));
         assert_eq!(about(Provider::OpenAi, "gpt-6.1-sol-20261001"), Some(0.45), "a dated snapshot");
+        assert_eq!(about(Provider::OpenAi, "gpt-6.1-sol-2026-10-01"), Some(0.45), "OpenAI's way of dating them");
+        assert_eq!(about(Provider::Anthropic, "claude-haiku-4-5-20251001"), Some(0.35));
+        // Tiles: 1568 × 882 is 1365 × 768 at most 768 high, so 3 × 2 tiles: (85 + 6 × 170 + 120) × $2.50
+        // + 100 × $10, per million.
+        assert_eq!(about(Provider::OpenAi, "gpt-4o"), Some(0.41));
+        assert_eq!(about(Provider::OpenAi, "gpt-4o-2024-08-06"), Some(0.41));
+        assert_eq!(about(Provider::OpenAi, "gpt-4o-2024-05-13"), Some(0.76), "this snapshot has a price of its own");
+        assert_eq!(about(Provider::OpenAi, "gpt-4o-mini"), Some(0.56), "cheap tokens, but many of them for a picture");
+        // (1372 patches × 2.46 + 120) × $0.10 + 100 × $0.40, per million.
+        assert_eq!(about(Provider::OpenAi, "gpt-4.1-nano"), Some(0.04));
         assert_eq!(about(Provider::OpenAi, "gpt-9"), None);
         assert_eq!(about(Provider::Anthropic, "gpt-6.1-sol"), None, "the other provider's");
         // A small picture costs less than a big one.

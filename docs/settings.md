@@ -26,9 +26,11 @@ for what's in it ("bar chart", "login page", "error dialog") and not only the wo
   Manager, or the desktop's keyring on Linux, like the passwords of **Push to**, never in RSnip's
   settings.
 - **Model**: listed from the provider once a key is saved. The default is `claude-opus-5-5` for
-  Anthropic and `gpt-6.1-sol` for OpenAI. Under it, Settings says about what 100 screenshots cost with
-  that model (from the published prices of the models it knows, "cost unknown" for others), so you can
-  pick a smaller, cheaper one if you like. A description is a sentence or two and a few keywords.
+  Anthropic and `gpt-6.1-sol` for OpenAI. The drop-down shows about what 100 screenshots cost with each
+  model, and the line under it the chosen one's, so you can pick a smaller, cheaper one if you like.
+  The costs come from the providers' published prices (October 2026) and how each model counts a
+  picture's tokens, for a 1080p screenshot; a model RSnip doesn't know the price of shows "?". A
+  description is a sentence or two and a few keywords.
 - **Test** describes a small sample picture, to see that the key and model work.
 - **Describe the library** is for the screenshots from before you turned this on. It first says how
   many there are and about what that comes to, and only asks the provider once you agree. It then

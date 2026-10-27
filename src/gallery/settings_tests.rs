@@ -1432,4 +1432,25 @@ mod description_snapshots {
         settle(&mut h);
         h.snapshot("settings_descriptions");
     }
+
+    #[test]
+    fn the_models_with_their_costs() {
+        let _gpu = super::super::tests::gpu();
+        let mut env = Env::sandbox(tests::sandbox_dir("snap-settings-describe-models"));
+        env.tray_app = true;
+        env.set_setting(options::DESCRIBE.name, 1);
+        env.sandboxed().secrets.insert("describe-anthropic".into(), "sk-ant-saved".into());
+        let ids = ["claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-haiku-5-5", "claude-opus-4-8", "claude-opus-5-5", "claude-sonnet-4-6", "claude-sonnet-5-5", "claude-mystery-1"];
+        env.sandboxed().models = Some(Ok(ids.into_iter().map(|id| Model { id: id.into() }).collect()));
+        let mut h = Harness::builder().with_size(Vec2::new(800.0, 900.0)).with_pixels_per_point(1.0).wgpu().build_eframe(move |cc| SettingsApp::new(&cc.egui_ctx, env));
+        settle(&mut h);
+        open(&mut h, Section::Library);
+        settle(&mut h);
+        h.get_by_value("claude-opus-5-5").click();
+        h.remove_cursor();
+        settle(&mut h);
+        assert!(h.query_by_label("$1.39").is_some() && h.query_by_label("$0.35").is_some(), "each with its cost");
+        assert!(h.query_by_label("?").is_some(), "one without a known price");
+        h.snapshot("settings_describe_models");
+    }
 }

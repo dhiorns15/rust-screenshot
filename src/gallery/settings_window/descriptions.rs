@@ -233,11 +233,21 @@ impl SettingsApp {
             let loaded = !list.is_empty();
             ui.add_enabled_ui(loaded, |ui| {
                 combo.show_ui(ui, |ui| {
-                    for m in list {
-                        if ui.selectable_label(m.id == model, &m.id).clicked() {
-                            pick = Some(m.id.clone());
+                    // Each with what 100 screenshots would cost, to compare them.
+                    let muted = theme::palette(ui).muted;
+                    egui::Grid::new("describe-models").num_columns(2).show(ui, |ui| {
+                        ui.label("");
+                        ui.label(RichText::new("Per 100").small().color(muted));
+                        ui.end_row();
+                        for m in list {
+                            if ui.selectable_label(m.id == model, &m.id).clicked() {
+                                pick = Some(m.id.clone());
+                            }
+                            let price = describe::cost(provider, &m.id, describe::TYPICAL_SIZE).map_or("?".to_owned(), |each| describe::dollars(each * 100.0));
+                            ui.label(RichText::new(price).color(muted));
+                            ui.end_row();
                         }
-                    }
+                    });
                     // One chosen before that the provider no longer lists is still the one used.
                     if !list.iter().any(|m| m.id == model) {
                         let _ = ui.selectable_label(true, model);
