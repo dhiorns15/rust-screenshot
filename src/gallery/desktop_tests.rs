@@ -670,10 +670,10 @@ fn desktop_icon_records_and_takes_screenshots() {
 }
 
 /// An X server for the clipboard to live in, until dropped; DISPLAY points at it meanwhile.
-struct XServer(Child);
+pub(super) struct XServer(Child);
 
 impl XServer {
-    fn start(display: u32) -> XServer {
+    pub(super) fn start(display: u32) -> XServer {
         let server = Command::new("Xvfb").args([format!(":{display}"), "-nolisten".into(), "tcp".into()]).stderr(Stdio::null()).spawn().expect("couldn't start Xvfb");
         std::env::set_var("DISPLAY", format!(":{display}"));
         std::env::remove_var("WAYLAND_DISPLAY");

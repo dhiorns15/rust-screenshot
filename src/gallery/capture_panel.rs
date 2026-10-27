@@ -104,12 +104,63 @@ pub fn run() {
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     let launch = Launch::default();
     let asked = launch.clone();
-    let _ = eframe::run_native(TITLE, options, Box::new(move |cc| Ok(Box::new(CapturePanel::new(&cc.egui_ctx, env, anchor, asked)))));
+    let _ = eframe::run_native(
+        TITLE,
+        options,
+        Box::new(move |cc| {
+            // Its window is made, but not shown yet.
+            #[cfg(not(windows))]
+            if let Some(window) = x11_window(cc) {
+                let _ = keep_off_the_taskbar(window);
+            }
+            Ok(Box::new(CapturePanel::new(&cc.egui_ctx, env, anchor, asked)))
+        }),
+    );
     // Its window is gone now; give the screen a moment to show what was behind it.
     if let Some(flag) = launch.take() {
         std::thread::sleep(GONE);
         platform::start_capture(flag);
     }
+}
+
+/// The panel's X11 window, when it has one (not on Wayland).
+#[cfg(not(windows))]
+fn x11_window(window: &impl raw_window_handle::HasWindowHandle) -> Option<u32> {
+    use raw_window_handle::RawWindowHandle;
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Xlib(handle) => u32::try_from(handle.window).ok(),
+        RawWindowHandle::Xcb(handle) => Some(handle.window.get()),
+        _ => None,
+    }
+}
+
+/// Keeps the panel out of the dock, Alt+Tab and the overview, and above other windows, as Windows
+/// does: winit only skips the taskbar there, and asks X11 for always on top before eframe shows the
+/// window, which the desktop doesn't hear. A window that hasn't been shown yet has it said on it,
+/// for the desktop to read when it takes the window on; one that has must ask. Its type stays
+/// normal: GNOME gives a utility window no focus when it opens, and the panel closes on losing it.
+#[cfg(not(windows))]
+pub fn keep_off_the_taskbar(window: u32) -> Result<(), Box<dyn std::error::Error>> {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, MapState, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+    let (conn, screen) = x11rb::connect(None)?;
+    let root = conn.setup().roots[screen].root;
+    let atom = |name: &str| -> Result<u32, Box<dyn std::error::Error>> { Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom) };
+    let state = atom("_NET_WM_STATE")?;
+    let (skip_taskbar, skip_pager, above) = (atom("_NET_WM_STATE_SKIP_TASKBAR")?, atom("_NET_WM_STATE_SKIP_PAGER")?, atom("_NET_WM_STATE_ABOVE")?);
+    if conn.get_window_attributes(window)?.reply()?.map_state == MapState::UNMAPPED {
+        conn.change_property32(PropMode::APPEND, window, state, AtomEnum::ATOM, &[skip_taskbar, skip_pager, above])?;
+    } else {
+        // Two at a time: add them, as an app asking.
+        for (first, second) in [(skip_taskbar, skip_pager), (above, 0)] {
+            let ask = ClientMessageEvent::new(32, window, state, [1, first, second, 1, 0]);
+            conn.send_event(false, root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, ask)?;
+        }
+    }
+    // Done before eframe shows the window, through a connection of its own.
+    conn.sync()?;
+    Ok(())
 }
 
 /// The two tabs, down the left.
@@ -263,6 +314,9 @@ pub enum Moving {
 
 /// How soon after a move starts the desktop takes the focus for it, if it does.
 const MOVE_TAKES_FOCUS: f64 = 1.0;
+/// How long it asks for the focus after it opens, in seconds. GNOME may never give it (to keep
+/// windows from taking it), and then it's had once it's clicked.
+const FOCUS_WAIT: f64 = 2.0;
 
 pub struct CapturePanel {
     pub env: Env,
@@ -271,6 +325,8 @@ pub struct CapturePanel {
     sound_devices: settings_rows::SoundDevices,
     /// It has had the focus; from then on, losing it closes the panel.
     had_focus: bool,
+    /// When it was first drawn (egui's time, in seconds).
+    opened: Option<f64>,
     /// How high the content makes the window.
     pub height: f32,
     /// The size and place last asked of the window, in points.
@@ -293,7 +349,7 @@ impl CapturePanel {
         let mut fonts = egui::FontDefinitions::default();
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
-        CapturePanel { env, anchor, sound_devices: Default::default(), had_focus: false, height: HEIGHT, placed: None, closing: false, launch, dragged: false, moving: Moving::No, remembered: None }
+        CapturePanel { env, anchor, sound_devices: Default::default(), had_focus: false, opened: None, height: HEIGHT, placed: None, closing: false, launch, dragged: false, moving: Moving::No, remembered: None }
     }
 
     /// It stays open when another window is clicked.
@@ -325,8 +381,8 @@ impl CapturePanel {
         }
     }
 
-    /// Lets the window be dragged by any part of it that isn't a control, and remembers where it's
-    /// left (in pixels, so a scaled screen gets it back in the same place).
+    /// Lets the window be dragged by any part of it that isn't a control, and (on Windows) remembers
+    /// where it's left (in pixels, so a scaled screen gets it back in the same place).
     fn movable(&mut self, ui: &mut Ui) {
         // Clicks too, so a press waits to be a drag: one that's only dragged is taken as dragged as
         // soon as it's pressed, even on a button drawn over it, and on X11 moving the window takes
@@ -339,7 +395,10 @@ impl CapturePanel {
             // It's where it's put from now on.
             self.anchor = None;
         }
-        if !self.dragged {
+        // Only Windows opens it where it was left (see `platform::flyout_anchor`). Elsewhere the
+        // place would only rewrite the settings file as often as the window moves, under the other
+        // RSnip processes reading and writing it.
+        if !self.dragged || !self.env.tray_app {
             return;
         }
         let scale = ui.ctx().pixels_per_point();
@@ -653,10 +712,12 @@ impl eframe::App for CapturePanel {
         if self.moving != Moving::No {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
+        let opened = *self.opened.get_or_insert(now);
         match focused {
             Some(true) => self.had_focus = true,
             Some(false) if self.had_focus && self.moving == Moving::No && !self.keep_open() => self.close(&ctx),
-            _ if !self.had_focus => {
+            // Not for ever: each ask is another frame drawn, with no GPU to draw it.
+            _ if !self.had_focus && now - opened < FOCUS_WAIT => {
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
                 ctx.request_repaint_after(Duration::from_millis(100));
             }

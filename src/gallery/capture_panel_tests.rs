@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use eframe::egui::accesskit::{Role, Toggled};
-use eframe::egui::{Key, Pos2, Vec2, ViewportId};
+use eframe::egui::{Key, Pos2, Rect, Vec2, ViewportCommand, ViewportId};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
@@ -500,6 +500,58 @@ fn moved_on_windows_it_still_closes_when_another_window_is_clicked() {
     assert!(h.state().closing);
 }
 
+/// It asked for the focus in the last frame, or to be drawn again soon for it.
+fn asks_for_the_focus(h: &Harness<CapturePanel>) -> bool {
+    let output = &h.output().viewport_output[&ViewportId::ROOT];
+    output.commands.iter().any(|c| matches!(c, ViewportCommand::Focus)) || output.repaint_delay <= Duration::from_millis(100)
+}
+
+#[test]
+fn it_stops_asking_for_the_focus_that_never_comes() {
+    // GNOME may keep it from taking the focus; asking again every frame kept drawing it for ever.
+    // Straight from its first frames (`panel` settles for a while).
+    let mut env = Env::sandbox(tests::sandbox_dir("panel-focus-never"));
+    env.tray_app = false;
+    let mut h = Harness::builder().with_size(Vec2::new(WIDTH, 800.0)).build_eframe(move |cc| CapturePanel::new(&cc.egui_ctx, env, None, Default::default()));
+    focus_once(&mut h, false);
+    assert!(asks_for_the_focus(&h), "it asks at first");
+    let time = |h: &Harness<CapturePanel>| h.ctx.input(|i| i.time);
+    while asks_for_the_focus(&h) && time(&h) < 10.0 {
+        h.step();
+    }
+    assert!((2.0..3.0).contains(&time(&h)), "it stopped asking after a couple of seconds, at {}", time(&h));
+    settle(&mut h);
+    assert!(!asks_for_the_focus(&h), "for good");
+    assert!(!h.state().closing);
+    // Clicking it gives it the focus, so clicking elsewhere after closes it.
+    focus(&mut h, true);
+    assert!(!h.state().closing);
+    focus(&mut h, false);
+    assert!(h.state().closing);
+
+    // And Esc reaches it once it's clicked.
+    let mut h = linux_panel("panel-focus-never-esc", |_| {});
+    focus(&mut h, false);
+    settle(&mut h);
+    focus(&mut h, true);
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert!(h.state().closing);
+}
+
+#[test]
+fn only_windows_remembers_where_it_was_moved_to() {
+    // Linux lets the desktop place it, so the place was written to the settings file for nothing,
+    // as often as the window moved.
+    for (mut h, remembered) in [(panel("panel-place", |_| {}), Some("300,200")), (linux_panel("panel-place-linux", |_| {}), None)] {
+        focus(&mut h, true);
+        start_moving(&mut h);
+        h.input_mut().viewports.entry(ViewportId::ROOT).or_default().outer_rect = Some(Rect::from_min_size(Pos2::new(300.0, 200.0), Vec2::new(WIDTH, 240.0)));
+        settle(&mut h);
+        assert_eq!(h.state().env.text_setting(options::CAPTURE_PANEL_PLACE).as_deref(), remembered);
+    }
+}
+
 #[test]
 fn pinned_on_windows_it_captures_straight_away_and_stays() {
     let mut h = panel("panel-pin-capture", |env| env.set_setting(options::CAPTURE_PANEL_KEEP_OPEN.name, 1));
@@ -557,6 +609,28 @@ fn is_as_high_as_its_content() {
     let video = h.state().height;
     toggle(&mut h, "Microphone");
     assert!((h.state().height - video).abs() < 40.0, "{video}");
+}
+
+/// On a real X server: what the desktop reads from the panel's window when it's shown.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_the_panel_stays_off_the_taskbar_and_on_top() {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, CreateWindowAux, WindowClass};
+    use x11rb::wrapper::ConnectionExt as _;
+    let _server = super::desktop_tests::XServer::start(73);
+    let (conn, screen) = x11rb::connect(None).unwrap();
+    let root = conn.setup().roots[screen].root;
+    // Made but not shown yet, as eframe has it when the panel starts.
+    let window = conn.generate_id().unwrap();
+    conn.create_window(0, window, root, 0, 0, 650, 240, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new()).unwrap();
+    conn.sync().unwrap();
+    super::capture_panel::keep_off_the_taskbar(window).unwrap();
+    let atom = |name: &str| conn.intern_atom(false, name.as_bytes()).unwrap().reply().unwrap().atom;
+    let state = conn.get_property(false, window, atom("_NET_WM_STATE"), AtomEnum::ATOM, 0, 16).unwrap().reply().unwrap();
+    let state: Vec<u32> = state.value32().unwrap().collect();
+    assert_eq!(state, ["_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER", "_NET_WM_STATE_ABOVE"].map(atom));
 }
 
 /// Pixel snapshots (Linux only, like Settings').

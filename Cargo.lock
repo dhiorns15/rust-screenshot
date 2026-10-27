@@ -3126,6 +3126,7 @@ dependencies = [
  "libc",
  "png",
  "proptest",
+ "raw-window-handle",
  "rustls",
  "rustls-platform-verifier",
  "serde",
