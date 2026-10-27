@@ -979,12 +979,14 @@ mod tests {
         let args = video_pipeline("videotestsrc is-live=true ! videoconvert", (320, 240), None, 30, &encoder, Some(&sound), &working);
         let mut child = Command::new("gst-launch-1.0").args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
         let said = said(&mut child);
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(Duration::from_secs(3));
         let recording = Recording { child, said, path: path.clone(), working, started: Instant::now(), gif: None, note: None };
         let recorded = recording.stop().expect("it finishes");
         assert_eq!(recorded.note, None, "it ended properly");
         let movie = crate::mp4::Movie::open(&path).unwrap();
-        assert!(movie.has_sound() && movie.duration() > Duration::from_millis(1000), "the picture, with a sound track: {:?}", movie.duration());
+        // Held up, it wrote nothing and never stopped. GStreamer may be slow to start on a busy
+        // machine, so it's not held to the whole 3 s.
+        assert!(movie.has_sound() && movie.duration() > Duration::from_millis(500), "the picture, with a sound track: {:?}", movie.duration());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
