@@ -28,8 +28,14 @@ Alt+PrtScn and Win+PrtScn are left alone and keep their Windows behaviour.
 
 On Windows, MP4 recordings include whatever the computer is playing, so a video of a demo has its
 sound. Turn on *Microphone* as well to add your voice, mixed in with it (the default microphone,
-or one you pick). Both switches are in *Settings → Recording*, and in the tray menu's *Quick
-settings*. Computer sound is on by default and the microphone is off. GIFs have no sound.
+or one you pick). Both switches are in *Settings → Recording*, and on the capture panel's Video
+tab. Computer sound is on by default and the microphone is off. GIFs have no sound.
+
+The computer's sound comes from the default output unless you pick another under *Computer
+sound*. Pick one if recordings come out silent or quiet: with a mixer such as SteelSeries Sonar,
+Voicemeeter or Elgato Wave Link, apps play to the mixer's own channels (Sonar's Media, Game and
+Chat, say), and only the headphones or speakers it plays to have them all. If the output you
+picked isn't connected, RSnip records the default one and says so.
 
 The sound is AAC, 48 kHz stereo. Quiet stretches are recorded as silence, so the sound stays in
 step with the picture however long nothing plays.

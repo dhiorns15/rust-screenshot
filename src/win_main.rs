@@ -763,7 +763,8 @@ unsafe fn start_recording(hwnd: HWND, area: RECT) {
     let s = SETTINGS.get();
     // Read now rather than from `Settings`: the library window can change these (see `settings::get`).
     let microphone = crate::options::RECORD_MICROPHONE.read(settings::get).then(|| settings::get_text(crate::options::RECORD_MICROPHONE_DEVICE));
-    let format = record::Format { gif: s.record_gif, hevc: s.record_hevc, fps: s.record_fps, sound: crate::options::RECORD_SOUND.read(settings::get), microphone };
+    let sound = crate::options::RECORD_SOUND.read(settings::get).then(|| settings::get_text(crate::options::RECORD_SOUND_DEVICE));
+    let format = record::Format { gif: s.record_gif, hevc: s.record_hevc, fps: s.record_fps, sound, microphone };
     match record::start(hwnd, area, format) {
         Ok(recording) => {
             RECORDING.with(|r| *r.borrow_mut() = Some(recording));

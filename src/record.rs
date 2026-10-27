@@ -46,8 +46,8 @@ pub struct Format {
     pub hevc: bool,
     /// Frames per second, for MP4s.
     pub fps: u32,
-    /// Record what the computer plays (MP4s only).
-    pub sound: bool,
+    /// Record what the computer plays: from the default output, or the one with this id (MP4s only).
+    pub sound: Option<Option<String>>,
     /// Record a microphone too: the default one, or the one with this id (MP4s only).
     pub microphone: Option<Option<String>>,
 }
@@ -106,7 +106,7 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
                     })
                     .map(|e| Box::new(e) as _)
             };
-            let sources = audio::Sources { computer: format.sound, microphone: format.microphone.clone() };
+            let sources = audio::Sources { computer: format.sound.clone(), microphone: format.microphone.clone() };
             let with_sound = !format.gif && sources.any();
             let mut encoder = open(with_sound, &mut hevc, &mut notes);
             // Time zero is when the encoder is ready (it can take a while), so neither the video
@@ -371,7 +371,7 @@ mod tests {
     fn records_the_screen_with_sound() {
         let path = std::env::temp_dir().join(format!("rsnip-rec-sound-{}.mp4", std::process::id()));
         let started = Instant::now();
-        let sources = audio::Sources { computer: true, microphone: None };
+        let sources = audio::Sources { computer: Some(None), microphone: None };
         let sound = match audio::Capture::start(&sources, audio::Clock::now()) {
             Ok(sound) => sound,
             // CI's machines may have no sound device, or no Media Foundation.

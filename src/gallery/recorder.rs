@@ -28,8 +28,9 @@ pub struct Format {
     pub gif: bool,
     pub hevc: bool,
     pub fps: u32,
-    /// Record what the computer plays.
-    pub sound: bool,
+    /// Record what the computer plays: none, the default output's, or the output whose monitor has
+    /// this name in PulseAudio.
+    pub sound: Option<Option<String>>,
     /// Record a microphone: none, the default one, or the one with this name in PulseAudio.
     pub microphone: Option<Option<String>>,
 }
@@ -165,16 +166,22 @@ fn parse_short_sources(list: &str) -> Vec<Source> {
 }
 
 /// A microphone to record from.
-pub fn microphones() -> Vec<super::platform::Microphone> {
+pub fn microphones() -> Vec<super::platform::SoundDevice> {
     let microphones = sources().unwrap_or_default().into_iter().filter(|s| !s.monitor);
-    microphones.map(|s| super::platform::Microphone { id: s.name, name: s.description }).collect()
+    microphones.map(|s| super::platform::SoundDevice { id: s.name, name: s.description }).collect()
+}
+
+/// An output whose sound can be recorded: its monitor.
+pub fn outputs() -> Vec<super::platform::SoundDevice> {
+    let monitors = sources().unwrap_or_default().into_iter().filter(|s| s.monitor);
+    monitors.map(|s| super::platform::SoundDevice { id: s.name, name: s.description }).collect()
 }
 
 /// The sound for a recording as `format` asks, given the encoder for it (`audio`, else why there
 /// is none), what GStreamer has installed (`has`), and the sound server's sources (`sources`, none
 /// if it can't be reached) — and a note on anything asked for that couldn't be had.
 fn plan_sound(format: &Format, audio: Result<AudioEncoder, String>, has: &impl Fn(&str) -> bool, sources: &impl Fn() -> Option<Vec<Source>>) -> (Option<Sound>, Option<String>) {
-    if !format.sound && format.microphone.is_none() {
+    if format.sound.is_none() && format.microphone.is_none() {
         return (None, None);
     }
     let none = |note: String| (None, Some(note));
@@ -190,8 +197,15 @@ fn plan_sound(format: &Format, audio: Result<AudioEncoder, String>, has: &impl F
     };
     let mut wanted = Vec::new();
     let mut notes = Vec::new();
-    if format.sound {
-        wanted.push("pulsesrc device=@DEFAULT_MONITOR@ do-timestamp=true".to_string());
+    match &format.sound {
+        None => {}
+        Some(Some(id)) if sources.iter().any(|s| s.monitor && s.name == *id) => wanted.push(format!("pulsesrc device={id} do-timestamp=true")),
+        Some(chosen) => {
+            if chosen.is_some() {
+                notes.push("The chosen output isn't connected, so the default one's sound was recorded.");
+            }
+            wanted.push("pulsesrc device=@DEFAULT_MONITOR@ do-timestamp=true".to_string());
+        }
     }
     match &format.microphone {
         None => {}
@@ -340,7 +354,7 @@ pub fn check(hevc: bool) -> Result<String, String> {
     // Sound is tried with a test tone, which needs no sound server; whether the server is there
     // comes from planning a recording with sound.
     let audio = audio_encoder(encoder.extension == "mp4", &|e| installed(e));
-    let asked = Format { gif: false, hevc, fps: 30, sound: true, microphone: None };
+    let asked = Format { gif: false, hevc, fps: 30, sound: Some(None), microphone: None };
     let sound_note = plan_sound(&asked, audio.clone(), &|e| installed(e), &sources).1;
     let dir = std::env::temp_dir().join(format!("rsnip-check-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
@@ -688,7 +702,7 @@ mod tests {
     }
 
     fn asked(sound: bool, microphone: Option<Option<&str>>) -> Format {
-        Format { gif: false, hevc: false, fps: 30, sound, microphone: microphone.map(|m| m.map(String::from)) }
+        Format { gif: false, hevc: false, fps: 30, sound: sound.then_some(None), microphone: microphone.map(|m| m.map(String::from)) }
     }
 
     /// The sound a recording of `format` gets with everything installed, in an MP4 or a WebM.
@@ -716,6 +730,21 @@ mod tests {
         );
         // WebM has Opus.
         assert_eq!(pipeline(asked(true, None), false), format!("{computer} ! audioconvert ! opusenc bitrate=160000 ! queue ! mux."));
+    }
+
+    #[test]
+    fn the_computers_sound_can_come_from_a_chosen_output() {
+        let monitor = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor";
+        let chosen = Format { sound: Some(Some(monitor.into())), ..asked(false, None) };
+        assert!(audio_pipeline(&sound_for(&chosen, true)).starts_with(&format!("pulsesrc device={monitor} do-timestamp=true ")));
+        // One that's gone gives the default output's, and says so.
+        let gone = Format { sound: Some(Some("unplugged.monitor".into())), ..asked(false, None) };
+        let (sound, note) = plan_sound(&gone, audio_encoder(true, &everything), &everything, &server);
+        assert!(audio_pipeline(&sound.expect("sound")).starts_with("pulsesrc device=@DEFAULT_MONITOR@ "));
+        assert_eq!(note.as_deref(), Some("The chosen output isn't connected, so the default one's sound was recorded."));
+        // A microphone isn't an output.
+        let mic = Format { sound: Some(Some("alsa_input.usb-Headset.mono".into())), ..asked(false, None) };
+        assert!(plan_sound(&mic, audio_encoder(true, &everything), &everything, &server).0.is_some_and(|s| s.sources[0].contains("@DEFAULT_MONITOR@")));
     }
 
     #[test]

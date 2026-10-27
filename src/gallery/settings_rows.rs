@@ -4,7 +4,7 @@
 use eframe::egui::{self, Ui};
 
 use super::env::{Env, TrayRequest};
-use super::platform::Microphone;
+use super::platform::SoundDevice;
 use super::theme::{self, row};
 use crate::options::{self, Flag};
 
@@ -57,41 +57,61 @@ pub(super) fn frame_rate_row(ui: &mut Ui, env: &Env, detail: &str) {
     });
 }
 
-/// What to record the sound of: the computer's, and the microphone with its drop-down. All greyed
-/// out for GIFs, which have none. `details` adds a line of explanation to each switch.
-/// `microphones` holds the list of microphones once it's been read (clear it to read it again).
-pub(super) fn sound_rows(ui: &mut Ui, env: &Env, microphones: &mut Option<Vec<Microphone>>, details: bool) {
+/// The outputs and microphones to choose from, read when a drop-down first shows (`Default` to read
+/// them again).
+#[derive(Default)]
+pub(super) struct SoundDevices {
+    outputs: Option<Vec<SoundDevice>>,
+    microphones: Option<Vec<SoundDevice>>,
+}
+
+/// What to record the sound of: the computer's and the microphone, each with its drop-down. All
+/// greyed out for GIFs, which have none. `details` adds a line of explanation to each switch.
+pub(super) fn sound_rows(ui: &mut Ui, env: &Env, devices: &mut SoundDevices, details: bool) {
     let gif = options::RECORD_GIF.read(|name| env.setting(name));
     let detail = |text: &'static str| if gif { "GIFs have no sound" } else if details { text } else { "" };
     ui.add_enabled_ui(!gif, |ui| {
-        flag_row(ui, env, options::RECORD_SOUND, "Computer sound", detail("What the computer plays: videos, calls, alerts"));
+        flag_row(ui, env, options::RECORD_SOUND, "Computer sound", detail("What the computer plays: videos, calls, alerts. With a mixer such as SteelSeries Sonar, choose the headphones it plays to"));
+        if options::RECORD_SOUND.read(|name| env.setting(name)) {
+            output_picker(ui, env, devices);
+        }
         ui.separator();
         flag_row(ui, env, options::RECORD_MICROPHONE, "Microphone", if details && !gif { "Your voice, mixed in with the computer's sound" } else { "" });
         if options::RECORD_MICROPHONE.read(|name| env.setting(name)) {
-            microphone_picker(ui, env, microphones);
+            microphone_picker(ui, env, devices);
         }
     });
 }
 
+/// "Default output" and each one there is, as a drop-down.
+pub(super) fn output_picker(ui: &mut Ui, env: &Env, devices: &mut SoundDevices) {
+    let list = devices.outputs.get_or_insert_with(|| env.outputs());
+    device_picker(ui, env, "output", "Default output", options::RECORD_SOUND_DEVICE, list);
+}
+
 /// "Default microphone" and each one that's connected, as a drop-down.
-pub(super) fn microphone_picker(ui: &mut Ui, env: &Env, microphones: &mut Option<Vec<Microphone>>) {
-    const DEFAULT: &str = "Default microphone";
-    let list = microphones.get_or_insert_with(|| env.microphones());
-    let chosen = env.text_setting(options::RECORD_MICROPHONE_DEVICE).unwrap_or_default();
+pub(super) fn microphone_picker(ui: &mut Ui, env: &Env, devices: &mut SoundDevices) {
+    let list = devices.microphones.get_or_insert_with(|| env.microphones());
+    device_picker(ui, env, "microphone", "Default microphone", options::RECORD_MICROPHONE_DEVICE, list);
+}
+
+/// The default (`default`) and each of `list`, as a drop-down saving the one chosen in `setting`.
+fn device_picker(ui: &mut Ui, env: &Env, id: &str, default: &str, setting: &str, list: &[SoundDevice]) {
+    let chosen = env.text_setting(setting).unwrap_or_default();
     let missing = !chosen.is_empty() && !list.iter().any(|m| m.id == chosen);
     let missing_name = format!("{chosen} (not connected)");
     let shown = match list.iter().find(|m| m.id == chosen) {
-        _ if chosen.is_empty() => DEFAULT,
+        _ if chosen.is_empty() => default,
         Some(m) => &m.name,
         None => &missing_name,
     };
     ui.add_space(6.0);
-    egui::ComboBox::from_id_salt("microphone").width(ui.available_width()).selected_text(shown).show_ui(ui, |ui| {
+    egui::ComboBox::from_id_salt(id).width(ui.available_width()).selected_text(shown).show_ui(ui, |ui| {
         let mut pick = None;
-        if ui.selectable_label(chosen.is_empty(), DEFAULT).clicked() {
+        if ui.selectable_label(chosen.is_empty(), default).clicked() {
             pick = Some("");
         }
-        for m in list.iter() {
+        for m in list {
             if ui.selectable_label(chosen == m.id, &m.name).clicked() {
                 pick = Some(&m.id);
             }
@@ -100,7 +120,7 @@ pub(super) fn microphone_picker(ui: &mut Ui, env: &Env, microphones: &mut Option
             let _ = ui.selectable_label(true, &missing_name);
         }
         if let Some(id) = pick.filter(|id| *id != chosen) {
-            set_text(env, options::RECORD_MICROPHONE_DEVICE, id);
+            set_text(env, setting, id);
         }
     });
 }

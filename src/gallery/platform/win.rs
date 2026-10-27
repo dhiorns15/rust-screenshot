@@ -395,16 +395,22 @@ pub fn hevc_available() -> bool {
     crate::encode::hevc_available()
 }
 
-/// A microphone to record from: the id the platform knows it by, and the name to show.
+/// A microphone, or an output, to record from: the id the platform knows it by, and the name to
+/// show.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Microphone {
+pub struct SoundDevice {
     pub id: String,
     pub name: String,
 }
 
 /// The microphones that are connected and turned on, to choose from.
-pub fn microphones() -> Vec<Microphone> {
-    crate::audio::microphones().into_iter().map(|(id, name)| Microphone { id, name }).collect()
+pub fn microphones() -> Vec<SoundDevice> {
+    crate::audio::microphones().into_iter().map(|(id, name)| SoundDevice { id, name }).collect()
+}
+
+/// The outputs (speakers, headphones, a mixer's channels) whose sound can be recorded.
+pub fn outputs() -> Vec<SoundDevice> {
+    crate::audio::outputs().into_iter().map(|(id, name)| SoundDevice { id, name }).collect()
 }
 
 /// What reads the text in screenshots, for Settings.

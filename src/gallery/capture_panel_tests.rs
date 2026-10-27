@@ -10,7 +10,7 @@ use egui_kittest::Harness;
 
 use super::capture_panel::{CapturePanel, WIDTH};
 use super::env::{Env, TrayRequest};
-use super::platform::Microphone;
+use super::platform::SoundDevice;
 use super::tests;
 use crate::options;
 
@@ -68,8 +68,8 @@ fn requests(h: &Harness<CapturePanel>) -> Vec<TrayRequest> {
     h.state().env.sandboxed().requests.clone()
 }
 
-fn mic(id: &str, name: &str) -> Microphone {
-    Microphone { id: id.into(), name: name.into() }
+fn mic(id: &str, name: &str) -> SoundDevice {
+    SoundDevice { id: id.into(), name: name.into() }
 }
 
 fn setting(h: &Harness<CapturePanel>, option: options::Choice) -> u32 {

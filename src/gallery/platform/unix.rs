@@ -524,17 +524,23 @@ pub fn recording_problem(hevc: bool) -> Option<String> {
     super::super::recorder::problem(hevc)
 }
 
-/// A microphone to record from: `id` is what's saved in Settings, `name` what's shown.
+/// A microphone, or an output, to record from: `id` is what's saved in Settings, `name` what's
+/// shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Microphone {
+pub struct SoundDevice {
     pub id: String,
     pub name: String,
 }
 
 /// The microphones the sound server (PulseAudio, or PipeWire's) knows, without the outputs'
 /// monitors.
-pub fn microphones() -> Vec<Microphone> {
+pub fn microphones() -> Vec<SoundDevice> {
     super::super::recorder::microphones()
+}
+
+/// The outputs whose sound can be recorded: their monitors.
+pub fn outputs() -> Vec<SoundDevice> {
+    super::super::recorder::outputs()
 }
 
 /// Whether recordings can be H.265 (an encoder for it is installed in GStreamer).

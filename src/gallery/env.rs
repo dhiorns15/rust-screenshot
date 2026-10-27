@@ -104,7 +104,9 @@ pub struct Sandbox {
     /// What's missing for recording (Linux's GStreamer, say).
     pub recording_problem: Option<String>,
     /// The microphones that are connected.
-    pub microphones: Vec<platform::Microphone>,
+    pub microphones: Vec<platform::SoundDevice>,
+    /// The outputs whose sound can be recorded.
+    pub outputs: Vec<platform::SoundDevice>,
     pub latest: Option<Release>,
     /// The text "read" from each file name, for search.
     pub ocr_text: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
@@ -426,10 +428,18 @@ impl Env {
     }
 
     /// The microphones that are connected.
-    pub fn microphones(&self) -> Vec<platform::Microphone> {
+    pub fn microphones(&self) -> Vec<platform::SoundDevice> {
         match &self.sandbox {
             Some(s) => s.borrow().microphones.clone(),
             None => platform::microphones(),
+        }
+    }
+
+    /// The outputs whose sound can be recorded.
+    pub fn outputs(&self) -> Vec<platform::SoundDevice> {
+        match &self.sandbox {
+            Some(s) => s.borrow().outputs.clone(),
+            None => platform::outputs(),
         }
     }
 

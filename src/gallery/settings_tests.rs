@@ -9,7 +9,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
 use super::env::{Env, TrayRequest};
-use super::platform::Microphone;
+use super::platform::SoundDevice;
 use super::settings_window::{Section, SettingsApp};
 use super::theme::Appearance;
 use super::{tests, Dock};
@@ -222,7 +222,7 @@ fn recording_has_a_sound_card_with_the_computer_and_a_microphone() {
 
 #[test]
 fn the_microphone_list_has_those_connected_and_keeps_one_that_is_gone() {
-    let mics = ["USB Microphone", "Laptop array"].map(|name| Microphone { id: name.to_lowercase(), name: name.into() });
+    let mics = ["USB Microphone", "Laptop array"].map(|name| SoundDevice { id: name.to_lowercase(), name: name.into() });
     let mut h = settings("settings-microphones", |env| {
         env.sandboxed().microphones = mics.to_vec();
         env.set_setting(options::RECORD_MICROPHONE.name, 1);
@@ -241,6 +241,24 @@ fn the_microphone_list_has_those_connected_and_keeps_one_that_is_gone() {
     });
     open(&mut h, Section::Recording);
     assert!(h.query_by_value("unplugged (not connected)").is_some());
+}
+
+#[test]
+fn the_computers_sound_can_come_from_a_chosen_output() {
+    let outputs = ["Sonar - Media", "Headphones (Arctis Nova Pro Wireless)"].map(|name| SoundDevice { id: name.to_lowercase(), name: name.into() });
+    let mut h = settings("settings-outputs", |env| env.sandboxed().outputs = outputs.to_vec());
+    open(&mut h, Section::Recording);
+    // Computer sound is on from the start, so its list shows.
+    h.get_by_value("Default output").click();
+    settle(&mut h);
+    click(&mut h, "Headphones (Arctis Nova Pro Wireless)");
+    assert_eq!(h.state().env.text_setting(options::RECORD_SOUND_DEVICE).as_deref(), Some("headphones (arctis nova pro wireless)"));
+    assert_eq!(requests(&h), [TrayRequest::SettingsChanged]);
+    assert!(h.query_by_value("Default microphone").is_none(), "the microphone is off");
+
+    let mut h = settings("settings-sound-off", |env| env.set_setting(options::RECORD_SOUND.name, 0));
+    open(&mut h, Section::Recording);
+    assert!(h.query_by_value("Default output").is_none(), "no list without the switch");
 }
 
 #[test]

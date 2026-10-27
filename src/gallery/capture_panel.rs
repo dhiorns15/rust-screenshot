@@ -254,8 +254,8 @@ pub fn launch_flag(env: &Env) -> &'static str {
 pub struct CapturePanel {
     pub env: Env,
     anchor: Option<Anchor>,
-    /// The microphones that are connected, found when the drop-down first shows.
-    microphones: Option<Vec<platform::Microphone>>,
+    /// The outputs and microphones there are, found when a drop-down first shows.
+    sound_devices: settings_rows::SoundDevices,
     /// It has had the focus; from then on, losing it closes the panel.
     had_focus: bool,
     /// How high the content makes the window.
@@ -278,7 +278,7 @@ impl CapturePanel {
         let mut fonts = egui::FontDefinitions::default();
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
-        CapturePanel { env, anchor, microphones: None, had_focus: false, height: HEIGHT, placed: None, closing: false, launch, dragged: false, remembered: None }
+        CapturePanel { env, anchor, sound_devices: Default::default(), had_focus: false, height: HEIGHT, placed: None, closing: false, launch, dragged: false, remembered: None }
     }
 
     /// It stays open when another window is clicked.
@@ -503,9 +503,12 @@ impl CapturePanel {
         let gif = options::RECORD_GIF.read(|name| self.env.setting(name));
         ui.add_enabled_ui(!gif, |ui| {
             settings_rows::flag_row(ui, &self.env, options::RECORD_SOUND, "Computer sound", "");
+            if options::RECORD_SOUND.read(|name| self.env.setting(name)) {
+                settings_rows::output_picker(ui, &self.env, &mut self.sound_devices);
+            }
             settings_rows::flag_row(ui, &self.env, options::RECORD_MICROPHONE, "Microphone", "");
             if options::RECORD_MICROPHONE.read(|name| self.env.setting(name)) {
-                settings_rows::microphone_picker(ui, &self.env, &mut self.microphones);
+                settings_rows::microphone_picker(ui, &self.env, &mut self.sound_devices);
             }
         });
         if gif {

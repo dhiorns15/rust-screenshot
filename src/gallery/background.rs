@@ -250,11 +250,12 @@ fn begin(area: bool) -> Result<Option<(Recording, ScreenCast)>, String> {
     let get = platform::setting;
     // The microphone setting names a device, or is empty for the default one.
     let microphone = options::RECORD_MICROPHONE.read(get).then(|| platform::text_setting(options::RECORD_MICROPHONE_DEVICE));
+    let sound = options::RECORD_SOUND.read(get).then(|| platform::text_setting(options::RECORD_SOUND_DEVICE));
     let format = Format {
         gif: options::RECORD_GIF.read(get),
         hevc: options::RECORD_HEVC.read(get),
         fps: options::RECORD_FPS.read(get),
-        sound: options::RECORD_SOUND.read(get),
+        sound,
         microphone,
     };
     let recording = recorder::start(&cast, size, crop, format, &platform::screenshots_dir())?;

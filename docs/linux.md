@@ -60,11 +60,11 @@ would be made, then says what it came out as.
 
 MP4 and WebM recordings include what the computer plays, which is on by default, and the
 microphone, which is off. They're mixed into one track: AAC in MP4s, Opus in WebMs. GIFs have no
-sound. Turn either on or off, and pick the microphone (the default one unless you choose), in
+sound. Turn either on or off, and pick the output and the microphone (the default ones unless you choose: with more than one output, pick the one you hear), in
 Settings → Recording, or on the Video tab of *Capture panel…* in the icon's menu.
 
 Sound comes from the desktop's PulseAudio server, which PipeWire provides as `pipewire-pulse` on
-current desktops. GStreamer's PulseAudio plugin reads it, `pactl` lists the microphones, and MP4s
+current desktops. GStreamer's PulseAudio plugin reads it, `pactl` lists the outputs and microphones, and MP4s
 need an AAC encoder: `fdkaacenc`, `avenc_aac` (in `gstreamer1.0-libav`) or `voaacenc` (in
 `gstreamer1.0-plugins-bad`), whichever is installed. The Sound row above has them; the `.deb` and
 `.rpm` recommend them, and `install.sh` checks for them. Ubuntu doesn't have

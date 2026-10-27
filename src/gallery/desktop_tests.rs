@@ -355,7 +355,7 @@ fn desktop_records_through_the_real_portal() {
     assert_eq!((frame.width(), frame.height()), SCREEN);
 
     let dir = temp_dir("mp4");
-    let format = Format { gif: false, hevc: false, fps: 30, sound: false, microphone: None };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: None, microphone: None };
     let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
     std::thread::sleep(Duration::from_secs(2));
     let recorded = recording.stop().expect("recording finishes");
@@ -398,7 +398,7 @@ fn desktop_records_the_computers_sound() {
     desktop();
     let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
     let dir = temp_dir("sound");
-    let format = Format { gif: false, hevc: false, fps: 30, sound: true, microphone: None };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None };
     let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
     std::thread::sleep(Duration::from_secs(3));
     let recorded = recording.stop().expect("recording finishes");
@@ -424,7 +424,7 @@ fn desktop_plays_a_recordings_sound() {
     desktop();
     let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
     let dir = temp_dir("play-sound");
-    let format = Format { gif: false, hevc: false, fps: 30, sound: true, microphone: None };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None };
     let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
     std::thread::sleep(Duration::from_secs(4));
     let recorded = recording.stop().expect("recording finishes");
@@ -452,7 +452,7 @@ fn desktop_a_missing_microphone_is_left_out() {
     let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
     let dir = temp_dir("no-microphone");
     // The test sound server has an output and no microphone.
-    let format = Format { gif: false, hevc: false, fps: 30, sound: true, microphone: Some(None) };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: Some(None) };
     let recorded = {
         let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
         std::thread::sleep(Duration::from_secs(2));
@@ -472,7 +472,7 @@ fn desktop_records_without_sound_when_the_sound_server_is_gone() {
     // Tests run one at a time, so nothing else reads this meanwhile.
     let server = std::env::var("PULSE_SERVER").unwrap();
     std::env::set_var("PULSE_SERVER", "unix:/nonexistent/pulse/native");
-    let format = Format { gif: false, hevc: false, fps: 30, sound: true, microphone: None };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None };
     let recorded = recorder::start(&cast, SCREEN, None, format, &dir).map(|recording| {
         std::thread::sleep(Duration::from_secs(2));
         recording.stop()
@@ -491,7 +491,7 @@ fn desktop_records_an_area_as_a_gif() {
     let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
     let area = Area { x: 100, y: 60, width: 200, height: 120 };
     let dir = temp_dir("gif");
-    let format = Format { gif: true, hevc: false, fps: 30, sound: true, microphone: Some(None) };
+    let format = Format { gif: true, hevc: false, fps: 30, sound: Some(None), microphone: Some(None) };
     let recording = recorder::start(&cast, SCREEN, Some(area), format, &dir).unwrap();
     std::thread::sleep(Duration::from_secs(2));
     let recorded = recording.stop().unwrap();

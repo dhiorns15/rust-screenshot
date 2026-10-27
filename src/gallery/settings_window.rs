@@ -150,8 +150,8 @@ pub struct SettingsApp {
     hevc: Option<bool>,
     /// What's missing for recording as H.264 and as H.265, found then too.
     recording_problems: Option<[Option<String>; 2]>,
-    /// The microphones that are connected, found when the Recording section opens.
-    microphones: Option<Vec<platform::Microphone>>,
+    /// The outputs and microphones there are, found when the Recording section opens.
+    sound_devices: settings_rows::SoundDevices,
     /// The folder chooser, while it's open.
     picking: Option<PickedFolder>,
     /// The previous save folder and how many screenshots and recordings are still there.
@@ -180,7 +180,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, microphones: None, picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, push: Default::default() }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, sound_devices: Default::default(), picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, push: Default::default() }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -210,7 +210,7 @@ impl SettingsApp {
                 self.section = section;
                 self.note = None;
                 self.report = None;
-                self.microphones = None;
+                self.sound_devices = Default::default();
             }
         }
     }
@@ -416,7 +416,7 @@ impl SettingsApp {
             });
         });
         theme::card(ui, |ui| {
-            settings_rows::sound_rows(ui, &self.env, &mut self.microphones, true);
+            settings_rows::sound_rows(ui, &self.env, &mut self.sound_devices, true);
         });
         if !self.env.tray_app {
             theme::card(ui, |ui| {

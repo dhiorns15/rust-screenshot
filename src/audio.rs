@@ -65,17 +65,17 @@ fn frames(t: i64) -> i64 {
     (t as i128 * RATE as i128 / 10_000_000) as i64
 }
 
-/// What to record: the computer's sound, and the microphone (None for none, Some(None) for the
-/// default one, Some(Some(id)) for that device).
+/// What to record: the computer's sound (from an output) and the microphone, each None for none,
+/// Some(None) for the default one, Some(Some(id)) for that device.
 #[derive(Clone, Debug)]
 pub struct Sources {
-    pub computer: bool,
+    pub computer: Option<Option<String>>,
     pub microphone: Option<Option<String>>,
 }
 
 impl Sources {
     pub fn any(&self) -> bool {
-        self.computer || self.microphone.is_some()
+        self.computer.is_some() || self.microphone.is_some()
     }
 }
 
@@ -297,10 +297,19 @@ fn run(sources: &Sources, clock: Clock, stop: &AtomicBool, ready: Sender<Result<
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         match CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) {
             Ok(enumerator) => {
-                let wanted = [(COMPUTER, sources.computer.then_some(None)), (MICROPHONE, sources.microphone.clone())];
+                let wanted = [(COMPUTER, sources.computer.clone()), (MICROPHONE, sources.microphone.clone())];
                 for (what, device) in wanted.into_iter().filter_map(|(what, device)| Some((what, device?))) {
                     match Source::open(&enumerator, what, device.as_deref(), open.len()) {
                         Ok(source) => open.push(source),
+                        // An output that's gone (unplugged headphones, say): the default one plays
+                        // what it played.
+                        Err(_) if what == COMPUTER && device.is_some() => match Source::open(&enumerator, what, None, open.len()) {
+                            Ok(source) => {
+                                notes.push("The chosen output isn't connected, so the default one's sound was recorded.".into());
+                                open.push(source);
+                            }
+                            Err(e) => notes.push(failure(what, &e)),
+                        },
                         Err(e) => notes.push(failure(what, &e)),
                     }
                 }
@@ -428,10 +437,20 @@ impl Drop for Speaker {
 
 /// The active microphones as (id, name), for the pickers in Settings and the capture panel.
 pub fn microphones() -> Vec<(String, String)> {
+    endpoints(eCapture)
+}
+
+/// The active outputs as (id, name), whose sound the computer-sound picker can record: with a mixer
+/// such as SteelSeries Sonar, apps play to its channels and only the real headphones have it all.
+pub fn outputs() -> Vec<(String, String)> {
+    endpoints(eRender)
+}
+
+fn endpoints(flow: EDataFlow) -> Vec<(String, String)> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         let Ok(enumerator) = CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) else { return Vec::new() };
-        let Ok(devices) = enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) else { return Vec::new() };
+        let Ok(devices) = enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE) else { return Vec::new() };
         let count = devices.GetCount().unwrap_or(0);
         (0..count)
             .filter_map(|i| {
@@ -549,7 +568,7 @@ mod tests {
 
     #[test]
     fn records_the_computers_sound_without_gaps() {
-        let sources = Sources { computer: true, microphone: None };
+        let sources = Sources { computer: Some(None), microphone: None };
         let begun = Instant::now();
         let capture = match Capture::start(&sources, Clock::now()) {
             Ok(capture) => capture,
