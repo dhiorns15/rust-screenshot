@@ -104,9 +104,11 @@ their size and offers the same bulk actions as the toolbar.
 
 Recordings play in the library: click one for play and pause (Space), a timeline to click or drag,
 and ←/→ to skip 5 seconds. A recording with sound plays it in step with the picture; the speaker
-button beside play mutes it (and unmutes it), and the player remembers that for the next recording.
-*Trim* marks the part to keep, with the timeline's handles or *Start here* / *End here*, and *Save
-trimmed copy* saves it beside the original as "… (trimmed)". MP4s are cut without re-encoding, so
+button beside play mutes it (and unmutes it) without stopping the picture, and the player remembers
+that for the next recording. If the sound can't be played, "No sound" shows beside the time, and
+pointing at it says why. *Trim* marks the part to keep, with the timeline's handles or *Start here*
+/ *End here*; while trimming, playing stops at the end of the part kept and plays it again from its
+start. *Save trimmed copy* saves it beside the original as "… (trimmed)". MP4s are cut without re-encoding, so
 it's instant and loses nothing, but the cut starts on the keyframe at or before the start
 (recordings have one every second); GIFs are cut to the frame. A recording with sound keeps the
 sound of the part kept, in step with the picture, and the library's details say "with sound" beside

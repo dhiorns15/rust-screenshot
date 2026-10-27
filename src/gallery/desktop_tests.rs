@@ -432,12 +432,12 @@ fn desktop_plays_a_recordings_sound() {
 
     let before = sound_players();
     let begun = Instant::now();
-    let sound = super::player::play_sound(&recorded.path, Duration::from_secs(1)).expect("the sound starts");
+    let sound = super::player::play_sound(&recorded.path, Duration::from_secs(1), begun + Duration::from_secs(1)).expect("the sound starts");
     // How long the player's clock waits for the sound to begin.
     while !sound.ready() && begun.elapsed() < Duration::from_secs(10) {
         std::thread::sleep(Duration::from_millis(2));
     }
-    assert!(sound.ready());
+    assert!(sound.ready() && sound.failed().is_none(), "{:?}", sound.failed());
     eprintln!("the sound began after {:?}", begun.elapsed());
     wait_for(|| sound_players() == before + 1, "the sound server to hear the recording");
     // Dropping it silences it at once.

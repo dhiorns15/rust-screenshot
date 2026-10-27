@@ -88,29 +88,42 @@ fn webm_has_sound(path: &Path) -> bool {
 pub struct Sound {
     /// Set once the sound is audible, or given up on: there's nothing to wait for any more.
     ready: Arc<AtomicBool>,
+    /// Why it can't be heard, once that's known (a decoder that isn't installed, say).
+    failed: Arc<Mutex<Option<String>>>,
     /// What stops it, when dropped.
     _playing: Box<dyn Send>,
 }
 
 impl Sound {
     pub fn new(ready: Arc<AtomicBool>, playing: impl Send + 'static) -> Sound {
-        Sound { ready, _playing: Box::new(playing) }
+        Sound { ready, failed: Arc::default(), _playing: Box::new(playing) }
+    }
+
+    /// It says why it can't be heard in `failed`.
+    pub fn failing(self, failed: Arc<Mutex<Option<String>>>) -> Sound {
+        Sound { failed, ..self }
     }
 
     pub fn ready(&self) -> bool {
         self.ready.load(Ordering::Relaxed)
     }
+
+    pub fn failed(&self) -> Option<String> {
+        self.failed.lock().unwrap().clone()
+    }
 }
 
-/// Starts a recording's sound from a point in it.
-type StartSound = fn(&Path, Duration) -> Option<Sound>;
+/// Starts a recording's sound from a point in it, in step with a clock that's at that point at
+/// `due`, or when the sound is ready if that's sooner: sound that would come after it's due is left
+/// out, so it plays in step even when it's slow to start.
+type StartSound = fn(&Path, Duration, Instant) -> Option<Sound>;
 
-/// Plays a recording's sound from `from` through the system's speakers, if it can.
-pub fn play_sound(path: &Path, from: Duration) -> Option<Sound> {
+/// Plays a recording's sound from `from` through the system's speakers, if it can (see `StartSound`).
+pub fn play_sound(path: &Path, from: Duration, due: Instant) -> Option<Sound> {
     #[cfg(not(windows))]
-    return gst::sound(path, from);
+    return gst::sound(path, from, due);
     #[cfg(windows)]
-    return mf::sound(path, from);
+    return mf::sound(path, from, due);
 }
 
 /// How long the clock waits for the sound to start playing, so a sound that never does (no device)
@@ -340,6 +353,8 @@ pub struct Player {
     /// While the sound starts, the clock waits at where it begins, until the sound is playing or
     /// this time, so the picture and the sound set off together.
     sound_wait: Option<Instant>,
+    /// Why the sound can't be heard, once it has failed to play.
+    pub sound_failed: Option<String>,
     decoding: Option<Decoding>,
     /// When the decoder was last started, so dragging the scrubber doesn't restart it every frame.
     decoding_since: Instant,
@@ -372,6 +387,7 @@ impl Player {
             speakers: env.play_sound.then_some(play_sound as StartSound),
             sound: None,
             sound_wait: None,
+            sound_failed: None,
             decoding: None,
             decoding_since: Instant::now(),
             shown: None,
@@ -405,15 +421,20 @@ impl Player {
         self.info.duration.map_or(at, |d| at.min(d))
     }
 
+    /// Where playing stops: the end of the part kept, while trimming.
+    fn end(&self) -> Option<Duration> {
+        self.trim.map(|t| t.1).or(self.info.duration)
+    }
+
     pub fn play(&mut self) {
-        // From the start again, at the end.
-        let at_end = self.ended && self.next.is_none() || self.info.duration.is_some_and(|d| self.position() >= d);
+        // From the start again (of the part kept, while trimming), at the end.
+        let at_end = self.ended && self.next.is_none() || self.end().is_some_and(|e| self.position() >= e);
         let from = if at_end { self.trim.map_or(Duration::ZERO, |t| t.0) } else { self.position() };
         if at_end {
             self.seek(from);
         }
         self.playing_since = Some((Instant::now(), from));
-        self.start_sound(from);
+        self.start_sound(from, SOUND_START);
     }
 
     pub fn pause(&mut self) {
@@ -423,26 +444,29 @@ impl Player {
         self.sound_wait = None;
     }
 
-    /// Mutes or unmutes the sound, at once.
+    /// Mutes or unmutes the sound, at once. The picture goes on: unmuted, the sound joins it where
+    /// it has got to.
     pub fn mute(&mut self, muted: bool) {
         self.muted = muted;
         if self.playing() {
             let at = self.position();
             self.playing_since = Some((Instant::now(), at));
-            self.start_sound(at);
+            self.start_sound(at, Duration::ZERO);
         }
     }
 
     /// (Re)starts the sound from `from` while playing, unless it's muted, there's none or nothing to
-    /// play it through. The clock waits for it to begin.
-    fn start_sound(&mut self, from: Duration) {
+    /// play it through. The clock waits up to `wait` for it to begin; sound later than that is left
+    /// out.
+    fn start_sound(&mut self, from: Duration, wait: Duration) {
         // The one before stops first.
         self.sound = None;
         self.sound_wait = None;
         let audible = self.playing() && self.info.sound && !self.muted;
         if let (true, Some(start)) = (audible, self.speakers) {
-            self.sound = start(&self.path, from);
-            self.sound_wait = self.sound.as_ref().map(|_| Instant::now() + SOUND_START);
+            let due = Instant::now() + wait;
+            self.sound = start(&self.path, from, due);
+            self.sound_wait = self.sound.as_ref().filter(|_| !wait.is_zero()).map(|_| due);
         }
     }
 
@@ -462,7 +486,7 @@ impl Player {
             self.playing_since = Some((Instant::now(), to));
         }
         self.restart(to);
-        self.start_sound(to);
+        self.start_sound(to, SOUND_START);
     }
 
     fn restart(&mut self, from: Duration) {
@@ -483,14 +507,18 @@ impl Player {
         }
         if let Some(deadline) = self.sound_wait {
             if self.sound.as_ref().is_none_or(Sound::ready) || Instant::now() >= deadline {
-                // The sound is playing: the clock starts, and the picture follows it.
+                // The sound is playing: the clock starts, and the picture follows it. Past the
+                // deadline, it started then, as the sound (which leaves out what's late) has it.
                 self.sound_wait = None;
                 if let Some((_, from)) = self.playing_since {
-                    self.playing_since = Some((Instant::now(), from));
+                    self.playing_since = Some((Instant::now().min(deadline), from));
                 }
             } else {
                 ctx.request_repaint_after(Duration::from_millis(5));
             }
+        }
+        if let Some(why) = self.sound.as_ref().and_then(Sound::failed) {
+            self.sound_failed = Some(why);
         }
         let now = self.position();
         let mut newest = None;
@@ -531,7 +559,7 @@ impl Player {
             }
         }
         if self.playing() {
-            let end = self.trim.map(|t| t.1).or(self.info.duration);
+            let end = self.end();
             let finished = end.is_some_and(|e| self.position() >= e) || self.ended && self.next.is_none();
             if finished {
                 self.pause();
@@ -601,6 +629,9 @@ impl Player {
             }
             let total = self.info.duration.map_or("–:––".into(), clock);
             ui.label(egui::RichText::new(format!("{} / {total}", clock(self.position()))).monospace());
+            if let Some(why) = &self.sound_failed {
+                ui.weak("No sound").on_hover_text(why);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if self.trim.is_none() {
                     let trim = ui.add_enabled(self.kind.can_trim() && self.info.duration.is_some(), egui::Button::new(format!("{} Trim", super::theme::icon::SCISSORS)));
@@ -828,10 +859,10 @@ pub mod tests {
 
         // Plays from `from` until `stop` is set after `wait`, or the sound ends first; how much was
         // played, and how long after it began playing that was.
-        let play = |from: Duration, wait: Duration| {
+        let play = |from: Duration, wait: Duration, due: Instant| {
             let (stop, ready) = (AtomicBool::new(false), AtomicBool::new(false));
             std::thread::scope(|s| {
-                let thread = s.spawn(|| unsafe { mf::play(&path, from, &stop, &ready) });
+                let thread = s.spawn(|| unsafe { mf::play(&path, from, due, &stop, &ready) });
                 let begun = Instant::now();
                 while !ready.load(Ordering::Relaxed) && begun.elapsed() < Duration::from_secs(10) {
                     std::thread::sleep(Duration::from_millis(2));
@@ -845,11 +876,15 @@ pub mod tests {
                 (played, began.elapsed())
             })
         };
-        let (played, elapsed) = play(Duration::ZERO, Duration::from_millis(300));
+        let soon = || Instant::now() + Duration::from_secs(5);
+        let (played, elapsed) = play(Duration::ZERO, Duration::from_millis(300), soon());
         assert!(played.abs_diff(elapsed) < Duration::from_millis(100) && played > Duration::from_millis(200), "{played:?} played in {elapsed:?}");
         // 0.5 s from the end, it plays that and stops on its own.
-        let (played, elapsed) = play(Duration::from_millis(2500), Duration::from_secs(5));
+        let (played, elapsed) = play(Duration::from_millis(2500), Duration::from_secs(5), soon());
         assert!(played.abs_diff(Duration::from_millis(500)) < Duration::from_millis(100) && elapsed < Duration::from_secs(2), "{played:?} played in {elapsed:?}");
+        // Due 2 s ago, it leaves out the 2 s it's late for and plays the last second.
+        let (played, elapsed) = play(Duration::ZERO, Duration::from_secs(5), Instant::now() - Duration::from_secs(2));
+        assert!(played.abs_diff(Duration::from_secs(1)) < Duration::from_millis(150) && elapsed < Duration::from_secs(3), "{played:?} played in {elapsed:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -867,12 +902,15 @@ pub mod tests {
                 ALIVE.fetch_sub(1, Ordering::Relaxed);
             }
         }
-        fn sound(_: &Path, from: Duration) -> Option<Sound> {
+        static FAILED: Mutex<Option<Arc<Mutex<Option<String>>>>> = Mutex::new(None);
+        fn sound(_: &Path, from: Duration, _: Instant) -> Option<Sound> {
             ALIVE.fetch_add(1, Ordering::Relaxed);
             STARTS.lock().unwrap().push(from);
             let ready = Arc::new(AtomicBool::new(false));
             *READY.lock().unwrap() = Some(ready.clone());
-            Some(Sound::new(ready, Heard))
+            let failed = Arc::new(Mutex::new(None));
+            *FAILED.lock().unwrap() = Some(failed.clone());
+            Some(Sound::new(ready, Heard).failing(failed))
         }
         let heard = || ALIVE.load(Ordering::Relaxed);
         let last_start = || *STARTS.lock().unwrap().last().unwrap();
@@ -905,12 +943,22 @@ pub mod tests {
         wait(60);
         assert!(player.position() >= Duration::from_millis(50), "and goes on once it has: {:?}", player.position());
 
-        // Muting stops the sound and the picture goes on; unmuting starts it from where it's got to.
+        // Muting stops the sound and the picture goes on; unmuting starts it from where it's got to,
+        // and the picture doesn't wait for it.
         player.mute(true);
         assert!(player.playing() && player.muted && heard() == 0);
         wait(60);
         player.mute(false);
         assert!(heard() == 1 && last_start() >= Duration::from_millis(100), "{:?}", last_start());
+        let unmuted = last_start();
+        wait(60);
+        player.update(&ctx);
+        assert!(player.position() >= unmuted + Duration::from_millis(50), "{:?} from {unmuted:?}", player.position());
+        // Sound that can't play says why.
+        assert_eq!(player.sound_failed, None);
+        *FAILED.lock().unwrap().as_ref().unwrap().lock().unwrap() = Some("No decoder".into());
+        player.update(&ctx);
+        assert_eq!(player.sound_failed.as_deref(), Some("No decoder"));
         // Seeking starts it again from there, and pausing stops it.
         player.seek(Duration::from_secs(1));
         assert!(heard() == 1 && last_start() == Duration::from_secs(1));
@@ -930,6 +978,33 @@ pub mod tests {
         // It starts out muted if it was last time.
         env.set_setting(PLAYER_MUTED.name, 1);
         assert!(Player::open(&path, &env).unwrap().muted);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// While trimming, playing stops at the end of the part kept, and playing again from there
+    /// plays it from its start.
+    #[test]
+    fn replays_the_part_kept_from_its_start() {
+        let dir = std::env::temp_dir().join(format!("rsnip-player-replay-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Recording.gif");
+        gif(&path, 20);
+        let mut player = Player::open(&path, &Env::sandbox(dir.clone())).unwrap();
+        let ctx = egui::Context::default();
+        let (from, to) = (Duration::from_millis(500), Duration::from_millis(800));
+        player.trim = Some((from, to));
+        player.seek(Duration::from_millis(600));
+        player.play();
+        let begun = Instant::now();
+        while player.playing() && begun.elapsed() < Duration::from_secs(5) {
+            player.update(&ctx);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!player.playing() && player.position() == to, "stops at the end of the part kept: {:?}", player.position());
+        player.play();
+        assert!(player.playing() && player.position().abs_diff(from) < Duration::from_millis(50), "from its start: {:?}", player.position());
+        player.update(&ctx);
+        assert!(player.playing(), "and goes on");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

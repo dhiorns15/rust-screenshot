@@ -5,8 +5,8 @@
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use eframe::egui::ColorImage;
 use windows::core::{GUID, HSTRING};
@@ -91,16 +91,19 @@ unsafe fn read(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> win
     }
 }
 
-/// Starts `path`'s sound playing from `from`, on a thread of its own.
-pub fn sound(path: &Path, from: Duration) -> Option<Sound> {
-    let (stop, ready) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
-    let (path, thread_stop, thread_ready) = (path.to_owned(), stop.clone(), ready.clone());
+/// Starts `path`'s sound playing from `from`, in step with a clock that's there at `due` (see
+/// `StartSound`), on a thread of its own.
+pub fn sound(path: &Path, from: Duration, due: Instant) -> Option<Sound> {
+    let (stop, ready, failed) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)));
+    let (path, thread_stop, thread_ready, failing) = (path.to_owned(), stop.clone(), ready.clone(), failed.clone());
     std::thread::spawn(move || {
-        let _ = unsafe { play(&path, from, &thread_stop, &thread_ready) };
+        if let Err(e) = unsafe { play(&path, from, due, &thread_stop, &thread_ready) } {
+            *failing.lock().unwrap() = Some(format!("Couldn't play the sound: {}", e.message()));
+        }
         // Played or not, there's nothing more to wait for.
         thread_ready.store(true, Ordering::Relaxed);
     });
-    Some(Sound::new(ready, Stop(stop)))
+    Some(Sound::new(ready, Stop(stop)).failing(failed))
 }
 
 /// Stops the sound's thread when dropped (which it notices within a few milliseconds).
@@ -116,8 +119,9 @@ impl Drop for Stop {
 const POLL: Duration = Duration::from_millis(10);
 
 /// Decodes the first sound track of `path` from `from` and plays it, until it ends or `stop` is
-/// set; sets `ready` once it's playing. Returns how much sound was played.
-pub(super) unsafe fn play(path: &Path, from: Duration, stop: &AtomicBool, ready: &AtomicBool) -> windows::core::Result<Duration> {
+/// set; sets `ready` once it's playing. What's late for `due` is left out. Returns how much sound
+/// was played.
+pub(super) unsafe fn play(path: &Path, from: Duration, due: Instant, stop: &AtomicBool, ready: &AtomicBool) -> windows::core::Result<Duration> {
     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     MFStartup(MF_VERSION, MFSTARTUP_FULL)?;
     let reader = MFCreateSourceReaderFromURL(&HSTRING::from(path.as_os_str()), None)?;
@@ -133,13 +137,15 @@ pub(super) unsafe fn play(path: &Path, from: Duration, stop: &AtomicBool, ready:
     let rate = current.GetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND)?;
     let channels = current.GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS)?.max(1) as usize;
     // In 100 ns units.
-    let from_units = from.as_nanos() as i64 / 100;
+    let units = |d: Duration| d.as_nanos() as i64 / 100;
     if !from.is_zero() {
         // The reader goes to somewhere before; the sound before `from` is dropped below.
-        reader.SetCurrentPosition(&GUID::zeroed(), &PROPVARIANT::from(from_units))?;
+        reader.SetCurrentPosition(&GUID::zeroed(), &PROPVARIANT::from(units(from)))?;
     }
 
     let mut speaker = Speaker::open(rate, channels as u32)?;
+    // As is what's late, if it's taken longer than it had to get this far.
+    let from_units = units(from + Instant::now().saturating_duration_since(due));
     // Decoded, and waiting for room in the speaker.
     let mut pending: VecDeque<i16> = VecDeque::new();
     let (mut started, mut ended) = (false, false);

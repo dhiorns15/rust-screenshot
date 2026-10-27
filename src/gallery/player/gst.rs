@@ -3,12 +3,12 @@
 //! `gst-launch` can't seek, so playing from somewhere in an MP4 decodes a copy cut there (see mp4.rs),
 //! from the keyframe before it. The sound is decoded and played by GStreamers of their own (`sound`).
 
-use std::io::{BufRead, Read};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use eframe::egui::ColorImage;
 
@@ -19,6 +19,20 @@ const FPS: u32 = 30;
 
 /// What decoding needs that may not be installed, and where it comes from.
 pub const DECODER_MISSING: &str = "Playing MP4s needs an H.264 decoder for GStreamer: gstreamer1.0-libav on Debian and Ubuntu, gstreamer1-plugin-openh264 on Fedora, gst-libav on Arch";
+/// The same for their sound.
+pub const SOUND_DECODER_MISSING: &str = "Playing the sound needs an AAC decoder for GStreamer: gstreamer1.0-libav on Debian and Ubuntu, gstreamer1-plugin-libav on Fedora, gst-libav on Arch";
+
+/// `gst-launch-1.0`, saying what it says in English (not the desktop's language), as RSnip reads it.
+fn gst_launch() -> Command {
+    let mut command = Command::new("gst-launch-1.0");
+    command.env("LC_ALL", "C").env_remove("LANGUAGE");
+    command
+}
+
+/// Whether what GStreamer said is that a decoder it needs isn't installed.
+fn missing_decoder(said: &str) -> bool {
+    said.contains("Missing decoder") || said.contains("no suitable plugins")
+}
 
 /// A cut copy to decode from, removed when done.
 struct Temp(PathBuf);
@@ -46,7 +60,7 @@ pub fn decode(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> Resu
     }
     let source = temp.as_ref().map_or(path, |t| t.0.as_path());
     let caps = format!("video/x-raw,format=RGBA,width={width},height={height},pixel-aspect-ratio=1/1,framerate={FPS}/1");
-    let mut child = Command::new("gst-launch-1.0")
+    let mut child = gst_launch()
         .args(["-q", "filesrc"])
         .arg(format!("location={}", source.display()))
         .args(["!", "decodebin", "!", "videoconvert", "!", "videoscale", "add-borders=true", "!", "videorate", "!", &caps, "!", "fdsink", "fd=1"])
@@ -81,7 +95,7 @@ pub fn decode(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> Resu
         if let Some(mut stderr) = child.stderr.take() {
             let _ = stderr.read_to_string(&mut err);
         }
-        return Err(if err.contains("Missing decoder") || err.contains("no suitable plugins") {
+        return Err(if missing_decoder(&err) {
             DECODER_MISSING.into()
         } else {
             let line = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("it stopped").trim();
@@ -97,26 +111,41 @@ const PCM: &str = "audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channe
 /// Bytes of it per second.
 const PCM_PER_SECOND: u64 = 48_000 * 4;
 
-/// Starts `path`'s sound playing from `from`. One GStreamer decodes it to raw sound and RSnip drops
-/// what comes before `from` (it can't seek, and a cut copy would start at a keyframe, up to a
-/// second early) on its way to a second, which plays it on the default output. Both are killed
-/// when the `Sound` is dropped.
-pub fn sound(path: &Path, from: Duration) -> Option<Sound> {
-    start(path, from).map(|(playing, ready)| Sound::new(ready, playing))
+/// Starts `path`'s sound playing from `from`, in step with a clock that's there at `due` (see
+/// `StartSound`). One GStreamer decodes its sound track (not its video) to raw sound, and RSnip
+/// drops what comes before `from` (it can't seek, and a cut copy would start at a keyframe, up to a
+/// second early) and what comes too late, on its way to a second, which plays it on the default
+/// output. Both are killed when the `Sound` is dropped.
+pub fn sound(path: &Path, from: Duration, due: Instant) -> Option<Sound> {
+    start(path, from, due).map(|(playing, ready, failed)| Sound::new(ready, playing).failing(failed))
 }
 
-fn start(path: &Path, from: Duration) -> Option<(Playing, Arc<AtomicBool>)> {
-    let mut decoder = Command::new("gst-launch-1.0")
-        .args(["-q", "filesrc"])
-        .arg(format!("location={}", path.display()))
-        .args(["!", "decodebin", "!", "audioconvert", "!", "audioresample", "!", PCM, "!", "fdsink", "fd=1"])
+/// Why a sound plays no more, once that's known.
+type Failed = Arc<Mutex<Option<String>>>;
+
+/// The GStreamer that decodes `path`'s sound to raw sound on its standard output: just its sound
+/// track, so starting far into a long recording doesn't wait for its video to be decoded too.
+fn decoder(path: &Path) -> Option<Command> {
+    let demuxer = match Kind::of(path) {
+        Some(Kind::Mp4) => "qtdemux",
+        Some(Kind::WebM) => "matroskademux",
+        _ => return None,
+    };
+    let mut command = gst_launch();
+    command.args(["-q", "filesrc"]).arg(format!("location={}", path.display()));
+    command.args(["!", demuxer, "name=d", "d.audio_0", "!", "queue", "!", "decodebin", "!", "audioconvert", "!", "audioresample", "!", PCM, "!", "fdsink", "fd=1"]);
+    Some(command)
+}
+
+fn start(path: &Path, from: Duration, due: Instant) -> Option<(Playing, Arc<AtomicBool>, Failed)> {
+    let mut decoder = decoder(path)?
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .ok()?;
     // Not quiet, as it says "New clock" once it's playing.
-    let player = Command::new("gst-launch-1.0")
+    let player = gst_launch()
         .args(["fdsrc", "fd=0", "!", PCM, "!", "audioconvert", "!", "audioresample", "!", "autoaudiosink"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -127,10 +156,20 @@ fn start(path: &Path, from: Duration) -> Option<(Playing, Arc<AtomicBool>)> {
         let _ = decoder.wait();
         return None;
     };
-    let (mut raw, mut speaker, said) = (decoder.stdout.take().expect("piped"), player.stdin.take().expect("piped"), player.stdout.take().expect("piped"));
-    let skip = (from.as_secs_f64() * PCM_PER_SECOND as f64) as u64 / 4 * 4;
+    let (raw, speaker, said) = (decoder.stdout.take().expect("piped"), player.stdin.take().expect("piped"), player.stdout.take().expect("piped"));
+    let mut complaints = decoder.stderr.take().expect("piped");
+    let failed = Failed::default();
+    let failing = failed.clone();
     std::thread::spawn(move || {
-        let _ = std::io::copy(&mut raw.by_ref().take(skip), &mut std::io::sink()).and_then(|_| std::io::copy(&mut raw, &mut speaker));
+        if let Ok(0) = feed(raw, speaker, bytes(from), due) {
+            // No sound came out. If that's for want of a decoder, the player says so. (The decoder
+            // has stopped, or stops now nothing reads what it decodes.)
+            let mut err = String::new();
+            let _ = complaints.read_to_string(&mut err);
+            if missing_decoder(&err) {
+                *failing.lock().unwrap() = Some(SOUND_DECODER_MISSING.into());
+            }
+        }
     });
     let ready = Arc::new(AtomicBool::new(false));
     let waiting = ready.clone();
@@ -144,7 +183,26 @@ fn start(path: &Path, from: Duration) -> Option<(Playing, Arc<AtomicBool>)> {
         // It has ended, or failed (no sound device, say): nothing more to wait for.
         waiting.store(true, Ordering::Relaxed);
     });
-    Some((Playing([decoder, player]), ready))
+    Some((Playing([decoder, player]), ready, failed))
+}
+
+/// How many bytes of raw sound play in `d`, in whole samples.
+fn bytes(d: Duration) -> u64 {
+    (d.as_secs_f64() * PCM_PER_SECOND as f64) as u64 / 4 * 4
+}
+
+/// Passes raw sound from `raw` to `speaker`, but for its first `skip` bytes, and the sound that
+/// comes late: what was due between `due` and when the rest arrives (if that's after), so it starts
+/// in step with the picture. Returns how many bytes it passed on.
+fn feed(raw: impl Read, mut speaker: impl Write, skip: u64, due: Instant) -> std::io::Result<u64> {
+    let mut raw = std::io::BufReader::with_capacity(64 * 1024, raw);
+    std::io::copy(&mut raw.by_ref().take(skip), &mut std::io::sink())?;
+    if raw.fill_buf()?.is_empty() {
+        return Ok(0);
+    }
+    let late = bytes(Instant::now().saturating_duration_since(due));
+    std::io::copy(&mut raw.by_ref().take(late), &mut std::io::sink())?;
+    std::io::copy(&mut raw, &mut speaker)
 }
 
 /// The two processes making a recording's sound heard, killed when dropped.
@@ -202,10 +260,14 @@ mod tests {
             let decoding = super::super::decode(&path, Duration::ZERO, (320, 240), None);
             let frames = decoding.frames.iter().count();
             assert!((88..=92).contains(&frames), "{name}: {frames} frames, {:?}", decoding.failed.lock().unwrap());
+            // Its sound track decodes to raw sound, all 3 s of it.
+            let pcm = decoder(&path).unwrap().output().unwrap();
+            let seconds = pcm.stdout.len() as f64 / PCM_PER_SECOND as f64;
+            assert!((2.8..3.2).contains(&seconds), "{name}: {seconds} s of sound, {}", String::from_utf8_lossy(&pcm.stderr));
 
             // Ready once it plays, or has given up: there may be no sound server here.
             let begun = Instant::now();
-            let (playing, ready) = start(&path, Duration::from_millis(1500)).expect("GStreamer starts");
+            let (playing, ready, _) = start(&path, Duration::from_millis(1500), begun + Duration::from_secs(1)).expect("GStreamer starts");
             let pids = playing.0.each_ref().map(Child::id);
             while !ready.load(Ordering::Relaxed) && begun.elapsed() < Duration::from_secs(10) {
                 std::thread::sleep(Duration::from_millis(5));
@@ -217,6 +279,32 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The sound before where it starts is left out, and so is what comes too late to play in step.
+    #[test]
+    fn drops_the_sound_before_the_start_and_what_comes_late() {
+        /// Raw sound that takes `0` to start coming.
+        struct Slow(Duration, std::io::Cursor<Vec<u8>>);
+        impl Read for Slow {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                std::thread::sleep(std::mem::take(&mut self.0));
+                self.1.read(buf)
+            }
+        }
+        let second = || std::io::Cursor::new(vec![0u8; PCM_PER_SECOND as usize]);
+        let later = Instant::now() + Duration::from_secs(60);
+        let mut heard = Vec::new();
+        assert_eq!(feed(second(), &mut heard, bytes(Duration::from_millis(250)), later).unwrap(), bytes(Duration::from_millis(750)));
+        assert_eq!(heard.len() as u64, bytes(Duration::from_millis(750)));
+
+        // Due now, but 0.2 s coming: it starts 0.2 s in.
+        let passed = feed(Slow(Duration::from_millis(200), second()), std::io::sink(), 0, Instant::now()).unwrap();
+        assert!((bytes(Duration::from_millis(650))..=bytes(Duration::from_millis(800))).contains(&passed), "{passed}");
+        assert_eq!(passed % 4, 0, "whole samples");
+        // Due later, nothing is late.
+        assert_eq!(feed(Slow(Duration::from_millis(50), second()), std::io::sink(), 0, later).unwrap(), PCM_PER_SECOND);
+        assert_eq!(feed(std::io::empty(), std::io::sink(), 0, Instant::now()).unwrap(), 0);
     }
 
     #[test]
