@@ -1,7 +1,8 @@
 //! Decoding recordings with GStreamer (`gst-launch-1.0`), which sends raw frames on its standard
 //! output at a steady 30 per second, so each frame's time is known from how many came before.
-//! `gst-launch` can't seek, so playing from somewhere in an MP4 decodes a copy cut there (see mp4.rs),
-//! from the keyframe before it. The sound is decoded and played by GStreamers of their own (`sound`).
+//! `gst-launch` can't seek, so playing from somewhere in an MP4 decodes a copy of its picture cut
+//! there (see mp4.rs), from the keyframe before it. The sound is decoded and played by GStreamers of
+//! their own (`sound`).
 
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -51,19 +52,25 @@ pub fn decode(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> Resu
     let mut start = Duration::ZERO;
     let mut temp = None;
     if let (Some(movie), false) = (&movie, from.is_zero()) {
+        // Just the video, in this user's own folder (not the shared /tmp).
         static NEXT: AtomicU32 = AtomicU32::new(0);
-        let cut = std::env::temp_dir().join(format!("rsnip-play-{}-{}.mp4", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        if let Ok((keyframe, _)) = movie.cut(path, &cut, from, Duration::MAX) {
+        let cut = super::super::platform::runtime_dir().join(format!("play-{}-{}.mp4", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        if let Ok((keyframe, _)) = movie.cut_tracks(path, &cut, from, Duration::MAX, false) {
             start = keyframe;
             temp = Some(Temp(cut));
         }
     }
     let source = temp.as_ref().map_or(path, |t| t.0.as_path());
     let caps = format!("video/x-raw,format=RGBA,width={width},height={height},pixel-aspect-ratio=1/1,framerate={FPS}/1");
-    let mut child = gst_launch()
-        .args(["-q", "filesrc"])
-        .arg(format!("location={}", source.display()))
-        .args(["!", "decodebin", "!", "videoconvert", "!", "videoscale", "add-borders=true", "!", "videorate", "!", &caps, "!", "fdsink", "fd=1"])
+    let mut command = gst_launch();
+    command.args(["-q", "filesrc"]).arg(format!("location={}", source.display()));
+    // Just the video track is decoded, not the sound (which plays by itself, see `sound`).
+    match demuxer(path) {
+        Some(demuxer) => command.args(["!", demuxer, "name=d", "d.video_0", "!", "queue", "!", "decodebin"]),
+        None => command.args(["!", "decodebin"]),
+    };
+    let mut child = command
+        .args(["!", "videoconvert", "!", "videoscale", "add-borders=true", "!", "videorate", "!", &caps, "!", "fdsink", "fd=1"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -106,6 +113,15 @@ pub fn decode(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> Resu
     Ok(())
 }
 
+/// The GStreamer element that splits a recording like `path` into its tracks.
+fn demuxer(path: &Path) -> Option<&'static str> {
+    match Kind::of(path) {
+        Some(Kind::Mp4) => Some("qtdemux"),
+        Some(Kind::WebM) => Some("matroskademux"),
+        _ => None,
+    }
+}
+
 /// The sound as it passes from one GStreamer to the other: 48 kHz stereo, 16 bits.
 const PCM: &str = "audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=2";
 /// Bytes of it per second.
@@ -126,11 +142,7 @@ type Failed = Arc<Mutex<Option<String>>>;
 /// The GStreamer that decodes `path`'s sound to raw sound on its standard output: just its sound
 /// track, so starting far into a long recording doesn't wait for its video to be decoded too.
 fn decoder(path: &Path) -> Option<Command> {
-    let demuxer = match Kind::of(path) {
-        Some(Kind::Mp4) => "qtdemux",
-        Some(Kind::WebM) => "matroskademux",
-        _ => return None,
-    };
+    let demuxer = demuxer(path)?;
     let mut command = gst_launch();
     command.args(["-q", "filesrc"]).arg(format!("location={}", path.display()));
     command.args(["!", demuxer, "name=d", "d.audio_0", "!", "queue", "!", "decodebin", "!", "audioconvert", "!", "audioresample", "!", PCM, "!", "fdsink", "fd=1"]);
@@ -280,6 +292,39 @@ mod tests {
                 assert!(!Path::new(&format!("/proc/{pid}")).exists(), "{name}: process {pid} is gone");
             }
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Played from half way, the picture starts with the frame shown then, with or without sound:
+    /// an MP4's from a cut of just its picture, which is gone once it's played.
+    #[test]
+    fn plays_the_picture_from_half_way() {
+        let dir = dir("from");
+        let silent = |path: &Path, kind: Kind| {
+            let (video, mux) = if kind == Kind::WebM { ("vp8enc", "webmmux") } else { ("x264enc key-int-max=30 ! h264parse", "mp4mux") };
+            let pipeline = format!("videotestsrc num-buffers=90 ! video/x-raw,width=320,height=240,framerate=30/1 ! videoconvert ! {video} ! {mux} ! filesink location={}", path.display());
+            Command::new("gst-launch-1.0").arg("-q").args(pipeline.split_whitespace()).output().is_ok_and(|o| o.status.success())
+        };
+        let cuts = || std::fs::read_dir(super::super::super::platform::runtime_dir()).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with(&format!("play-{}-", std::process::id()))).count();
+        for (kind, name, sound) in [(Kind::Mp4, "Sound.mp4", true), (Kind::WebM, "Sound.webm", true), (Kind::Mp4, "Silent.mp4", false), (Kind::WebM, "Silent.webm", false)] {
+            let path = dir.join(name);
+            if !(if sound { recording_with_sound(&path, kind) } else { silent(&path, kind) }) {
+                eprintln!("skipped {name}: no GStreamer, or no encoders to make one with");
+                continue;
+            }
+            assert_eq!(super::super::info(&path).sound, sound, "{name}");
+            let decoding = super::super::decode(&path, Duration::from_millis(1500), (320, 240), None);
+            let frames: Vec<Duration> = std::iter::from_fn(|| decoding.frames.recv_timeout(Duration::from_secs(60)).ok()).map(|f| f.at).collect();
+            assert!((43..=47).contains(&frames.len()), "{name}: {} frames, {:?}", frames.len(), decoding.failed.lock().unwrap());
+            assert!(frames[0].abs_diff(Duration::from_millis(1500)) < Duration::from_millis(17), "{name}: the first at {:?}", frames[0]);
+            assert!(frames.windows(2).all(|w| w[1] > w[0]), "{name}: in order");
+        }
+        // The cuts, once played, are removed (the player test may still be playing its own).
+        let begun = Instant::now();
+        while cuts() > 0 && begun.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(cuts(), 0, "no cuts left behind");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

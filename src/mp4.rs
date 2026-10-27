@@ -184,6 +184,12 @@ impl Movie {
     /// starts and ends at, the start moved back to a keyframe. The sound tracks keep the audio
     /// frames that start inside that, each shown as long after the start as it was before.
     pub fn cut(&self, src: &Path, dst: &Path, from: Duration, to: Duration) -> Result<(Duration, Duration), String> {
+        self.cut_tracks(src, dst, from, to, true)
+    }
+
+    /// `cut`, with the sound tracks only if `sound`: decoding the picture needn't copy the sound.
+    /// The video is cut the same either way.
+    pub fn cut_tracks(&self, src: &Path, dst: &Path, from: Duration, to: Duration, sound: bool) -> Result<(Duration, Duration), String> {
         let span = self.span(from, to);
         let video = &self.video.samples[span];
         let start = self.video.shown(&video[0]);
@@ -195,7 +201,7 @@ impl Movie {
         let end = self.video.until.map_or(end, |until| end.min(until).max(start));
 
         let mut parts = vec![Part::new(&self.video, video, true, (start, Some(end)), self.video.timescale)];
-        for track in &self.sound {
+        for track in self.sound.iter().filter(|_| sound) {
             let kept = track.within(start, end, self.video.timescale);
             if !kept.is_empty() {
                 parts.push(Part::new(track, kept, false, (start, None), self.video.timescale));
@@ -946,6 +952,50 @@ pub(crate) mod tests {
         assert_eq!(part.keyframes(), [0.0, 1.0].map(Duration::from_secs_f64));
         assert!((part.duration().as_secs_f64() - 1.5).abs() < 1e-6);
         assert_eq!(part.sound[0].samples.len(), 71, "the 47th to the 117th, as without B-frames");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cut_of_just_the_video_leaves_the_sound_out_and_keeps_its_edit_list() {
+        let dir = temp_dir("video-only");
+        // Shown two frames after it's decoded, from media time 6000, with sound 50 ms late.
+        let (mut movie, data) = movie_with_sound(90, 141, 30);
+        movie.video.ctts_version = Some(0);
+        for s in &mut movie.video.samples {
+            s.cts = 6000;
+        }
+        movie.video.shift = -6000;
+        movie.sound[0].shift = 2400;
+        let whole = dir.join("whole.mp4");
+        write(&mut movie, &data, &whole);
+        let read = Movie::open(&whole).unwrap();
+        assert!(read.has_sound());
+
+        // From the keyframe shown at 1 s, as a cut with the sound would.
+        let cut = dir.join("cut.mp4");
+        let (from, to) = read.cut_tracks(&whole, &cut, Duration::from_secs_f64(1.5), Duration::MAX, false).unwrap();
+        assert_eq!((from, to), (Duration::from_secs(1), Duration::from_secs(3)));
+        let file = std::fs::read(&cut).unwrap();
+        assert_eq!(edit_lists(&file), [vec![(2000, 6000)]], "one track: 2 s from media time 6000");
+        let part = Movie::open(&cut).unwrap();
+        assert!(!part.has_sound());
+        assert_eq!((part.frames(), part.video.shift, part.video.id()), (60, -6000, 1));
+        assert_eq!(part.keyframes(), [0.0, 1.0].map(Duration::from_secs_f64));
+        assert!((part.duration().as_secs_f64() - 2.0).abs() < 1e-6);
+        // The 30th to the 89th frames, byte for byte, and nothing else in its data.
+        for (n, bytes) in (30u8..).zip(bytes_of(&file, &part.video)) {
+            assert!(bytes.iter().all(|&b| b == n) && bytes.len() == 10 + n as usize % 7, "frame {n}");
+        }
+        let video_bytes: u64 = part.video.samples.iter().map(|s| s.size as u64).sum();
+        assert_eq!(file.len() as u64, part.video.samples[0].offset + video_bytes);
+        assert_eq!(be32(full(&part.mvhd), 12), 2000, "mvhd, in ms: the picture's length, not the sound's");
+
+        // The same as the picture of a cut with the sound.
+        let both = dir.join("both.mp4");
+        assert_eq!(read.cut(&whole, &both, Duration::from_secs_f64(1.5), Duration::MAX).unwrap(), (from, to));
+        let both = Movie::open(&both).unwrap();
+        assert!(both.has_sound());
+        assert_eq!(both.shown()[0], part.shown()[0]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
