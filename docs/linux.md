@@ -162,6 +162,11 @@ say), the downloaded package is kept, and Settings shows the command that instal
 such as `sudo apt install /tmp/rsnip-update-…/rsnip-X.Y.Z.deb`. Other copies can't update
 themselves: download the new version and run `./install.sh` again.
 
+Upgrading the package stops RSnip's icon in the top bar or panel, which was running the old program.
+After *Install* in Settings, Settings starts it again from the new one; after an upgrade from the
+terminal or your software centre, it's back when the library next opens (or when you sign in, if
+it starts then).
+
 Passwords and keys for *Push to* and *Descriptions* are kept in the desktop's keyring (GNOME
 Keyring, KWallet: any Secret Service). Over remote desktop (xrdp) the login keyring is often locked:
 Settings asks for it to be unlocked when it needs one of them, and says *The keyring is locked* if

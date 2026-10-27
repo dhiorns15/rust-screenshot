@@ -47,6 +47,12 @@ pub fn claim_single_instance(name: &str, title: &str) -> bool {
     false
 }
 
+/// Where another launch leaves its request for the window holding `claim_single_instance(name)`
+/// (the user's own temporary folder).
+pub fn request_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("rsnip-{}.request", name.to_lowercase()))
+}
+
 /// True if no other RSnip process holds the lock `name` (with no window, unlike
 /// `claim_single_instance`); this one then holds it until it exits.
 pub fn claim_lock(name: &str) -> bool {

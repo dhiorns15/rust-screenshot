@@ -39,9 +39,13 @@ pub(super) fn issue_url(system_info: &str, crash: Option<&str>) -> String {
 }
 
 pub fn run() {
+    let request = asked(std::env::args());
     if !platform::claim_single_instance("Settings", TITLE) {
+        // The open window picks this up, goes to that section and comes to the front.
+        let _ = std::fs::write(platform::request_path("Settings"), request);
         return;
     }
+    let _ = std::fs::remove_file(platform::request_path("Settings"));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(TITLE)
@@ -51,27 +55,22 @@ pub fn run() {
             .with_app_id(super::APP_ID),
         ..Default::default()
     };
-    // `--system-info`: opened to report a crash. `--recording`: from the capture panel.
-    // `--updates`: from the library's "is available" link, to install it.
-    let system_info = std::env::args().any(|a| a == "--system-info");
-    let recording = std::env::args().any(|a| a == "--recording");
-    let updates = std::env::args().any(|a| a == "--updates");
     let _ = eframe::run_native(
         TITLE,
         options,
         Box::new(move |cc| {
             let mut app = SettingsApp::new(&cc.egui_ctx, Env::real());
-            if system_info {
-                app.section = Section::SystemInfo;
-            } else if recording {
-                app.section = Section::Recording;
-            } else if updates {
-                app.section = Section::Updates;
-                app.update = UpdateCheck::Checking(app.env.check_for_update(&cc.egui_ctx));
-            }
+            app.go_to(&cc.egui_ctx, request);
             Ok(Box::new(app))
         }),
     );
+}
+
+/// The section a launch asks for: `--system-info` to report a crash, `--recording` from the
+/// capture panel, `--updates` from the library's "is available" link (to install it), or none ("").
+pub(super) fn asked(args: impl IntoIterator<Item = String>) -> &'static str {
+    let args: Vec<String> = args.into_iter().collect();
+    ["--system-info", "--recording", "--updates"].into_iter().find(|flag| args.iter().any(|a| a == flag)).unwrap_or("")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -169,6 +168,9 @@ pub struct SettingsApp {
     /// How many are old enough to clean up, for the days it was counted for and when.
     old: Option<(Instant, u32, usize)>,
     installing: Installing,
+    /// The background icon is to come back once its old program has gone (Linux: installing the
+    /// package stops it, see installer/linux/package/debian/prerm).
+    restart_tray: bool,
     push: push::PushState,
     describe: descriptions::DescribeState,
 }
@@ -187,7 +189,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, sound_devices: Default::default(), picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, push: Default::default(), describe: Default::default() }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, sound_devices: Default::default(), picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, restart_tray: false, push: Default::default(), describe: Default::default() }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -214,12 +216,43 @@ impl SettingsApp {
         ui.spacing_mut().item_spacing.y = 2.0;
         for section in self.sections() {
             if theme::nav_item(ui, section.icon(), section.title(), self.section == section).clicked() {
-                self.section = section;
-                self.note = None;
-                self.report = None;
-                self.sound_devices = Default::default();
+                self.open(section);
             }
         }
+    }
+
+    fn open(&mut self, section: Section) {
+        self.section = section;
+        self.note = None;
+        self.report = None;
+        self.sound_devices = Default::default();
+    }
+
+    /// Goes to the section a launch asked for (see `asked`); Updates checks for one too, unless
+    /// it's checking or installing already. Without one it stays where it is.
+    pub fn go_to(&mut self, ctx: &egui::Context, request: &str) {
+        let section = match request {
+            "--system-info" => Section::SystemInfo,
+            "--recording" => Section::Recording,
+            "--updates" => Section::Updates,
+            _ => return,
+        };
+        if section != self.section {
+            self.open(section);
+        }
+        let busy = matches!(self.update, UpdateCheck::Checking(_)) || matches!(self.installing, Installing::Started(_) | Installing::Done(Ok(())));
+        if section == Section::Updates && !busy {
+            self.update = UpdateCheck::Checking(self.env.check_for_update(ctx));
+        }
+    }
+
+    /// Another launch's request (see `run`): to that section, and to the front.
+    fn poll_request(&mut self, ctx: &egui::Context) {
+        let Ok(request) = std::fs::read_to_string(&self.env.settings_request_file) else { return };
+        let _ = std::fs::remove_file(&self.env.settings_request_file);
+        self.go_to(ctx, request.trim());
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 
     fn content(&mut self, ui: &mut Ui) {
@@ -671,6 +704,7 @@ impl SettingsApp {
                             Err(e) => format!("Couldn't install the update: {e}"),
                         });
                     }
+                    self.restart_tray = !cfg!(windows) && result.is_ok() && self.get(options::RUN_IN_BACKGROUND);
                     self.installing = Installing::Done(result);
                 }
             }
@@ -780,8 +814,15 @@ impl eframe::App for SettingsApp {
         if self.gpu.is_none() {
             self.gpu = system_info::gpu(frame);
         }
-        // Pick up changes made elsewhere, like a shortcut the tray app just recorded.
+        // Pick up changes made elsewhere, like a shortcut the tray app just recorded, and other
+        // launches' requests.
         ui.ctx().request_repaint_after(Duration::from_millis(500));
+        self.poll_request(ui.ctx());
+        // From the program just installed (see `platform::program`).
+        if self.restart_tray && !self.env.tray_running() {
+            self.restart_tray = false;
+            self.env.start_tray();
+        }
         theme::set_appearance(ui.ctx(), Appearance::from_setting(self.env.setting(Appearance::SETTING)));
         egui::Panel::left("sections")
             .frame(egui::Frame::NONE.fill(theme::palette(ui).subpanel).inner_margin(egui::Margin::same(14)))

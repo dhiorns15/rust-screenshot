@@ -32,6 +32,12 @@ pub fn claim_single_instance(name: &str, _title: &str) -> bool {
     true
 }
 
+/// Where another launch leaves its request for the window holding `claim_single_instance(name)`
+/// (next to the lock, so it's this user's own).
+pub fn request_path(name: &str) -> PathBuf {
+    lock_path(name).with_extension("request")
+}
+
 /// True if no other RSnip process holds the lock `name` (with no window, unlike
 /// `claim_single_instance`); this one then holds it until it exits.
 pub fn claim_lock(name: &str) -> bool {
@@ -62,7 +68,7 @@ pub fn set_start_with_windows(on: bool) -> bool {
     if !on {
         return std::fs::remove_file(&file).is_ok() || !file.exists();
     }
-    let Ok(exe) = std::env::current_exe() else { return false };
+    let exe = program();
     let entry = format!(
         "[Desktop Entry]\nType=Application\nName=RSnip\nComment=RSnip in the background, for screenshots and recordings\nExec={} --tray\nIcon=rsnip\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n",
         desktop_quote(&exe.to_string_lossy())
@@ -152,31 +158,23 @@ pub fn start_tray() {
 /// Runs RSnip again with `args`, on its own, so it outlives this process and the terminal.
 pub fn spawn_self(args: &[&str]) {
     use std::os::unix::process::CommandExt;
-    if let Ok(exe) = std::env::current_exe() {
-        reap(Command::new(exe).args(args).process_group(0).spawn());
-    }
+    reap(Command::new(program()).args(args).process_group(0).spawn());
 }
 
 /// Opens the Settings window, on System info if `system_info`.
 pub fn open_settings(system_info: bool) {
-    if let Ok(exe) = std::env::current_exe() {
-        let args: &[&str] = if system_info { &["--settings", "--system-info"] } else { &["--settings"] };
-        reap(Command::new(exe).args(args).spawn());
-    }
+    let args: &[&str] = if system_info { &["--settings", "--system-info"] } else { &["--settings"] };
+    reap(Command::new(program()).args(args).spawn());
 }
 
 /// Opens the Settings window on Recording.
 pub fn open_recording_settings() {
-    if let Ok(exe) = std::env::current_exe() {
-        reap(Command::new(exe).args(["--settings", "--recording"]).spawn());
-    }
+    reap(Command::new(program()).args(["--settings", "--recording"]).spawn());
 }
 
 /// Opens the Settings window on Updates, checking for one.
 pub fn open_update_settings() {
-    if let Ok(exe) = std::env::current_exe() {
-        reap(Command::new(exe).args(["--settings", "--updates"]).spawn());
-    }
+    reap(Command::new(program()).args(["--settings", "--updates"]).spawn());
 }
 
 /// Opens the library window.
@@ -192,9 +190,7 @@ pub fn start_capture(flag: &str) {
 
 /// Opens the capture panel.
 pub fn open_capture_panel() {
-    if let Ok(exe) = std::env::current_exe() {
-        reap(Command::new(exe).arg("--capture-panel").spawn());
-    }
+    reap(Command::new(program()).arg("--capture-panel").spawn());
 }
 
 /// The desktop places the capture panel (there's no telling where the icon is, and Wayland doesn't
@@ -237,20 +233,29 @@ pub fn package() -> Option<Package> {
 pub fn relaunch_when_closed() {
     use std::os::unix::process::CommandExt;
     let wait = r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec "$2""#;
-    let _ = Command::new("sh").args(["-c", wait, "sh", &std::process::id().to_string()]).arg(updated_program()).process_group(0).spawn();
+    let _ = Command::new("sh").args(["-c", wait, "sh", &std::process::id().to_string()]).arg(program()).process_group(0).spawn();
 }
 
 /// Starts the library from the newly installed program, after an update (from Settings, when the
 /// library isn't open: it needn't wait for Settings to close).
 pub fn start_updated_library() {
     use std::os::unix::process::CommandExt;
-    reap(Command::new(updated_program()).process_group(0).spawn());
+    reap(Command::new(program()).process_group(0).spawn());
 }
 
-/// The program an update installed. This copy's own path reads as "/usr/bin/rsnip (deleted)" once
-/// the package manager has replaced it.
-fn updated_program() -> PathBuf {
-    if package().is_some() { PathBuf::from(PACKAGED) } else { std::env::current_exe().unwrap_or_else(|_| PACKAGED.into()) }
+/// The program to run RSnip again with: this one, or what an update put in its place.
+pub fn program() -> PathBuf {
+    std::env::current_exe().map_or_else(|_| PACKAGED.into(), installed_program)
+}
+
+/// The program at `exe`'s path now. Once the package manager (or install.sh) has replaced it, this
+/// copy's own path reads as "/usr/bin/rsnip (deleted)", which can't be run.
+fn installed_program(exe: PathBuf) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    match exe.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
+        Some(path) => PathBuf::from(std::ffi::OsStr::from_bytes(path)),
+        None => exe,
+    }
 }
 
 pub fn shortcut_name(key: u32) -> String {
@@ -393,6 +398,23 @@ mod tests {
         let path = Path::new("/home/a/RSnip/Recording 2026-10-24 091500 (trimmed)#1.mp4");
         assert_eq!(file_uri(path), "file:///home/a/RSnip/Recording%202026-10-24%20091500%20%28trimmed%29%231.mp4");
         assert_eq!(file_uri(Path::new("/tmp/café.png")), "file:///tmp/caf%C3%A9.png");
+    }
+
+    #[test]
+    fn runs_the_installed_program_after_an_update_replaced_this_one() {
+        assert_eq!(installed_program("/usr/bin/rsnip (deleted)".into()), Path::new("/usr/bin/rsnip"));
+        assert_eq!(installed_program("/home/a/.local/bin/rsnip (deleted)".into()), Path::new("/home/a/.local/bin/rsnip"));
+        // Anything else is run as it is, like a build in target/.
+        for exe in ["/usr/bin/rsnip", "/home/a/rust-screenshot/target/release/rsnip", "/home/a/(deleted) x/rsnip"] {
+            assert_eq!(installed_program(exe.into()), Path::new(exe));
+        }
+    }
+
+    #[test]
+    fn keeps_requests_next_to_the_lock() {
+        let (lock, request) = (lock_path("Settings"), request_path("Settings"));
+        assert_eq!((request.parent(), request.file_stem()), (lock.parent(), lock.file_stem()));
+        assert_ne!(request, lock);
     }
 
     #[test]

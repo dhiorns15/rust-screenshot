@@ -48,6 +48,8 @@ pub struct Env {
     pub crash_dir: PathBuf,
     /// What was pushed where (see `push::history`).
     pub history_file: PathBuf,
+    /// Another `--settings` launch drops the section it wants here (see `settings_window::run`).
+    pub settings_request_file: PathBuf,
     settings: Store,
     #[cfg_attr(not(test), allow(dead_code))]
     sandbox: Option<RefCell<Sandbox>>,
@@ -187,6 +189,7 @@ impl Env {
             read_words: platform::read_words(),
             crash_dir: crate::crash::dir(),
             history_file: crate::push::history::file(),
+            settings_request_file: platform::request_path("Settings"),
             settings: Store::Platform,
             sandbox: None,
         }
@@ -207,6 +210,7 @@ impl Env {
             request_file: dir.join("request.txt"),
             crash_dir: dir.join("crashes"),
             history_file: dir.join("push-history.jsonl"),
+            settings_request_file: dir.join("settings-request.txt"),
             dir,
             check_updates: false,
             tray_app: cfg!(windows),

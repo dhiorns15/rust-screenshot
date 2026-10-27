@@ -336,6 +336,55 @@ fn installs_an_update_and_restarts_into_it() {
 }
 
 #[test]
+fn brings_the_background_icon_back_after_installing_an_update() {
+    let release = crate::update::Release { version: crate::update::Version::new(99, 0, 0), page: "https://example.com".into(), installer: None, deb: None, rpm: None };
+    let mut h = settings("settings-install-tray", |env| {
+        env.tray_app = cfg!(windows);
+        env.sandboxed().can_install = true;
+        env.sandboxed().latest = Some(release);
+    });
+    open(&mut h, Section::Updates);
+    click(&mut h, "Check now");
+    // Installing the package stops the old icon; until it has gone, it isn't started again.
+    click(&mut h, "Install");
+    assert_eq!(h.state().env.sandboxed().trays_started, 0);
+    h.state().env.sandboxed().tray_running = false;
+    settle(&mut h);
+    settle(&mut h);
+    // On Windows the installer restarts the tray app.
+    assert_eq!(h.state().env.sandboxed().trays_started, usize::from(cfg!(not(windows))), "once");
+}
+
+#[test]
+fn another_launch_switches_the_open_window_to_its_section() {
+    let release = crate::update::Release { version: crate::update::Version::new(99, 0, 0), page: "https://example.com".into(), installer: None, deb: None, rpm: None };
+    let mut h = settings("settings-requests", |env| env.sandboxed().latest = Some(release));
+    let request_file = h.state().env.settings_request_file.clone();
+    let ask = |h: &mut Harness<SettingsApp>, request: &str| {
+        std::fs::write(&request_file, request).unwrap();
+        settle(h);
+        assert!(!request_file.exists(), "{request:?} was read");
+        h.state().section
+    };
+    assert_eq!(ask(&mut h, "--recording"), Section::Recording);
+    // Plain `--settings` brings it to the front where it is.
+    assert_eq!(ask(&mut h, ""), Section::Recording);
+    assert_eq!(ask(&mut h, "--system-info"), Section::SystemInfo);
+    // The library's "is available" link: Updates, checking for one.
+    assert_eq!(ask(&mut h, "--updates\n"), Section::Updates);
+    assert!(h.query_by_label_contains("RSnip 99.0.0 is available").is_some());
+}
+
+#[test]
+fn launches_ask_for_a_section_with_their_flags() {
+    let asked = |args: &[&str]| super::settings_window::asked(args.iter().map(|a| a.to_string()));
+    assert_eq!(asked(&["rsnip", "--settings"]), "");
+    assert_eq!(asked(&["rsnip", "--settings", "--updates"]), "--updates");
+    assert_eq!(asked(&["rsnip", "--settings", "--recording"]), "--recording");
+    assert_eq!(asked(&["rsnip", "--settings", "--updates", "--system-info"]), "--system-info", "System info first, as before");
+}
+
+#[test]
 fn chooses_where_screenshots_and_recordings_are_saved() {
     let dir = tests::sandbox_dir("settings-folder");
     let elsewhere = dir.join("Elsewhere");

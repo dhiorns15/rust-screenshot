@@ -1,6 +1,8 @@
 # Settings
 
 Tray menu → *Settings…* (or the gear in the library, or `rsnip --settings`) opens the Settings window.
+If it's open already, it comes to the front instead, on the section asked for (the capture panel's
+gear opens Recording on the Video tab, say, and the library's update link opens Updates and checks).
 Changes apply straight away.
 
 | Section | |

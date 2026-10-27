@@ -277,8 +277,7 @@ fn begin(area: bool) -> Result<Option<(Recording, ScreenCast)>, String> {
 
 /// Runs `rsnip --pick-area` on a frame of the screen.
 pub(super) fn pick_area(frame: &Path, purpose: Purpose) -> Option<recorder::Area> {
-    let exe = std::env::current_exe().ok()?;
-    let out = std::process::Command::new(exe).arg("--pick-area").arg(frame).arg(purpose.name()).output().ok()?;
+    let out = std::process::Command::new(platform::program()).arg("--pick-area").arg(frame).arg(purpose.name()).output().ok()?;
     let numbers: Vec<u32> = String::from_utf8_lossy(&out.stdout).split_whitespace().filter_map(|n| n.parse().ok()).collect();
     let [x, y, width, height] = numbers[..] else { return None };
     Some(recorder::Area { x, y, width, height })
