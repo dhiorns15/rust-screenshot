@@ -184,6 +184,8 @@ fn desktop() -> &'static Desktop {
         let runtime = PathBuf::from(format!("/tmp/rsnip-desktop-{}", std::process::id()));
         std::fs::create_dir_all(&runtime).unwrap();
         std::fs::set_permissions(&runtime, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        // Where recordings (and `pactl`) find the sound server the services start.
+        std::env::set_var("PULSE_SERVER", sound_server(&runtime));
         // The services live as long as this thread: until the tests end.
         let (screens, requests) = channel::<Sender<u32>>();
         let dir = runtime.clone();
@@ -205,6 +207,11 @@ fn desktop() -> &'static Desktop {
         start_portal(&runtime);
         Desktop { picker, shutter, _backend: backend }
     })
+}
+
+/// The sound server's address, for `PULSE_SERVER`.
+fn sound_server(runtime: &Path) -> String {
+    format!("unix:{}/pulse/native", runtime.display())
 }
 
 /// Runs a service that stops when the thread that started it does.
@@ -229,6 +236,11 @@ fn run_services(runtime: &Path, requests: Receiver<Sender<u32>>) {
     let mut running = vec![service("pipewire", &[], runtime, "pipewire.log")];
     wait_for(|| runtime.join("pipewire-0").exists(), "PipeWire's socket");
     running.push(service("wireplumber", &[], runtime, "wireplumber.log"));
+    // The sound server (PulseAudio's protocol on PipeWire), with a tone playing on its default
+    // output, which is what a recording of the computer's sound hears.
+    running.push(service("pipewire-pulse", &[], runtime, "pipewire-pulse.log"));
+    wait_for(|| runtime.join("pulse/native").exists(), "the sound server's socket");
+    running.push(service("gst-launch-1.0", &["-q", "audiotestsrc", "is-live=true", "volume=0.5", "!", "pulsesink"], runtime, "tone.log"));
     let mut screen: Vec<Child> = Vec::new();
     for (n, reply) in requests.into_iter().enumerate() {
         for mut old in screen.drain(..) {
@@ -343,7 +355,7 @@ fn desktop_records_through_the_real_portal() {
     assert_eq!((frame.width(), frame.height()), SCREEN);
 
     let dir = temp_dir("mp4");
-    let format = Format { gif: false, hevc: false, fps: 30 };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: false, microphone: None };
     let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
     std::thread::sleep(Duration::from_secs(2));
     let recorded = recording.stop().expect("recording finishes");
@@ -366,6 +378,79 @@ fn mp4_seconds(file: &[u8]) -> Option<f64> {
     (timescale > 0).then(|| duration as f64 / timescale as f64)
 }
 
+/// The loudest the sound in an MP4 gets, in dB (0 is full scale), by decoding it; `None` if it has
+/// none.
+fn sound_level(path: &Path) -> Option<f64> {
+    let out = Command::new("gst-launch-1.0")
+        .args(["-m", "filesrc"])
+        .arg(format!("location={}", path.display()))
+        .args(["!", "qtdemux", "name=d", "d.audio_0", "!", "decodebin", "!", "audioconvert", "!", "level", "!", "fakesink"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let levels = text.split("rms=(GValueArray)< ").skip(1).filter_map(|rest| rest.split([',', ' ']).next()?.parse::<f64>().ok());
+    levels.reduce(f64::max)
+}
+
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_records_the_computers_sound() {
+    desktop();
+    let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
+    let dir = temp_dir("sound");
+    let format = Format { gif: false, hevc: false, fps: 30, sound: true, microphone: None };
+    let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
+    std::thread::sleep(Duration::from_secs(3));
+    let recorded = recording.stop().expect("recording finishes");
+    assert_eq!(recorded.note, None);
+    let file = std::fs::read(&recorded.path).unwrap();
+    assert!((2.0..5.0).contains(&mp4_seconds(&file).expect("a finished MP4")), "about 3 s long");
+    // A video track and an AAC one, with the tone the test played (about -9 dB, for 0.5 volume).
+    let has = |tag: &[u8]| file.windows(tag.len()).any(|w| w == tag);
+    assert!(has(b"vide") && has(b"soun") && has(b"mp4a"), "a video and a sound track");
+    let level = sound_level(&recorded.path).expect("sound that plays");
+    assert!((-30.0..0.0).contains(&level), "the tone, at {level} dB");
+}
+
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_a_missing_microphone_is_left_out() {
+    desktop();
+    let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
+    let dir = temp_dir("no-microphone");
+    // The test sound server has an output and no microphone.
+    let format = Format { gif: false, hevc: false, fps: 30, sound: true, microphone: Some(None) };
+    let recorded = {
+        let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
+        std::thread::sleep(Duration::from_secs(2));
+        recording.stop().expect("recording finishes")
+    };
+    assert_eq!(recorded.note.as_deref(), Some("No microphone was found, so it was recorded without one."));
+    assert!(sound_level(&recorded.path).is_some(), "the computer's sound is there");
+    assert!(recorder::microphones().is_empty(), "monitors aren't microphones");
+}
+
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_records_without_sound_when_the_sound_server_is_gone() {
+    desktop();
+    let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
+    let dir = temp_dir("no-sound");
+    // Tests run one at a time, so nothing else reads this meanwhile.
+    let server = std::env::var("PULSE_SERVER").unwrap();
+    std::env::set_var("PULSE_SERVER", "unix:/nonexistent/pulse/native");
+    let format = Format { gif: false, hevc: false, fps: 30, sound: true, microphone: None };
+    let recorded = recorder::start(&cast, SCREEN, None, format, &dir).map(|recording| {
+        std::thread::sleep(Duration::from_secs(2));
+        recording.stop()
+    });
+    std::env::set_var("PULSE_SERVER", server);
+    let recorded = recorded.expect("recording starts").expect("recording finishes");
+    assert_eq!(recorded.note.as_deref(), Some("Couldn't reach the sound server, so it was recorded without sound."));
+    let file = std::fs::read(&recorded.path).unwrap();
+    assert!(mp4_seconds(&file).is_some() && !file.windows(4).any(|w| w == b"soun"), "a finished MP4 with just the video");
+}
+
 #[test]
 #[ignore = "needs desktop services: run ci/desktop-test.sh"]
 fn desktop_records_an_area_as_a_gif() {
@@ -373,7 +458,7 @@ fn desktop_records_an_area_as_a_gif() {
     let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
     let area = Area { x: 100, y: 60, width: 200, height: 120 };
     let dir = temp_dir("gif");
-    let format = Format { gif: true, hevc: false, fps: 30 };
+    let format = Format { gif: true, hevc: false, fps: 30, sound: true, microphone: Some(None) };
     let recording = recorder::start(&cast, SCREEN, Some(area), format, &dir).unwrap();
     std::thread::sleep(Duration::from_secs(2));
     let recorded = recording.stop().unwrap();

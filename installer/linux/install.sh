@@ -92,6 +92,17 @@ package() {
     dnf:avdec_h264) echo gstreamer1-plugin-libav ;;
     pacman:avdec_h264) echo gst-libav ;;
     zypper:avdec_h264) echo gstreamer-plugins-libav ;;
+    apt:pulsesrc) echo gstreamer1.0-pulseaudio ;;
+    dnf:pulsesrc) echo gstreamer1-plugins-good ;;
+    pacman:pulsesrc) echo gst-plugins-good ;;
+    zypper:pulsesrc) echo gstreamer-plugins-good ;;
+    apt:pactl | dnf:pactl | zypper:pactl) echo pulseaudio-utils ;;
+    pacman:pactl) echo libpulse ;;
+    # An AAC encoder, for the sound in MP4s: FFmpeg's, which comes with the H.264 decoder.
+    apt:avenc_aac) echo gstreamer1.0-libav ;;
+    dnf:avenc_aac) echo gstreamer1-plugin-libav ;;
+    pacman:avenc_aac) echo gst-libav ;;
+    zypper:avenc_aac) echo gstreamer-plugins-libav ;;
     *) echo "$2" ;;
     esac
 }
@@ -139,8 +150,13 @@ check() {
         gst-inspect-1.0 --exists h264parse || recommended="$recommended $(package "$pm" h264parse)"
         # Playing recordings in the library.
         gst-inspect-1.0 --exists avdec_h264 || gst-inspect-1.0 --exists openh264dec || recommended="$recommended $(package "$pm" avdec_h264)"
+        # Sound in recordings: GStreamer's PulseAudio source (PipeWire has a PulseAudio server too),
+        # pactl to find it, and an AAC encoder.
+        gst-inspect-1.0 --exists pulsesrc || recommended="$recommended $(package "$pm" pulsesrc)"
+        command -v pactl >/dev/null 2>&1 || recommended="$recommended $(package "$pm" pactl)"
+        gst-inspect-1.0 --exists fdkaacenc || gst-inspect-1.0 --exists avenc_aac || gst-inspect-1.0 --exists voaacenc || recommended="$recommended $(package "$pm" avenc_aac)"
     else
-        recommended="$recommended $(package "$pm" gst-launch-1.0) $(package "$pm" pipewiresrc) $(package "$pm" x264enc) $(package "$pm" h264parse) $(package "$pm" avdec_h264)"
+        recommended="$recommended $(package "$pm" gst-launch-1.0) $(package "$pm" pipewiresrc) $(package "$pm" x264enc) $(package "$pm" h264parse) $(package "$pm" avdec_h264) $(package "$pm" pulsesrc) $(package "$pm" pactl)"
     fi
     # Checking for updates.
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
@@ -162,7 +178,7 @@ check() {
         echo "    $install $required"
     fi
     if [ -n "$recommended" ]; then
-        echo "Recommended, for opening folders, the Pictures folder, fonts, copying text, recording and update checks:"
+        echo "Recommended, for opening folders, the Pictures folder, fonts, copying text, recording (with sound) and update checks:"
         echo "    $install $recommended"
     fi
     if [ -z "$required$recommended" ]; then

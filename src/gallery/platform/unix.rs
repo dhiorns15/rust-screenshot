@@ -512,21 +512,22 @@ pub fn recording_problem(hevc: bool) -> Option<String> {
     super::super::recorder::problem(hevc)
 }
 
-/// Whether recordings can be H.265 (an encoder for it is installed in GStreamer).
-pub fn hevc_available() -> bool {
-    super::super::recorder::hevc_available()
-}
-
-/// A microphone to record from: the id the platform knows it by, and the name to show.
+/// A microphone to record from: `id` is what's saved in Settings, `name` what's shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Microphone {
     pub id: String,
     pub name: String,
 }
 
-/// The microphones that are connected. Nothing yet: recording sound fills this in.
+/// The microphones the sound server (PulseAudio, or PipeWire's) knows, without the outputs'
+/// monitors.
 pub fn microphones() -> Vec<Microphone> {
-    Vec::new()
+    super::super::recorder::microphones()
+}
+
+/// Whether recordings can be H.265 (an encoder for it is installed in GStreamer).
+pub fn hevc_available() -> bool {
+    super::super::recorder::hevc_available()
 }
 
 /// What reads the text in screenshots, for Settings.

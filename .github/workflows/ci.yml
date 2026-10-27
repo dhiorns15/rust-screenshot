@@ -47,8 +47,8 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 fonts-dejavu-core fontconfig tesseract-ocr \
-            gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-pipewire \
-            dbus pipewire pipewire-bin wireplumber xdg-desktop-portal xvfb xclip
+            gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-pipewire gstreamer1.0-pulseaudio \
+            dbus pipewire pipewire-bin pipewire-pulse pulseaudio-utils wireplumber xdg-desktop-portal xvfb xclip
           rustup component add clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings
@@ -82,8 +82,8 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends build-essential curl ca-certificates \
-            gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-pipewire \
-            dbus pipewire pipewire-bin wireplumber xdg-desktop-portal xvfb xclip
+            gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-pipewire gstreamer1.0-pulseaudio \
+            dbus pipewire pipewire-bin pipewire-pulse pulseaudio-utils wireplumber xdg-desktop-portal xvfb xclip
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - run: rustup show active-toolchain || rustup toolchain install

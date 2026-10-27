@@ -111,7 +111,7 @@ extended-description = """\
 RSnip keeps your screenshots in a searchable library and lets you annotate them, and records the \
 screen, a window or an area to MP4 or GIF."""
 depends = "$auto, libegl1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrender1"
-recommends = "xdg-utils, xdg-user-dirs, fontconfig, curl, smbclient, tesseract-ocr, gstreamer1.0-tools, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-plugins-bad, gstreamer1.0-libav, pkexec | policykit-1"
+recommends = "xdg-utils, xdg-user-dirs, fontconfig, curl, smbclient, tesseract-ocr, gstreamer1.0-tools, gstreamer1.0-pipewire, gstreamer1.0-pulseaudio, pulseaudio-utils, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-plugins-bad, gstreamer1.0-libav, pkexec | policykit-1"
 suggests = "gnome-shell-extension-appindicator"
 maintainer-scripts = "installer/linux/package/debian/"
 assets = [
@@ -162,7 +162,10 @@ samba-client = "*"
 "(gstreamer1-plugin-openh264 or gstreamer1-plugins-ugly or gstreamer-plugins-ugly)" = ""
 # The H.264 parser every encoder needs before the MP4 muxer.
 "(gstreamer1-plugins-bad-free or gstreamer-plugins-bad)" = ""
-# An H.264 decoder, to play recordings in the library (OpenH264's, above, is one too).
+# An H.264 decoder, to play recordings in the library (OpenH264's, above, is one too); it has an AAC
+# encoder for the sound in MP4s. Plugins-good, above, has the PulseAudio source.
 "(gstreamer1-plugin-libav or gstreamer-plugins-libav)" = ""
+# pactl, which lists the microphones and finds the sound server (PipeWire's, or PulseAudio's).
+pulseaudio-utils = "*"
 # pkexec, which asks for the password to install an update from Settings.
 polkit = "*"

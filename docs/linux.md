@@ -48,12 +48,33 @@ recorder does:
 | Recording | `gstreamer1.0-tools gstreamer1.0-pipewire` | `gstreamer1 pipewire-gstreamer` | `gstreamer gst-plugin-pipewire` | `gstreamer-utils gstreamer-plugin-pipewire` |
 | H.264 | `gstreamer1.0-plugins-ugly gstreamer1.0-plugins-bad` | `gstreamer1-plugin-openh264 gstreamer1-plugins-bad-free` | `gst-plugins-ugly gst-plugins-bad` | `gstreamer-plugins-ugly` (Packman) `gstreamer-plugins-bad` |
 | H.265 | `gstreamer1.0-plugins-bad` | `gstreamer1-plugins-bad-freeworld` (RPM Fusion) | `gst-plugins-bad` | `gstreamer-plugins-bad` (Packman) |
+| Sound | `gstreamer1.0-pulseaudio pulseaudio-utils gstreamer1.0-libav` | `gstreamer1-plugins-good pulseaudio-utils gstreamer1-plugin-libav` | `gst-plugins-good libpulse gst-libav` | `gstreamer-plugins-good pulseaudio-utils gstreamer-plugins-libav` |
 
 Without an H.264 or H.265 encoder, recordings are WebM (VP8), which every GStreamer install can
 write; the graphics card's encoder (VA-API) is used when it's there and the others aren't. Each
 encoder needs its parser too (`h264parse`, in plugins-bad). Settings → Recording says what's
 missing, and `rsnip --check-recording` records a moment of a test picture the way a recording
 would be made, then says what it came out as.
+
+### Sound
+
+MP4 and WebM recordings include what the computer plays, which is on by default, and the
+microphone, which is off. They're mixed into one track: AAC in MP4s, Opus in WebMs. GIFs have no
+sound. Turn either on or off, and pick the microphone (the default one unless you choose), in
+Settings → Recording or from *Quick settings…* in the icon's menu.
+
+Sound comes from the desktop's PulseAudio server, which PipeWire provides as `pipewire-pulse` on
+current desktops. GStreamer's PulseAudio plugin reads it, `pactl` lists the microphones, and MP4s
+need an AAC encoder: `fdkaacenc`, `avenc_aac` (in `gstreamer1.0-libav`) or `voaacenc` (in
+`gstreamer1.0-plugins-bad`), whichever is installed. The Sound row above has them; the `.deb` and
+`.rpm` recommend them, and `install.sh` checks for them. Ubuntu doesn't have
+`fdkaacenc`, but the other two are there.
+
+Sound never stops a recording: if there's no AAC encoder, the sound server can't be reached, or
+the microphone isn't connected, RSnip records without that part and says so in the "Recording
+saved" notification. `rsnip --check-recording` also records a test tone and says whether sound
+works, and which microphones it found.
+
 
 ## The icon in the top bar or panel
 

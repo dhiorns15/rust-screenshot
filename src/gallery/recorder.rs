@@ -1,7 +1,9 @@
 //! Recording the screen on Linux: GStreamer (`gst-launch-1.0`) reads the stream the screen-cast
 //! portal shares (see `portal`) and encodes it with the best encoder installed for the codec chosen
 //! in Settings, or as WebM, which every GStreamer install can write. GIFs come out of RSnip's own
-//! encoder, fed raw frames.
+//! encoder, fed raw frames. Sound comes from PulseAudio (which PipeWire speaks too): what the
+//! computer plays, as the default output's monitor, and a microphone, mixed into one AAC track in
+//! MP4s or Opus in WebMs.
 
 use std::io::Read;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -21,11 +23,15 @@ const GIF_FPS: u32 = 12;
 pub const MAX_LENGTH: Duration = Duration::from_secs(30 * 60);
 
 /// What recordings are saved as (see Settings → Recording).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Format {
     pub gif: bool,
     pub hevc: bool,
     pub fps: u32,
+    /// Record what the computer plays.
+    pub sound: bool,
+    /// Record a microphone: none, the default one, or the one with this name in PulseAudio.
+    pub microphone: Option<Option<String>>,
 }
 
 /// A part of the frame to record, in its pixels.
@@ -73,6 +79,161 @@ impl Encoder {
     fn parts(&self) -> impl Iterator<Item = &'static str> {
         std::iter::once(self.element).chain(self.tail.split(" ! "))
     }
+}
+
+/// A GStreamer audio encoder, for the sound in a recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AudioEncoder {
+    /// The element, as `gst-inspect-1.0` knows it.
+    element: &'static str,
+    /// What it's called in a message.
+    codec: &'static str,
+    /// The element with its settings: 160 kbit/s, which all of them take in bit/s.
+    settings: &'static str,
+}
+
+/// AAC for MP4s, best first: Fraunhofer's is the best but not in Debian and Ubuntu; FFmpeg's comes
+/// with the H.264 decoder (gstreamer1.0-libav); VisualOn's is in plugins-bad.
+const AAC: [AudioEncoder; 3] = [
+    AudioEncoder { element: "fdkaacenc", codec: "AAC", settings: "fdkaacenc bitrate=160000" },
+    AudioEncoder { element: "avenc_aac", codec: "AAC", settings: "avenc_aac bitrate=160000" },
+    AudioEncoder { element: "voaacenc", codec: "AAC", settings: "voaacenc bitrate=160000" },
+];
+/// WebM takes Opus, which plugins-base writes.
+const OPUS: AudioEncoder = AudioEncoder { element: "opusenc", codec: "Opus", settings: "opusenc bitrate=160000" };
+
+/// The sound of a recording: its sources, mixed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Sound {
+    /// GStreamer source elements with their settings.
+    sources: Vec<String>,
+    encoder: AudioEncoder,
+}
+
+/// The audio encoder for an MP4 (else WebM), or the note saying there is none.
+fn audio_encoder(mp4: bool, has: &impl Fn(&str) -> bool) -> Result<AudioEncoder, String> {
+    if !mp4 {
+        return if has(OPUS.element) { Ok(OPUS) } else { Err("No Opus encoder is installed, so it was recorded without sound. Install gstreamer1.0-plugins-base.".into()) };
+    }
+    AAC.iter().find(|e| has(e.element)).copied().ok_or_else(|| "No AAC encoder is installed, so it was recorded without sound. Install gstreamer1.0-libav.".into())
+}
+
+/// What to install for GStreamer's PulseAudio source, and for `pactl`, which lists the sources.
+const NO_PULSESRC: &str = "Recording sound needs GStreamer's PulseAudio plugin (gstreamer1.0-pulseaudio on Debian and Ubuntu, gstreamer1-plugins-good on Fedora, gst-plugins-good on Arch)";
+const NO_PACTL: &str = "Recording sound needs pactl (pulseaudio-utils on Debian, Ubuntu and Fedora, libpulse on Arch)";
+
+/// A source of sound that PulseAudio (or PipeWire's server for it) lists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Source {
+    name: String,
+    description: String,
+    /// What an output plays, rather than a microphone.
+    monitor: bool,
+}
+
+/// `pactl`'s output, if it ran and the sound server answered.
+fn pactl(args: &[&str]) -> Option<String> {
+    let out = Command::new("pactl").args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The sound server's sources, or None if `pactl` isn't installed or it can't be reached. Older
+/// `pactl`s have no JSON output, so there are only the names.
+fn sources() -> Option<Vec<Source>> {
+    pactl(&["-f", "json", "list", "sources"]).and_then(|json| parse_sources(&json)).or_else(|| pactl(&["list", "short", "sources"]).map(|list| parse_short_sources(&list)))
+}
+
+/// `pactl -f json list sources`.
+fn parse_sources(json: &str) -> Option<Vec<Source>> {
+    let list: Vec<serde_json::Value> = serde_json::from_str(json).ok()?;
+    let text = |source: &serde_json::Value, key: &str| source[key].as_str().filter(|t| !t.is_empty()).map(String::from);
+    Some(
+        list.iter()
+            .filter_map(|s| {
+                let name = text(s, "name")?;
+                let monitor = name.ends_with(".monitor") || text(s, "monitor_source").is_some();
+                Some(Source { description: text(s, "description").unwrap_or_else(|| name.clone()), name, monitor })
+            })
+            .collect(),
+    )
+}
+
+/// `pactl list short sources`: tab-separated, the name second.
+fn parse_short_sources(list: &str) -> Vec<Source> {
+    let names = list.lines().filter_map(|line| line.split('\t').nth(1)).filter(|n| !n.is_empty());
+    names.map(|name| Source { name: name.into(), description: name.into(), monitor: name.ends_with(".monitor") }).collect()
+}
+
+/// A microphone to record from.
+pub fn microphones() -> Vec<super::platform::Microphone> {
+    let microphones = sources().unwrap_or_default().into_iter().filter(|s| !s.monitor);
+    microphones.map(|s| super::platform::Microphone { id: s.name, name: s.description }).collect()
+}
+
+/// The sound for a recording as `format` asks, given the encoder for it (`audio`, else why there
+/// is none), what GStreamer has installed (`has`), and the sound server's sources (`sources`, none
+/// if it can't be reached) — and a note on anything asked for that couldn't be had.
+fn plan_sound(format: &Format, audio: Result<AudioEncoder, String>, has: &impl Fn(&str) -> bool, sources: &impl Fn() -> Option<Vec<Source>>) -> (Option<Sound>, Option<String>) {
+    if !format.sound && format.microphone.is_none() {
+        return (None, None);
+    }
+    let none = |note: String| (None, Some(note));
+    let encoder = match audio {
+        Ok(encoder) => encoder,
+        Err(note) => return none(note),
+    };
+    if !has("pulsesrc") {
+        return none(format!("{NO_PULSESRC}, so it was recorded without sound."));
+    }
+    let Some(sources) = sources() else {
+        return none("Couldn't reach the sound server, so it was recorded without sound.".into());
+    };
+    let mut wanted = Vec::new();
+    let mut notes = Vec::new();
+    if format.sound {
+        wanted.push("pulsesrc device=@DEFAULT_MONITOR@ do-timestamp=true".to_string());
+    }
+    match &format.microphone {
+        None => {}
+        Some(None) if sources.iter().any(|s| !s.monitor) => wanted.push("pulsesrc do-timestamp=true".into()),
+        Some(Some(id)) if sources.iter().any(|s| !s.monitor && s.name == *id) => wanted.push(format!("pulsesrc device={id} do-timestamp=true")),
+        Some(None) => notes.push("No microphone was found, so it was recorded without one."),
+        Some(Some(_)) => notes.push("The chosen microphone isn't connected, so it was recorded without one."),
+    }
+    if wanted.len() > 1 && !has("audiomixer") {
+        // The mixer is in plugins-base, so this is a broken install more than anything.
+        return none("Mixing sound needs GStreamer's audiomixer (gstreamer1.0-plugins-base on Debian and Ubuntu), so it was recorded without sound.".into());
+    }
+    let note = (!notes.is_empty()).then(|| notes.join(" "));
+    ((!wanted.is_empty()).then_some(Sound { sources: wanted, encoder }), note)
+}
+
+/// The pipeline for `sound`, ending in the muxer `mux`: each source as 48 kHz stereo, mixed.
+fn audio_pipeline(sound: &Sound) -> String {
+    let chain = |source: &String| format!("{source} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! queue");
+    let encode = format!("audioconvert ! {} ! queue ! mux.", sound.encoder.settings);
+    match sound.sources.as_slice() {
+        [only] => format!("{} ! {encode}", chain(only)),
+        many => format!("{} audiomixer name=mix ! {encode}", many.iter().map(|s| format!("{} ! mix.", chain(s))).collect::<Vec<_>>().join(" ")),
+    }
+}
+
+/// What's missing for recording sound, for Settings: `mp4` if recordings are MP4s, `pactl` if
+/// that's installed, and what GStreamer has installed (`has`).
+fn sound_problem(mp4: bool, pactl: bool, has: &impl Fn(&str) -> bool) -> Option<String> {
+    let mut problems = Vec::new();
+    match audio_encoder(mp4, has) {
+        Ok(_) => {}
+        Err(_) if mp4 => problems.push("No AAC encoder is installed, so MP4s will have no sound. Install gstreamer1.0-libav on Debian and Ubuntu, gstreamer1-plugin-libav on Fedora, gst-libav on Arch.".to_string()),
+        Err(_) => problems.push("No Opus encoder is installed, so WebMs will have no sound. Install gstreamer1.0-plugins-base.".to_string()),
+    }
+    if !has("pulsesrc") {
+        problems.push(format!("{NO_PULSESRC}, so recordings will have no sound."));
+    }
+    if !pactl {
+        problems.push(format!("{NO_PACTL}, so recordings will have no sound."));
+    }
+    (!problems.is_empty()).then(|| problems.join(" "))
 }
 
 /// Where a parser or muxer comes from, for saying what to install.
@@ -138,10 +299,22 @@ pub fn problem(hevc: bool) -> Option<String> {
     if let Err(e) = available() {
         return Some(e);
     }
-    problem_with(hevc, &|e| installed(e))
+    let pactl = Command::new("pactl").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok();
+    problems(hevc, pactl, &|e| installed(e))
 }
 
-/// `problem`, past GStreamer itself, given what it has installed (`has`).
+/// `problem`, past GStreamer itself, given whether `pactl` is installed and what GStreamer has
+/// installed (`has`): the video's, then the sound's.
+fn problems(hevc: bool, pactl: bool, has: &impl Fn(&str) -> bool) -> Option<String> {
+    let video = problem_with(hevc, has);
+    let sound = sound_problem(choose(hevc, has).0.extension == "mp4", pactl, has);
+    match (video, sound) {
+        (Some(video), Some(sound)) => Some(format!("{video} {sound}")),
+        (video, sound) => video.or(sound),
+    }
+}
+
+/// The video part of `problems`.
 fn problem_with(hevc: bool, has: &impl Fn(&str) -> bool) -> Option<String> {
     let h264 = "x264 (gstreamer1.0-plugins-ugly on Debian and Ubuntu, gstreamer1-plugins-ugly from RPM Fusion on Fedora, gst-plugins-ugly on Arch)";
     match (hevc, usable(&H265, has).is_some(), usable(&H264, has).is_some()) {
@@ -164,17 +337,31 @@ pub fn hevc_available() -> bool {
 pub fn check(hevc: bool) -> Result<String, String> {
     available()?;
     let (encoder, note) = encoder(hevc);
+    // Sound is tried with a test tone, which needs no sound server; whether the server is there
+    // comes from planning a recording with sound.
+    let audio = audio_encoder(encoder.extension == "mp4", &|e| installed(e));
+    let asked = Format { gif: false, hevc, fps: 30, sound: true, microphone: None };
+    let sound_note = plan_sound(&asked, audio.clone(), &|e| installed(e), &sources).1;
     let dir = std::env::temp_dir().join(format!("rsnip-check-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
     let path = dir.join(format!("check.{}", encoder.extension));
-    let recorded = record_test_picture(&encoder, &path, Duration::from_millis(1500));
+    let recorded = record_test_picture(&encoder, audio.as_ref().ok(), &path, Duration::from_millis(1500));
     // And plays back in the library, which needs a decoder as well.
     let played = recorded.is_ok().then(|| super::player::can_play(&path));
     let _ = std::fs::remove_dir_all(&dir);
     recorded?;
-    let mut made = format!("Recording works: {} {} with {}.", encoder.codec, encoder.extension.to_uppercase(), encoder.element);
-    if let Some(note) = note {
+    let mut made = format!("Recording works: {} {} with {}", encoder.codec, encoder.extension.to_uppercase(), encoder.element);
+    if let (Ok(audio), None) = (&audio, &sound_note) {
+        made.push_str(&format!(" and {} sound ({})", audio.codec, audio.element));
+    }
+    made.push('.');
+    let reachable = sound_note.is_none();
+    for note in note.into_iter().chain(sound_note) {
         made = format!("{made}\n{note}");
+    }
+    if reachable {
+        let names: Vec<String> = super::platform::microphones().into_iter().map(|m| m.name).collect();
+        made.push_str(&if names.is_empty() { "\nNo microphone was found.".to_string() } else { format!("\nMicrophones: {}.", names.join(", ")) });
     }
     match played {
         Some(Err(e)) => made.push_str(&format!("\nPlayback doesn't work: {e}")),
@@ -183,16 +370,13 @@ pub fn check(hevc: bool) -> Result<String, String> {
     Ok(made)
 }
 
-/// Records a test picture to `path` through `encoder` for about `length` (GStreamer's start-up
-/// included), with the pipeline a recording uses.
-fn record_test_picture(encoder: &Encoder, path: &Path, length: Duration) -> Result<(), String> {
+/// Records a test picture to `path` through `encoder`, with a test tone as the sound if there's an
+/// `audio` encoder, for about `length` (GStreamer's start-up included), with the pipeline a
+/// recording uses.
+fn record_test_picture(encoder: &Encoder, audio: Option<&AudioEncoder>, path: &Path, length: Duration) -> Result<(), String> {
     let area = Some(Area { x: 8, y: 6, width: 201, height: 151 });
-    // The recording's pipeline with a test picture in place of the screen: the flags, then the
-    // source's tokens.
-    let pipeline = video_pipeline(0, (320, 240), area, 30, encoder, path);
-    let skip = 2 + source(0).split_whitespace().count();
-    let test = ["-q", "-e", "videotestsrc", "is-live=true", "!", "videoconvert"].map(String::from);
-    let args: Vec<String> = test.into_iter().chain(pipeline[skip..].iter().cloned()).collect();
+    let sound = audio.map(|&encoder| Sound { sources: vec!["audiotestsrc is-live=true wave=sine".into()], encoder });
+    let args = video_pipeline("videotestsrc is-live=true ! videoconvert", (320, 240), area, 30, encoder, sound.as_ref(), path);
     let mut child = Command::new("gst-launch-1.0").args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("Couldn't start GStreamer: {e}"))?;
     std::thread::sleep(length);
     unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
@@ -241,13 +425,16 @@ fn args(flags: &[&str], pipeline: &str, location: Option<&Path>) -> Vec<String> 
     tokens.chain(location.map(|path| format!("location={}", path.to_string_lossy()))).collect()
 }
 
-/// The `gst-launch-1.0` arguments recording the stream `node` to `path`. With -e, Ctrl+C (how it's
+/// The `gst-launch-1.0` arguments recording the video from `source` (a `frame` of it) to `path`,
+/// with `sound` if any: its pipeline comes first, since the file's location has to be the last
+/// argument, and ends in the muxer, which the video's pipeline names. With -e, Ctrl+C (how it's
 /// stopped) finishes the file properly.
-fn video_pipeline(node: u32, frame: (u32, u32), area: Option<Area>, fps: u32, encoder: &Encoder, path: &Path) -> Vec<String> {
+fn video_pipeline(source: &str, frame: (u32, u32), area: Option<Area>, fps: u32, encoder: &Encoder, sound: Option<&Sound>, path: &Path) -> Vec<String> {
     let (w, h) = output_size(area, frame.0, frame.1);
     let pipeline = format!(
-        "{}{} ! videoscale add-borders=true ! videorate ! video/x-raw,format=I420,width={w},height={h},framerate={fps}/1 ! queue ! {} ! {} ! filesink",
-        source(node),
+        "{}{}{} ! videoscale add-borders=true ! videorate ! video/x-raw,format=I420,width={w},height={h},framerate={fps}/1 ! queue ! {} ! {} name=mux ! filesink",
+        sound.map_or(String::new(), |s| audio_pipeline(s) + " "),
+        source,
         crop(area, frame.0, frame.1),
         (encoder.settings)(bitrate(encoder, w, h, fps), fps),
         encoder.tail,
@@ -336,7 +523,7 @@ pub fn start(cast: &ScreenCast, frame: (u32, u32), area: Option<Area>, format: F
     available()?;
     std::fs::create_dir_all(folder).map_err(|e| format!("Couldn't create {}: {e}", folder.display()))?;
     let name = |ext: &str| super::platform::new_path(folder, "Recording", ext);
-    let mut recording = if format.gif {
+    if format.gif {
         let path = name("gif");
         let working = super::working_path(&path)?;
         let (args, size) = gif_pipeline(cast.node, frame, area);
@@ -344,23 +531,42 @@ pub fn start(cast: &ScreenCast, frame: (u32, u32), area: Option<Area>, format: F
         let frames = child.stdout.take().expect("piped");
         let file = std::fs::File::create(&working).map_err(|e| format!("Couldn't create {}: {e}", working.display()))?;
         let gif = std::thread::spawn(move || write_gif(frames, file, size));
-        Recording { child, path, working, started: Instant::now(), gif: Some(gif), note: None }
-    } else {
-        let (encoder, note) = encoder(format.hevc);
-        let path = name(encoder.extension);
-        let working = super::working_path(&path)?;
-        let args = video_pipeline(cast.node, frame, area, format.fps.clamp(1, 60), &encoder, &working);
+        let mut recording = Recording { child, path, working, started: Instant::now(), gif: Some(gif), note: None };
+        running(&mut recording)?;
+        return Ok(recording);
+    }
+    let (encoder, video_note) = encoder(format.hevc);
+    let (mut sound, sound_note) = plan_sound(&format, audio_encoder(encoder.extension == "mp4", &|e| installed(e)), &|e| installed(e), &sources);
+    let mut notes: Vec<String> = [video_note, sound_note].into_iter().flatten().collect();
+    let path = name(encoder.extension);
+    let working = super::working_path(&path)?;
+    loop {
+        let args = video_pipeline(&source(cast.node), frame, area, format.fps.clamp(1, 60), &encoder, sound.as_ref(), &working);
         let child = launch(&args, cast.connect()?, Stdio::null())?;
-        Recording { child, path, working, started: Instant::now(), gif: None, note }
-    };
-    // A pipeline that can't run (a missing element, say) stops straight away.
+        let mut recording = Recording { child, path: path.clone(), working: working.clone(), started: Instant::now(), gif: None, note: (!notes.is_empty()).then(|| notes.join(" ")) };
+        match running(&mut recording) {
+            Ok(()) => return Ok(recording),
+            // The sound is the likeliest thing to stop it (the sound server went away, a device
+            // is busy), and shouldn't stop the recording: it starts again without.
+            Err(error) if sound.is_some() => {
+                sound = None;
+                notes.push(format!("Sound couldn't be recorded, so it was recorded without it. ({error})"));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Gives a pipeline a moment to start, and fails if it stopped straight away (a missing element,
+/// say).
+fn running(recording: &mut Recording) -> Result<(), String> {
     std::thread::sleep(Duration::from_millis(800));
     if recording.child.try_wait().map_err(|e| e.to_string())?.is_some() {
         let error = failure(&mut recording.child);
         let _ = std::fs::remove_file(&recording.working);
         return Err(error);
     }
-    Ok(recording)
+    Ok(())
 }
 
 impl Recording {
@@ -464,11 +670,175 @@ mod tests {
 
     #[test]
     fn keeps_the_path_in_one_argument() {
-        let args = video_pipeline(42, (1920, 1080), None, 30, &H264[0], Path::new("/home/a b/Recording \"1\".mp4"));
+        let args = video_pipeline(&source(42), (1920, 1080), None, 30, &H264[0], None, Path::new("/home/a b/Recording \"1\".mp4"));
         assert_eq!(&args[..2], ["-q", "-e"]);
         assert!(args.contains(&"path=42".to_string()));
         assert!(args.contains(&"x264enc".to_string()) && args.contains(&"bitrate=6220".to_string()), "{args:?}");
         assert_eq!(args.last().unwrap(), r#"location=/home/a b/Recording "1".mp4"#);
+    }
+
+    /// A sound server with a speaker's monitor and a headset's microphone.
+    fn server() -> Option<Vec<Source>> {
+        let source = |name: &str, description: &str, monitor| Source { name: name.into(), description: description.into(), monitor };
+        Some(vec![source("alsa_output.pci-0000_00_1f.3.analog-stereo.monitor", "Monitor of Built-in Audio", true), source("alsa_input.usb-Headset.mono", "Headset", false)])
+    }
+
+    fn everything(_: &str) -> bool {
+        true
+    }
+
+    fn asked(sound: bool, microphone: Option<Option<&str>>) -> Format {
+        Format { gif: false, hevc: false, fps: 30, sound, microphone: microphone.map(|m| m.map(String::from)) }
+    }
+
+    /// The sound a recording of `format` gets with everything installed, in an MP4 or a WebM.
+    fn sound_for(format: &Format, mp4: bool) -> Sound {
+        let (sound, note) = plan_sound(format, audio_encoder(mp4, &everything), &everything, &server);
+        assert_eq!(note, None);
+        sound.expect("sound")
+    }
+
+    #[test]
+    fn sound_comes_from_the_monitor_and_the_microphone() {
+        let computer = "pulsesrc device=@DEFAULT_MONITOR@ do-timestamp=true ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! queue";
+        let default_mic = "pulsesrc do-timestamp=true ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! queue";
+        let chosen_mic = "pulsesrc device=alsa_input.usb-Headset.mono do-timestamp=true ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! queue";
+        let aac = "audioconvert ! fdkaacenc bitrate=160000 ! queue ! mux.";
+        let pipeline = |format: Format, mp4| audio_pipeline(&sound_for(&format, mp4));
+        // One source goes straight to the encoder; more are mixed first.
+        assert_eq!(pipeline(asked(true, None), true), format!("{computer} ! {aac}"));
+        assert_eq!(pipeline(asked(false, Some(None)), true), format!("{default_mic} ! {aac}"));
+        assert_eq!(pipeline(asked(false, Some(Some("alsa_input.usb-Headset.mono"))), true), format!("{chosen_mic} ! {aac}"));
+        assert_eq!(pipeline(asked(true, Some(None)), true), format!("{computer} ! mix. {default_mic} ! mix. audiomixer name=mix ! {aac}"));
+        assert_eq!(
+            pipeline(asked(true, Some(Some("alsa_input.usb-Headset.mono"))), true),
+            format!("{computer} ! mix. {chosen_mic} ! mix. audiomixer name=mix ! {aac}")
+        );
+        // WebM has Opus.
+        assert_eq!(pipeline(asked(true, None), false), format!("{computer} ! audioconvert ! opusenc bitrate=160000 ! queue ! mux."));
+    }
+
+    #[test]
+    fn the_sound_joins_the_video_in_a_named_muxer() {
+        let path = Path::new("/home/a b/Recording.mp4");
+        let video = |encoder: &Encoder, sound: Option<&Sound>| video_pipeline("pipewiresrc path=7 ! videoconvert", (1920, 1080), None, 30, encoder, sound, path);
+        let silent = video(&H264[0], None);
+        assert!(!silent.iter().any(|a| a == "mux."), "{silent:?}");
+        assert_eq!(&silent[silent.len() - 5..], ["mp4mux", "name=mux", "!", "filesink", "location=/home/a b/Recording.mp4"]);
+
+        let sound = sound_for(&asked(true, Some(None)), true);
+        let loud = video(&H264[0], Some(&sound));
+        // The sound's pipeline first, then the video's, ending in the muxer it names, then the file.
+        let at = |token: &str| loud.iter().position(|a| a == token).unwrap_or_else(|| panic!("{token} in {loud:?}"));
+        assert_eq!(loud[2], "pulsesrc");
+        assert!(at("audiomixer") < at("pipewiresrc") && at("pipewiresrc") < at("x264enc") && at("x264enc") < at("mp4mux"), "{loud:?}");
+        assert_eq!(loud.iter().filter(|a| *a == "mux.").count(), 1);
+        assert_eq!(loud[at("mp4mux") + 1], "name=mux");
+        assert_eq!(&loud[loud.len() - 2..], ["filesink".to_string(), format!("location={}", path.display())]);
+
+        let webm = video(&WEBM, Some(&sound_for(&asked(true, None), false)));
+        assert!(webm.contains(&"opusenc".to_string()) && webm.contains(&"webmmux".to_string()) && webm.contains(&"name=mux".to_string()), "{webm:?}");
+        assert!(webm.iter().all(|a| !a.contains("aac")));
+    }
+
+    #[test]
+    fn the_best_installed_audio_encoder_is_used() {
+        let has = |list: &'static [&'static str]| move |e: &str| list.contains(&e);
+        let element = |mp4, installed| audio_encoder(mp4, &has(installed)).map(|e| e.element);
+        assert_eq!(element(true, &["fdkaacenc", "avenc_aac", "voaacenc", "opusenc"]), Ok("fdkaacenc"));
+        assert_eq!(element(true, &["avenc_aac", "voaacenc"]), Ok("avenc_aac"));
+        assert_eq!(element(true, &["voaacenc", "opusenc"]), Ok("voaacenc"));
+        assert_eq!(element(false, &["avenc_aac", "opusenc"]), Ok("opusenc"));
+        // Ubuntu without gstreamer1.0-libav or plugins-bad.
+        let none = element(true, &["opusenc", "x264enc"]).unwrap_err();
+        assert_eq!(none, "No AAC encoder is installed, so it was recorded without sound. Install gstreamer1.0-libav.");
+        assert!(element(false, &["avenc_aac"]).unwrap_err().starts_with("No Opus encoder"));
+        // All three take bits per second.
+        assert!(AAC.iter().chain([&OPUS]).all(|e| e.settings.starts_with(e.element) && e.settings.ends_with(" bitrate=160000")));
+    }
+
+    #[test]
+    fn sound_that_cant_be_had_is_left_out_with_a_note() {
+        let plan = |format: &Format, installed: &'static [&'static str], server: Option<Vec<Source>>| {
+            let has = move |e: &str| installed.contains(&e);
+            let (sound, note) = plan_sound(format, audio_encoder(true, &has), &has, &|| server.clone());
+            (sound.map(|s| s.sources.len()), note)
+        };
+        let installed = &["avenc_aac", "pulsesrc", "audiomixer"];
+        // Nothing asked for, nothing to say.
+        assert_eq!(plan(&asked(false, None), &[], None), (None, None));
+        assert_eq!(plan(&asked(true, Some(None)), installed, server()), (Some(2), None));
+        let note = |installed, server| plan(&asked(true, None), installed, server).1.unwrap();
+        assert_eq!(note(&["pulsesrc"], server()), "No AAC encoder is installed, so it was recorded without sound. Install gstreamer1.0-libav.");
+        assert!(note(&["avenc_aac"], server()).starts_with("Recording sound needs GStreamer's PulseAudio plugin (gstreamer1.0-pulseaudio on Debian and Ubuntu"));
+        assert_eq!(note(installed, None), "Couldn't reach the sound server, so it was recorded without sound.");
+        // The microphone alone being unavailable leaves the computer's sound.
+        let no_microphones = Some(server().unwrap().into_iter().filter(|s| s.monitor).collect());
+        assert_eq!(plan(&asked(true, Some(None)), installed, no_microphones.clone()), (Some(1), Some("No microphone was found, so it was recorded without one.".into())));
+        assert_eq!(plan(&asked(false, Some(None)), installed, no_microphones), (None, Some("No microphone was found, so it was recorded without one.".into())));
+        assert_eq!(
+            plan(&asked(true, Some(Some("alsa_input.gone"))), installed, server()),
+            (Some(1), Some("The chosen microphone isn't connected, so it was recorded without one.".into()))
+        );
+        // A speaker's monitor isn't a microphone.
+        assert_eq!(plan(&asked(false, Some(Some("alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"))), installed, server()).0, None);
+        // Mixing needs the mixer; one source doesn't.
+        assert!(plan(&asked(true, Some(None)), &["avenc_aac", "pulsesrc"], server()).1.unwrap().starts_with("Mixing sound needs GStreamer's audiomixer"));
+        assert_eq!(plan(&asked(true, None), &["avenc_aac", "pulsesrc"], server()), (Some(1), None));
+    }
+
+    #[test]
+    fn microphones_are_the_sources_that_are_not_monitors() {
+        let json = r#"[
+            {"index":1,"name":"alsa_output.pci.analog-stereo.monitor","description":"Monitor of Built-in Audio","monitor_source":"alsa_output.pci.analog-stereo"},
+            {"index":2,"name":"alsa_input.usb-Headset.mono","description":"Headset Microphone","monitor_source":"","state":"SUSPENDED"},
+            {"index":3,"name":"virtual_monitor","description":"Odd","monitor_source":"sink"},
+            {"index":4,"name":"bluez_input.00:11:22:33:44:55","monitor_source":""}
+        ]"#;
+        let sources = parse_sources(json).unwrap();
+        let names: Vec<(&str, &str, bool)> = sources.iter().map(|s| (s.name.as_str(), s.description.as_str(), s.monitor)).collect();
+        assert_eq!(
+            names,
+            [
+                ("alsa_output.pci.analog-stereo.monitor", "Monitor of Built-in Audio", true),
+                ("alsa_input.usb-Headset.mono", "Headset Microphone", false),
+                ("virtual_monitor", "Odd", true),
+                ("bluez_input.00:11:22:33:44:55", "bluez_input.00:11:22:33:44:55", false),
+            ]
+        );
+        assert_eq!(parse_sources("[]"), Some(vec![]));
+        assert_eq!(parse_sources("not json"), None);
+        // Without JSON output: index, name, driver, format, state, tab-separated.
+        let short = "1\talsa_output.pci.analog-stereo.monitor\tPipeWire\ts16le 2ch 48000Hz\tSUSPENDED\n2\talsa_input.usb-Headset.mono\tPipeWire\ts16le 1ch 48000Hz\tRUNNING\n";
+        let short = parse_short_sources(short);
+        let names: Vec<(&str, bool)> = short.iter().map(|s| (s.name.as_str(), s.monitor)).collect();
+        assert_eq!(names,[("alsa_output.pci.analog-stereo.monitor", true), ("alsa_input.usb-Headset.mono", false)]);
+    }
+
+    #[test]
+    fn settings_warn_about_missing_sound_pieces() {
+        let has = |list: &'static [&'static str]| move |e: &str| list.contains(&e);
+        let mp4 = ["x264enc", "h264parse", "mp4mux", "vp8enc", "webmmux", "opusenc", "pulsesrc"];
+        let with = |extra: &'static [&'static str]| {
+            let all: Vec<&'static str> = mp4.iter().chain(extra).copied().collect();
+            move |e: &str| all.contains(&e)
+        };
+        // MP4s without an AAC encoder: Debian's advice.
+        let problem = problems(false, true, &with(&[])).unwrap();
+        assert!(problem.starts_with("No AAC encoder is installed, so MP4s will have no sound. Install gstreamer1.0-libav"), "{problem}");
+        assert_eq!(problems(false, true, &with(&["avenc_aac"])), None);
+        // WebM (no H.264 parser) has Opus, so no AAC to ask for.
+        let webm = problems(false, true, &has(&["x264enc", "mp4mux", "vp8enc", "webmmux", "opusenc", "pulsesrc"])).unwrap();
+        assert!(webm.starts_with("H.264 needs GStreamer's h264parse") && !webm.contains("AAC"), "{webm}");
+        // The video's problem and the sound's, together.
+        let both = problems(true, true, &with(&[])).unwrap();
+        assert!(both.starts_with("H.265 needs") || both.starts_with("There's no H.265"), "{both}");
+        assert!(both.ends_with("Install gstreamer1.0-libav on Debian and Ubuntu, gstreamer1-plugin-libav on Fedora, gst-libav on Arch."), "{both}");
+        // The player and pactl.
+        let problem = problems(false, false, &with(&["avenc_aac"])).unwrap();
+        assert!(problem.starts_with("Recording sound needs pactl (pulseaudio-utils"), "{problem}");
+        let no_pulse = has(&["x264enc", "h264parse", "mp4mux", "avenc_aac", "vp8enc", "webmmux", "opusenc"]);
+        assert!(problems(false, true, &no_pulse).unwrap().starts_with("Recording sound needs GStreamer's PulseAudio plugin (gstreamer1.0-pulseaudio"));
     }
 
     #[test]
@@ -492,7 +862,12 @@ mod tests {
         encoders.dedup_by_key(|e| e.codec);
         for encoder in encoders {
             let path = dir.join(format!("test-{}.{}", encoder.element, encoder.extension));
-            record_test_picture(&encoder, &path, Duration::from_millis(1500)).unwrap_or_else(|e| panic!("{}: {e}", encoder.element));
+            // With sound where there's an encoder for it: a track in the file, not just a pipeline that runs.
+            let audio = audio_encoder(encoder.extension == "mp4", &installed).ok();
+            record_test_picture(&encoder, audio.as_ref(), &path, Duration::from_millis(1500)).unwrap_or_else(|e| panic!("{}: {e}", encoder.element));
+            let marker = if encoder.extension == "mp4" { &b"mp4a"[..] } else { b"A_OPUS" };
+            let file = std::fs::read(&path).unwrap();
+            assert_eq!(file.windows(marker.len()).any(|w| w == marker), audio.is_some(), "{} has sound if it can", encoder.element);
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -509,7 +884,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("Recording.mp4");
         // Long enough for a second keyframe however slowly GStreamer starts.
-        record_test_picture(&encoder, &path, Duration::from_secs(3)).unwrap();
+        record_test_picture(&encoder, None, &path, Duration::from_secs(3)).unwrap();
         let movie = crate::mp4::Movie::open(&path).unwrap();
         let keys = movie.keyframes();
         assert!(keys.len() >= 2 && keys[1] <= Duration::from_millis(1100), "a keyframe every second: {keys:?}");
