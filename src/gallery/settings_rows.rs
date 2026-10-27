@@ -73,11 +73,13 @@ pub(super) fn sound_rows(ui: &mut Ui, env: &Env, devices: &mut SoundDevices, det
     ui.add_enabled_ui(!gif, |ui| {
         flag_row(ui, env, options::RECORD_SOUND, "Computer sound", detail("What the computer plays: videos, calls, alerts. With a mixer such as SteelSeries Sonar, choose the headphones it plays to"));
         if options::RECORD_SOUND.read(|name| env.setting(name)) {
+            ui.add_space(6.0);
             output_picker(ui, env, devices);
         }
         ui.separator();
         flag_row(ui, env, options::RECORD_MICROPHONE, "Microphone", if details && !gif { "Your voice, mixed in with the computer's sound" } else { "" });
         if options::RECORD_MICROPHONE.read(|name| env.setting(name)) {
+            ui.add_space(6.0);
             microphone_picker(ui, env, devices);
         }
     });
@@ -96,6 +98,7 @@ pub(super) fn microphone_picker(ui: &mut Ui, env: &Env, devices: &mut SoundDevic
 }
 
 /// The default (`default`) and each of `list`, as a drop-down saving the one chosen in `setting`.
+/// It fills the width it's given, and a long name is cut short (it's all there when hovered).
 fn device_picker(ui: &mut Ui, env: &Env, id: &str, default: &str, setting: &str, list: &[SoundDevice]) {
     let chosen = env.text_setting(setting).unwrap_or_default();
     let missing = !chosen.is_empty() && !list.iter().any(|m| m.id == chosen);
@@ -105,8 +108,7 @@ fn device_picker(ui: &mut Ui, env: &Env, id: &str, default: &str, setting: &str,
         Some(m) => &m.name,
         None => &missing_name,
     };
-    ui.add_space(6.0);
-    egui::ComboBox::from_id_salt(id).width(ui.available_width()).selected_text(shown).show_ui(ui, |ui| {
+    let response = egui::ComboBox::from_id_salt(id).width(ui.available_width()).truncate().selected_text(shown).show_ui(ui, |ui| {
         let mut pick = None;
         if ui.selectable_label(chosen.is_empty(), default).clicked() {
             pick = Some("");
@@ -123,4 +125,5 @@ fn device_picker(ui: &mut Ui, env: &Env, id: &str, default: &str, setting: &str,
             set_text(env, setting, id);
         }
     });
+    response.response.on_hover_text(shown);
 }

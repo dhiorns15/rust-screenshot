@@ -447,6 +447,26 @@ fn pinned_on_linux_it_still_closes_to_capture() {
 }
 
 #[test]
+fn a_long_device_name_does_not_push_the_button_off_the_panel() {
+    let long = "Headphones (2- Arctis Nova Pro Wireless) via a rather long driver name";
+    let h = panel("panel-long-output", |env| {
+        env.set_setting(options::CAPTURE_PANEL_TAB.name, 1);
+        env.set_setting(options::RECORD_MICROPHONE.name, 1);
+        env.sandboxed().outputs = vec![mic("arctis", long)];
+        env.sandboxed().microphones = vec![mic("motiv", "MOTIV Mix Virtual Input (Shure Virtual Audio)")];
+        env.set_text_setting(options::RECORD_SOUND_DEVICE, "arctis");
+        env.set_text_setting(options::RECORD_MICROPHONE_DEVICE, "motiv");
+    });
+    let record = h.get_by_label("Record").rect();
+    assert!(record.right() <= WIDTH - 14.0, "the button is inside the panel: {record:?}");
+    assert!(h.get_by_label("Close").rect().right() <= WIDTH, "and so is the ×");
+    // Both are on the line under the switches, the output's under the options.
+    let (output, microphone) = (h.get_by_value(long).rect(), h.get_by_value("MOTIV Mix Virtual Input (Shure Virtual Audio)").rect());
+    assert!((output.top() - microphone.top()).abs() < 2.0 && output.right() < microphone.left(), "{output:?} {microphone:?}");
+    assert!(output.top() > h.get_by_label("Frame rate").rect().bottom());
+}
+
+#[test]
 fn is_as_high_as_its_content() {
     let mut h = panel("panel-height", |_| {});
     let image = h.state().height;
@@ -504,6 +524,9 @@ mod snapshots {
             env.set_setting(options::CAPTURE_PANEL_TAB.name, 1);
             env.set_setting(options::RECORD_MICROPHONE.name, 1);
             env.sandboxed().microphones = vec![mic("usb-1", "USB Microphone")];
+            // A long name, cut short.
+            env.sandboxed().outputs = vec![mic("arctis", "Headphones (2- Arctis Nova Pro Wireless)")];
+            env.set_text_setting(options::RECORD_SOUND_DEVICE, "arctis");
         });
         snapshot(&mut h, "capture_panel_video");
     }

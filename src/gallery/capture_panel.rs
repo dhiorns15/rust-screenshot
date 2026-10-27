@@ -373,17 +373,25 @@ impl CapturePanel {
         let main = ui.horizontal_top(|ui| {
             rail = egui::Frame::NONE.inner_margin(Margin::same(6)).show(ui, |ui| self.tabs(ui, tab)).response.rect;
             ui.vertical(|ui| {
-                ui.set_width(OPTIONS);
-                match tab {
-                    Tab::Image => self.image_options(ui),
-                    Tab::Video => self.video_options(ui),
-                }
-            });
-            ui.vertical(|ui| {
-                ui.set_width(SWITCHES);
-                match tab {
-                    Tab::Image => self.image_switches(ui),
-                    Tab::Video => self.video_switches(ui),
+                ui.set_width(OPTIONS + COLUMN_GAP + SWITCHES);
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(OPTIONS);
+                        match tab {
+                            Tab::Image => self.image_options(ui),
+                            Tab::Video => self.video_options(ui),
+                        }
+                    });
+                    ui.vertical(|ui| {
+                        ui.set_width(SWITCHES);
+                        match tab {
+                            Tab::Image => self.image_switches(ui),
+                            Tab::Video => self.video_switches(ui),
+                        }
+                    });
+                });
+                if tab == Tab::Video {
+                    self.video_devices(ui);
                 }
             });
             // The button is centred beside however high the options come to.
@@ -503,17 +511,40 @@ impl CapturePanel {
         let gif = options::RECORD_GIF.read(|name| self.env.setting(name));
         ui.add_enabled_ui(!gif, |ui| {
             settings_rows::flag_row(ui, &self.env, options::RECORD_SOUND, "Computer sound", "");
-            if options::RECORD_SOUND.read(|name| self.env.setting(name)) {
-                settings_rows::output_picker(ui, &self.env, &mut self.sound_devices);
-            }
             settings_rows::flag_row(ui, &self.env, options::RECORD_MICROPHONE, "Microphone", "");
-            if options::RECORD_MICROPHONE.read(|name| self.env.setting(name)) {
-                settings_rows::microphone_picker(ui, &self.env, &mut self.sound_devices);
-            }
         });
         if gif {
             ui.label(RichText::new("GIFs have no sound").size(12.0).color(theme::palette(ui).muted));
         }
+    }
+
+    /// Under the columns, which output's sound and which microphone (each under its switch, when
+    /// it's on), so a long name doesn't push the button off the panel.
+    fn video_devices(&mut self, ui: &mut Ui) {
+        let on = |flag: options::Flag| flag.read(|name| self.env.setting(name));
+        let (sound, microphone) = (on(options::RECORD_SOUND), on(options::RECORD_MICROPHONE));
+        if !(sound || microphone) {
+            return;
+        }
+        // Greyed out with the switches, for GIFs.
+        let gif = on(options::RECORD_GIF);
+        ui.add_enabled_ui(!gif, |ui| ui.horizontal(|ui| {
+            for (shown, glyph, width) in [(sound, icon::SPEAKER_HIGH, OPTIONS), (microphone, icon::MICROPHONE, SWITCHES)] {
+                ui.allocate_ui_with_layout(Vec2::new(width, 26.0), Layout::left_to_right(Align::Center), |ui| {
+                    ui.set_width(width);
+                    if !shown {
+                        return;
+                    }
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label(RichText::new(glyph).size(16.0).color(theme::palette(ui).muted));
+                    if glyph == icon::SPEAKER_HIGH {
+                        settings_rows::output_picker(ui, &self.env, &mut self.sound_devices);
+                    } else {
+                        settings_rows::microphone_picker(ui, &self.env, &mut self.sound_devices);
+                    }
+                });
+            }
+        }));
     }
 
     /// The library, and Settings.
