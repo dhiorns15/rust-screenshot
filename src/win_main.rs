@@ -722,13 +722,11 @@ unsafe fn capture(hwnd: HWND, mode: Mode) {
 }
 
 /// Hides the library and Settings windows, if they're showing and Settings says to, so they stay
-/// out of the capture.
+/// out of the capture; and the capture panel, if it's been kept open, whatever Settings says.
 unsafe fn hide_rsnip() {
-    if !SETTINGS.get().hide_while_capturing {
-        return;
-    }
+    let titles: &[&str] = if SETTINGS.get().hide_while_capturing { &[gallery::TITLE, gallery::SETTINGS_TITLE, gallery::CAPTURE_PANEL_TITLE] } else { &[gallery::CAPTURE_PANEL_TITLE] };
     let mut hidden = Vec::new();
-    for title in [gallery::TITLE, gallery::SETTINGS_TITLE] {
+    for &title in titles {
         let window = FindWindowW(null(), wide(title).as_ptr());
         if !window.is_null() && IsWindowVisible(window) != 0 && IsIconic(window) == 0 {
             ShowWindow(window, SW_HIDE);

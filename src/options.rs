@@ -48,6 +48,10 @@ pub const RECORD_MICROPHONE_DEVICE: &str = "RecordMicrophoneDevice";
 pub const CAPTURE_PANEL_TAB: Choice = Choice { name: "CapturePanelTab", default: 0, values: &[0, 1] };
 pub const CAPTURE_PANEL_IMAGE: Choice = Choice { name: "CapturePanelImage", default: 0, values: &[0, 1, 2, 3, 4] };
 pub const CAPTURE_PANEL_VIDEO: Choice = Choice { name: "CapturePanelVideo", default: 0, values: &[0, 1] };
+/// The capture panel stays open when another window is clicked (its × or Esc closes it).
+pub const CAPTURE_PANEL_KEEP_OPEN: Flag = Flag { name: "CapturePanelKeepOpen", default: false };
+/// Where the capture panel was last moved to: its top left in pixels, as "x,y" (a text setting).
+pub const CAPTURE_PANEL_PLACE: &str = "CapturePanelPlace";
 /// The library's player is muted.
 pub const PLAYER_MUTED: Flag = Flag { name: "PlayerMuted", default: false };
 

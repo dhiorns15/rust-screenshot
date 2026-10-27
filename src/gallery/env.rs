@@ -94,6 +94,8 @@ pub struct Sandbox {
     pub system_info_opened: usize,
     pub recording_settings_opened: usize,
     pub library_opened: usize,
+    /// Captures started straight away (from a capture panel that stays open).
+    pub captures_started: Vec<&'static str>,
     pub trays_started: usize,
     /// Windows' own "Use the Print screen key to open screen capture".
     pub snipping_key: bool,
@@ -381,6 +383,14 @@ impl Env {
         match &self.sandbox {
             Some(s) => s.borrow_mut().library_opened += 1,
             None => platform::open_library(),
+        }
+    }
+
+    /// Runs a capture or recording (`--region`, `--record`, ...) in the tray app.
+    pub fn start_capture(&self, flag: &'static str) {
+        match &self.sandbox {
+            Some(s) => s.borrow_mut().captures_started.push(flag),
+            None => platform::start_capture(flag),
         }
     }
 

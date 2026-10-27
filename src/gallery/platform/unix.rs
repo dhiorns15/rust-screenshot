@@ -150,8 +150,9 @@ pub fn open_capture_panel() {
     }
 }
 
-/// The desktop places the capture panel (there's no telling where the icon is).
-pub fn flyout_anchor(_at: Option<(i32, i32)>) -> Option<super::super::capture_panel::Anchor> {
+/// The desktop places the capture panel (there's no telling where the icon is, and Wayland doesn't
+/// let windows place themselves).
+pub fn flyout_anchor(_at: Option<(i32, i32)>, _moved_to: Option<(i32, i32)>) -> Option<super::super::capture_panel::Anchor> {
     None
 }
 

@@ -402,6 +402,51 @@ fn closes_when_it_loses_the_focus_but_not_before_it_has_had_it() {
 }
 
 #[test]
+fn pinned_it_stays_open_when_another_window_is_clicked() {
+    let mut h = panel("panel-pin", |_| {});
+    assert!(!h.state().keep_open());
+    click(&mut h, "Keep open");
+    assert!(h.state().keep_open(), "remembered");
+    focus(&mut h, true);
+    focus(&mut h, false);
+    assert!(!h.state().closing);
+    // Its × still closes it.
+    click(&mut h, "Close");
+    assert!(h.state().closing);
+
+    let mut h = panel("panel-unpin", |env| env.set_setting(options::CAPTURE_PANEL_KEEP_OPEN.name, 1));
+    click(&mut h, "Keep open");
+    assert!(!h.state().keep_open());
+    focus(&mut h, true);
+    focus(&mut h, false);
+    assert!(h.state().closing);
+}
+
+#[test]
+fn pinned_on_windows_it_captures_straight_away_and_stays() {
+    let mut h = panel("panel-pin-capture", |env| env.set_setting(options::CAPTURE_PANEL_KEEP_OPEN.name, 1));
+    click(&mut h, "Capture");
+    assert_eq!(h.state().env.sandboxed().captures_started, ["--region"], "the tray app hides it while it captures");
+    assert!(!h.state().closing);
+    assert_eq!(launched(&h), None);
+    // Opening the library or Settings leaves it open too.
+    h.get_by_label_contains("Open library").click();
+    settle(&mut h);
+    click(&mut h, "Settings");
+    assert!(!h.state().closing);
+}
+
+#[test]
+fn pinned_on_linux_it_still_closes_to_capture() {
+    // Nothing would bring it back after the capture, which it would be in.
+    let mut h = linux_panel("panel-pin-linux", |env| env.set_setting(options::CAPTURE_PANEL_KEEP_OPEN.name, 1));
+    click(&mut h, "Capture");
+    assert_eq!(launched(&h), Some("--region"));
+    assert!(h.state().closing);
+    assert!(h.state().env.sandboxed().captures_started.is_empty());
+}
+
+#[test]
 fn is_as_high_as_its_content() {
     let mut h = panel("panel-height", |_| {});
     let image = h.state().height;

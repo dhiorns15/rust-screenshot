@@ -102,6 +102,8 @@ pub fn check_recording() {
 }
 #[cfg(windows)]
 pub use settings_window::TITLE as SETTINGS_TITLE;
+#[cfg(windows)]
+pub use capture_panel::TITLE as CAPTURE_PANEL_TITLE;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

@@ -127,16 +127,21 @@ pub fn open_recording_settings() {
     spawn_self(&["--settings", "--recording"]);
 }
 
-/// Where the capture panel goes: by `at` (where the tray icon was clicked), else by the
-/// cursor, in the work area of the monitor it's on.
-pub fn flyout_anchor(at: Option<(i32, i32)>) -> Option<Anchor> {
+/// Where the capture panel goes: where it was last moved to (`moved_to`, its top left), if that's
+/// still on a screen; else by `at` (where the tray icon was clicked), else by the cursor. Either
+/// way inside the work area of that screen.
+pub fn flyout_anchor(at: Option<(i32, i32)>, moved_to: Option<(i32, i32)>) -> Option<Anchor> {
     use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL};
     use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
     unsafe {
+        // A screen that has since gone (unplugged, or the layout changed) puts it back by the tray.
+        let moved_to = moved_to.map(|(x, y)| POINT { x, y }).filter(|&p| !MonitorFromPoint(p, MONITOR_DEFAULTTONULL).is_null());
         let mut cursor = POINT { x: 0, y: 0 };
-        if let Some((x, y)) = at {
+        if let Some(point) = moved_to {
+            cursor = point;
+        } else if let Some((x, y)) = at {
             cursor = POINT { x, y };
         } else if GetCursorPos(&mut cursor) == 0 {
             return None;
@@ -154,6 +159,7 @@ pub fn flyout_anchor(at: Option<(i32, i32)>) -> Option<Anchor> {
             cursor: Pos2::new(cursor.x as f32, cursor.y as f32),
             work: Rect::from_min_max(Pos2::new(work.left as f32, work.top as f32), Pos2::new(work.right as f32, work.bottom as f32)),
             scale: dpi_x as f32 / 96.0,
+            moved: moved_to.is_some(),
         })
     }
 }

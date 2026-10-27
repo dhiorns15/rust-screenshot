@@ -80,7 +80,7 @@ works, and which microphones it found.
 
 Closing the library leaves RSnip's icon in the top bar or panel, for recording and opening the
 library, Settings or the screenshots folder again; *Capture panel…* in its menu opens a small window
-to take a screenshot or start a recording with the options that matter for it (the format and whether it has sound, say); *Quit RSnip* in its menu stops it. Ubuntu, KDE and most panels show
+to take a screenshot or start a recording with the options that matter for it (the format and whether it has sound, say), which its pin keeps open when you click elsewhere (Capture still closes it, so it is not in the picture); *Quit RSnip* in its menu stops it. Ubuntu, KDE and most panels show
 it; on plain GNOME (e.g. Fedora) it needs the
 [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/). Settings →
 General turns it off, or starts it when you sign in.

@@ -1,14 +1,17 @@
 //! The capture panel (`rsnip --capture-panel`), opened by left-clicking the tray icon (or from the
 //! icon's menu): choose what to capture or record, change the options that matter for it, and
 //! press the big red button. On Windows it sits above the tray icon, in the corner by where it was
-//! clicked; elsewhere the desktop places it. It closes on Esc or when another window is clicked.
+//! clicked, until it's dragged somewhere else (by any empty part of it), and then opens where it
+//! was left; elsewhere the desktop places it. It closes on Esc or its ×, and when another window is
+//! clicked unless it's pinned to stay open.
 //!
 //! The switches are the same settings as in the Settings window, with the same rows (see
 //! `settings_rows`), and tell the running tray app to apply them. What's being captured, and which
 //! tab was last shown, are remembered here only.
 //!
 //! The panel must be gone before the capture starts, or it would be in the picture: it closes, and
-//! `run` starts the capture once its window has been taken down.
+//! `run` starts the capture once its window has been taken down. One pinned open on Windows stays,
+//! and the tray app hides it for the capture or recording and brings it back after.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -44,23 +47,30 @@ const BUTTON: f32 = 80.0;
 /// How long the panel's window has to go from the screen before the capture starts.
 const GONE: Duration = Duration::from_millis(150);
 
-/// Where the panel opens, in pixels: the cursor (on the tray icon) and the usable part of the
-/// screen it's on (the work area, which leaves out the taskbar).
+/// Where the panel opens, in pixels: the cursor (on the tray icon), or where it was last moved to,
+/// and the usable part of the screen that's on (the work area, which leaves out the taskbar).
 pub struct Anchor {
     pub cursor: Pos2,
     pub work: Rect,
     /// Pixels to a point on that screen.
     pub scale: f32,
+    /// `cursor` is where the panel was moved to: its top left, not the tray icon.
+    pub moved: bool,
 }
 
 impl Anchor {
-    /// The top left of a panel `size` pixels big with its bottom right by the cursor, kept inside
-    /// the work area.
+    /// The top left of a panel `size` pixels big: with its bottom right by the cursor, or where it
+    /// was moved to, kept inside the work area.
     fn top_left(&self, size: Vec2) -> Pos2 {
-        let inside = self.work.shrink(GAP * self.scale);
-        let wanted = self.cursor - size;
+        let (inside, wanted) = if self.moved { (self.work, self.cursor) } else { (self.work.shrink(GAP * self.scale), self.cursor - size) };
         Pos2::new(wanted.x.min(inside.right() - size.x).max(inside.left()), wanted.y.min(inside.bottom() - size.y).max(inside.top()))
     }
+}
+
+/// "x,y", as `CAPTURE_PANEL_PLACE` keeps it.
+fn parse_place(text: &str) -> Option<(i32, i32)> {
+    let (x, y) = text.split_once(',')?;
+    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
 }
 
 /// What the panel has been asked to run: the flag to start RSnip with (see `launch_flag`).
@@ -74,7 +84,9 @@ pub fn run() {
     let args: Vec<String> = std::env::args().collect();
     let at = args.iter().skip_while(|a| *a != "--at").nth(1).and_then(|at| at.split_once(','));
     let at = at.and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)));
-    let anchor = platform::flyout_anchor(at);
+    let env = Env::real();
+    let moved_to = env.text_setting(options::CAPTURE_PANEL_PLACE).as_deref().and_then(parse_place);
+    let anchor = platform::flyout_anchor(at, moved_to);
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
         .with_inner_size([WIDTH, HEIGHT])
@@ -92,7 +104,7 @@ pub fn run() {
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     let launch = Launch::default();
     let asked = launch.clone();
-    let _ = eframe::run_native(TITLE, options, Box::new(move |cc| Ok(Box::new(CapturePanel::new(&cc.egui_ctx, Env::real(), anchor, asked)))));
+    let _ = eframe::run_native(TITLE, options, Box::new(move |cc| Ok(Box::new(CapturePanel::new(&cc.egui_ctx, env, anchor, asked)))));
     // Its window is gone now; give the screen a moment to show what was behind it.
     if let Some(flag) = launch.take() {
         std::thread::sleep(GONE);
@@ -254,6 +266,10 @@ pub struct CapturePanel {
     pub closing: bool,
     /// Set to the flag to run once the window has closed, when Capture was pressed.
     pub launch: Launch,
+    /// It's being (or has been) dragged: it stays where it's put, which is remembered.
+    dragged: bool,
+    /// Where it was last remembered to be, in pixels.
+    remembered: Option<Pos2>,
 }
 
 impl CapturePanel {
@@ -262,7 +278,12 @@ impl CapturePanel {
         let mut fonts = egui::FontDefinitions::default();
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
-        CapturePanel { env, anchor, microphones: None, had_focus: false, height: HEIGHT, placed: None, closing: false, launch }
+        CapturePanel { env, anchor, microphones: None, had_focus: false, height: HEIGHT, placed: None, closing: false, launch, dragged: false, remembered: None }
+    }
+
+    /// It stays open when another window is clicked.
+    pub fn keep_open(&self) -> bool {
+        options::CAPTURE_PANEL_KEEP_OPEN.read(|name| self.env.setting(name))
     }
 
     fn close(&mut self, ctx: &egui::Context) {
@@ -270,14 +291,51 @@ impl CapturePanel {
         ctx.send_viewport_cmd(ViewportCommand::Close);
     }
 
-    /// Closes, and asks for the capture to start once the window has gone.
+    /// Closes, unless it's pinned open: after opening the library or Settings.
+    fn done(&mut self, ctx: &egui::Context) {
+        if !self.keep_open() {
+            self.close(ctx);
+        }
+    }
+
+    /// Closes, and asks for the capture to start once the window has gone. Pinned open on Windows,
+    /// it starts the capture straight away and stays: the tray app hides it while it captures.
     fn capture(&mut self, ctx: &egui::Context) {
-        self.launch.set(Some(launch_flag(&self.env)));
-        self.close(ctx);
+        let flag = launch_flag(&self.env);
+        if self.keep_open() && self.env.tray_app {
+            self.env.start_capture(flag);
+        } else {
+            self.launch.set(Some(flag));
+            self.close(ctx);
+        }
+    }
+
+    /// Lets the window be dragged by any part of it that isn't a control, and remembers where it's
+    /// left (in pixels, so a scaled screen gets it back in the same place).
+    fn movable(&mut self, ui: &mut Ui) {
+        let behind = ui.interact(ui.max_rect(), ui.id().with("move"), Sense::drag());
+        if behind.drag_started() {
+            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+            self.dragged = true;
+            // It's where it's put from now on.
+            self.anchor = None;
+        }
+        if !self.dragged {
+            return;
+        }
+        let scale = ui.ctx().pixels_per_point();
+        if let Some(outer) = ui.ctx().input(|i| i.viewport().outer_rect) {
+            let at = (outer.min.to_vec2() * scale).round().to_pos2();
+            if self.remembered != Some(at) {
+                self.env.set_text_setting(options::CAPTURE_PANEL_PLACE, &format!("{},{}", at.x, at.y));
+                self.remembered = Some(at);
+            }
+        }
     }
 
     /// Asks the window to be as high as the content, and (on Windows) to keep its bottom right by
-    /// the cursor, so it grows upwards when the microphone drop-down appears.
+    /// the cursor, so it grows upwards when the microphone drop-down appears; once it's been moved,
+    /// its top left stays put.
     fn fit(&mut self, ctx: &egui::Context) {
         let size = Vec2::new(WIDTH, self.height);
         let scale = ctx.pixels_per_point();
@@ -460,15 +518,23 @@ impl CapturePanel {
         ui.horizontal(|ui| {
             if ui.add(egui::Button::new(theme::label(icon::FOLDER_OPEN, "Open library & editor")).frame(false)).clicked() {
                 self.env.open_library();
-                self.close(ui.ctx());
+                self.done(ui.ctx());
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(IconButton::new(icon::X, "Close")).on_hover_text("Close (Esc)").clicked() {
+                    self.close(ui.ctx());
+                }
                 if ui.add(IconButton::new(icon::GEAR_SIX, "Settings")).on_hover_text("Settings").clicked() {
                     match tab {
                         Tab::Image => self.env.open_settings(),
                         Tab::Video => self.env.open_recording_settings(),
                     }
-                    self.close(ui.ctx());
+                    self.done(ui.ctx());
+                }
+                let keep_open = self.keep_open();
+                let hint = if keep_open { "Stays open when you click elsewhere: click to let it close" } else { "Keep it open when you click elsewhere" };
+                if ui.add(IconButton::new(icon::PUSH_PIN, "Keep open").selected(keep_open)).on_hover_text(hint).clicked() {
+                    self.env.set_setting(options::CAPTURE_PANEL_KEEP_OPEN.name, !keep_open as u32);
                 }
             });
         });
@@ -520,10 +586,11 @@ impl eframe::App for CapturePanel {
         let ctx = ui.ctx().clone();
         theme::set_appearance(&ctx, Appearance::from_setting(self.env.setting(Appearance::SETTING)));
 
-        // Closes on losing the focus, once it's had it: it may not have arrived yet.
+        // Closes on losing the focus, once it's had it (it may not have arrived yet), unless it's
+        // pinned open.
         match ctx.input(|i| i.viewport().focused) {
             Some(true) => self.had_focus = true,
-            Some(false) if self.had_focus => self.close(&ctx),
+            Some(false) if self.had_focus && !self.keep_open() => self.close(&ctx),
             _ if !self.had_focus => {
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
                 ctx.request_repaint_after(Duration::from_millis(100));
@@ -543,6 +610,8 @@ impl eframe::App for CapturePanel {
         let frame = egui::Frame::NONE.fill(p.panel).stroke(egui::Stroke::new(1.0f32, p.border)).inner_margin(egui::Margin::same(MARGIN));
         let margins = frame.total_margin().sum().y;
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+            // First, so the controls drawn over it take their own clicks.
+            self.movable(ui);
             let content = ui.vertical(|ui| self.content(ui)).response.rect;
             self.height = content.height() + margins;
         });
@@ -556,7 +625,7 @@ mod tests {
 
     fn anchor(cursor: (f32, f32)) -> Anchor {
         // A 1920 x 1080 screen with a 40 pixel taskbar along the bottom, at 100%.
-        Anchor { cursor: Pos2::new(cursor.0, cursor.1), work: Rect::from_min_max(Pos2::ZERO, Pos2::new(1920.0, 1040.0)), scale: 1.0 }
+        Anchor { cursor: Pos2::new(cursor.0, cursor.1), work: Rect::from_min_max(Pos2::ZERO, Pos2::new(1920.0, 1040.0)), scale: 1.0, moved: false }
     }
 
     #[test]
@@ -570,14 +639,32 @@ mod tests {
 
     #[test]
     fn hangs_below_a_taskbar_along_the_top() {
-        let top = Anchor { cursor: Pos2::new(1850.0, 10.0), work: Rect::from_min_max(Pos2::new(0.0, 40.0), Pos2::new(1920.0, 1080.0)), scale: 1.0 };
+        let top = Anchor { cursor: Pos2::new(1850.0, 10.0), work: Rect::from_min_max(Pos2::new(0.0, 40.0), Pos2::new(1920.0, 1080.0)), scale: 1.0, moved: false };
         assert_eq!(top.top_left(Vec2::new(320.0, 400.0)).y, 40.0 + GAP);
     }
 
     #[test]
     fn keeps_its_gap_in_pixels_on_a_scaled_screen() {
-        let scaled = Anchor { cursor: Pos2::new(3000.0, 2100.0), work: Rect::from_min_max(Pos2::ZERO, Pos2::new(3840.0, 2080.0)), scale: 2.0 };
+        let scaled = Anchor { cursor: Pos2::new(3000.0, 2100.0), work: Rect::from_min_max(Pos2::ZERO, Pos2::new(3840.0, 2080.0)), scale: 2.0, moved: false };
         let corner = scaled.top_left(Vec2::new(640.0, 800.0));
         assert_eq!(corner, Pos2::new(2360.0, 2080.0 - 2.0 * GAP - 800.0));
+    }
+
+    #[test]
+    fn opens_where_it_was_moved_to_kept_on_the_screen() {
+        let moved = |x, y| Anchor { cursor: Pos2::new(x, y), work: Rect::from_min_max(Pos2::ZERO, Pos2::new(1920.0, 1040.0)), scale: 1.0, moved: true };
+        let size = Vec2::new(650.0, 240.0);
+        assert_eq!(moved(300.0, 200.0).top_left(size), Pos2::new(300.0, 200.0), "its top left, where it was left");
+        // Against the edge is fine; past it, it comes back on.
+        assert_eq!(moved(0.0, 0.0).top_left(size), Pos2::ZERO);
+        assert_eq!(moved(1800.0, 1000.0).top_left(size), Pos2::new(1920.0 - 650.0, 1040.0 - 240.0));
+    }
+
+    #[test]
+    fn reads_where_it_was_moved_to() {
+        assert_eq!(parse_place("120,-40"), Some((120, -40)), "a screen left of or above the main one");
+        assert_eq!(parse_place(" 5 , 6 "), Some((5, 6)));
+        assert_eq!(parse_place("nowhere"), None);
+        assert_eq!(parse_place(""), None);
     }
 }
