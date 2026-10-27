@@ -3,17 +3,18 @@
 //! background icon on Linux, else the library (whichever claims it first). Every few seconds it
 //! looks in the save folder for what's been saved since the destination was set to Automatically
 //! and hasn't been pushed there since it last changed; a failure is tried again later, and
-//! reported if it keeps failing. The same process moves old screenshots and recordings out of the
-//! folder, if Settings says to (see `clean_up`), and describes new screenshots, if Settings says to
-//! (see `describer`).
+//! reported if it keeps failing. A keyring that's locked (or not running yet) isn't a failure:
+//! what needs a secret from it waits, and it's never asked to unlock, which is left to Settings.
+//! The same process moves old screenshots and recordings out of the folder, if Settings says to
+//! (see `clean_up`), and describes new screenshots, if Settings says to (see `describer`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::{clean_up, describer, library_files_with_times, platform, search};
-use crate::options;
 use crate::push::{self, Destination};
+use crate::{options, secrets};
 
 /// How often the folder is looked at.
 const EVERY: Duration = Duration::from_secs(5);
@@ -21,6 +22,9 @@ const EVERY: Duration = Duration::from_secs(5);
 const SETTLE: Duration = Duration::from_secs(2);
 /// After a failure, how long until each try again; after the last, it's reported and left.
 const RETRIES: [Duration; 3] = [Duration::from_secs(60), Duration::from_secs(5 * 60), Duration::from_secs(30 * 60)];
+/// After the credential store wouldn't give a secret (the keyring is locked, or not running yet
+/// just after logging in), how long until it's asked again.
+const KEYRING_WAIT: Duration = Duration::from_secs(60);
 
 /// Pushes automatically from this process, while no other RSnip process does (it takes over when
 /// that one ends, say the library closing with the background icon still there). `notify` shows
@@ -51,15 +55,24 @@ pub fn start(notify: impl Fn(&str, &str) + Send + Sync + 'static) {
     });
 }
 
-/// Failed pushes: by destination id and file, how many tries so far and when to try next (`None`:
-/// given up on, until RSnip starts again).
+/// Failed pushes, and what's waiting for the keyring.
 #[derive(Default)]
-struct Tries(HashMap<(String, PathBuf), (usize, Option<SystemTime>)>);
+struct Tries {
+    /// By destination id and file, how many tries so far and when to try next (`None`: given up
+    /// on, until RSnip starts again).
+    files: HashMap<(String, PathBuf), (usize, Option<SystemTime>)>,
+    /// By destination id, not before when the credential store is asked for its secret again, as
+    /// it wouldn't give it.
+    keyring_wait: HashMap<String, SystemTime>,
+    /// By destination id, the files said to be waiting for the keyring (since it last gave that
+    /// destination's secret), so each is said once.
+    keyring_told: HashSet<(String, PathBuf)>,
+}
 
 impl Tries {
     /// Notes a failure at `now`; true if that was the last try.
     fn failed(&mut self, id: &str, file: &Path, now: SystemTime) -> bool {
-        let entry = self.0.entry((id.to_owned(), file.to_path_buf())).or_insert((0, None));
+        let entry = self.files.entry((id.to_owned(), file.to_path_buf())).or_insert((0, None));
         let wait = RETRIES.get(entry.0);
         *entry = (entry.0 + 1, wait.map(|wait| now + *wait));
         wait.is_none()
@@ -67,7 +80,25 @@ impl Tries {
 
     /// Whether it's waiting to be tried again, or given up on.
     fn waiting(&self, id: &str, file: &Path, now: SystemTime) -> bool {
-        self.0.get(&(id.to_owned(), file.to_path_buf())).is_some_and(|(_, next)| next.is_none_or(|next| now < next))
+        self.files.get(&(id.to_owned(), file.to_path_buf())).is_some_and(|(_, next)| next.is_none_or(|next| now < next))
+    }
+
+    /// Whether the credential store may be asked for `id`'s secret at `now`.
+    fn keyring_ready(&self, id: &str, now: SystemTime) -> bool {
+        self.keyring_wait.get(id).is_none_or(|until| now >= *until)
+    }
+
+    /// Notes that the credential store wouldn't give `id`'s secret at `now`, for pushing `files`
+    /// (which keep their tries); gives those not said before to be waiting for it.
+    fn keyring_failed(&mut self, id: &str, files: &[PathBuf], now: SystemTime) -> Vec<PathBuf> {
+        self.keyring_wait.insert(id.to_owned(), now + KEYRING_WAIT);
+        files.iter().filter(|file| self.keyring_told.insert((id.to_owned(), file.to_path_buf()))).cloned().collect()
+    }
+
+    /// Notes that the credential store gave `id`'s secret.
+    fn keyring_worked(&mut self, id: &str) {
+        self.keyring_wait.remove(id);
+        self.keyring_told.retain(|(told, _)| told != id);
     }
 }
 
@@ -88,19 +119,44 @@ fn run_once(tries: &mut Tries, now: SystemTime, notify: &dyn Fn(&str, &str)) {
     }
     let files = library_files_with_times(&platform::screenshots_dir());
     for destination in &destinations {
+        let needs_secret = destination.kind.secret_label().is_some();
+        if needs_secret && !tries.keyring_ready(&destination.id, now) {
+            continue;
+        }
         let due: Vec<PathBuf> = files.iter().filter(|(file, modified)| is_due(destination, file, *modified, now, tries)).map(|(f, _)| f.clone()).collect();
         if due.is_empty() {
             continue;
         }
-        // Read once for all of them; the keyring may have to be unlocked.
-        let secret = push::saved_secret(destination);
+        // Read once for all of them, from the keyring only if it's unlocked: a window asking for
+        // its password, out of nowhere every minute, would be no good.
+        let secret = match push::saved_secret_from(destination, secrets::get_quietly) {
+            Ok(secret) => {
+                if needs_secret {
+                    tries.keyring_worked(&destination.id);
+                }
+                secret
+            }
+            Err(e) => {
+                // Said once (with a Retry in Recent pushes, which can unlock it), and tried again
+                // later; notified only when nothing else is waiting for it already.
+                let first = tries.keyring_told.is_empty();
+                let waiting = tries.keyring_failed(&destination.id, &due, now);
+                for file in &waiting {
+                    push::history::record(&push::history::file(), &push::history::Entry::new(destination, file, true, Some(e.clone())));
+                }
+                if first && !waiting.is_empty() && options::NOTIFY.read(platform::setting) {
+                    notify(&format!("Pushes to {} are waiting for the keyring", destination.name), &e);
+                }
+                continue;
+            }
+        };
         for file in due {
             let result = secret.clone().and_then(|secret| push::push(destination, secret.as_deref(), &file));
             let result = result.and_then(|link| search::record_push(&file, &destination.id, link));
             push::history::record(&push::history::file(), &push::history::Entry::new(destination, &file, true, result.clone().err()));
             match result {
                 Ok(()) => {
-                    tries.0.remove(&(destination.id.clone(), file));
+                    tries.files.remove(&(destination.id.clone(), file));
                 }
                 Err(e) => {
                     if tries.failed(&destination.id, &file, now) && options::NOTIFY.read(platform::setting) {
@@ -189,5 +245,46 @@ mod tests {
         let other = dir.join("b.png");
         std::fs::write(&other, b"png").unwrap();
         assert!(is_due(&d, &other, at(5_000), now, &tries), "others still go");
+    }
+
+    #[test]
+    fn a_locked_keyring_holds_pushes_back_without_using_up_their_tries() {
+        let dir = super::super::tests::sandbox_dir("auto-push-keyring");
+        let [a, b, c] = ["a.png", "b.png", "c.png"].map(|name| dir.join(name));
+        for file in [&a, &b, &c] {
+            std::fs::write(file, b"png").unwrap();
+        }
+        let d = Destination { auto: true, auto_since: Some(0), ..Destination::new(Kind::Immich { server: "https://photos.example.com".into() }) };
+        let other = Destination { auto: true, auto_since: Some(0), ..Destination::new(Kind::discord()) };
+        let mut tries = Tries::default();
+        let mut now = at(10_000);
+        assert!(tries.keyring_ready(&d.id, now));
+        assert_eq!(tries.keyring_failed(&d.id, &[a.clone(), b.clone()], now), [a.clone(), b.clone()], "each is said to be waiting");
+        assert!(!tries.keyring_ready(&d.id, now + Duration::from_secs(30)), "the keyring isn't asked again straight away");
+        assert!(tries.keyring_ready(&other.id, now + Duration::from_secs(30)), "others are asked for theirs");
+        // Locked for hours, it's asked every minute, and each file is said to be waiting once.
+        for minute in 1..=300 {
+            now = at(10_000 + minute * 60);
+            assert!(tries.keyring_ready(&d.id, now));
+            let files = if minute < 100 { vec![a.clone(), b.clone()] } else { vec![a.clone(), b.clone(), c.clone()] };
+            let said = tries.keyring_failed(&d.id, &files, now);
+            assert_eq!(said, if minute == 100 { vec![c.clone()] } else { vec![] });
+        }
+        assert!(tries.files.is_empty(), "no tries used up");
+        assert!(is_due(&d, &a, at(5_000), now, &tries));
+
+        // Another destination's secret coming doesn't end this one's wait.
+        tries.keyring_worked(&other.id);
+        assert!(!tries.keyring_ready(&d.id, now + Duration::from_secs(30)));
+        assert_eq!(tries.keyring_failed(&d.id, std::slice::from_ref(&a), now), Vec::<PathBuf>::new(), "nor is it said again");
+
+        // Once it gives the secret, a push that fails is tried again as any other is.
+        now += KEYRING_WAIT;
+        tries.keyring_worked(&d.id);
+        assert!(tries.keyring_ready(&d.id, now));
+        assert!(!tries.failed(&d.id, &a, now), "the first try of three");
+        assert!(!is_due(&d, &a, at(5_000), now + Duration::from_secs(59), &tries));
+        assert!(is_due(&d, &a, at(5_000), now + Duration::from_secs(60), &tries));
+        assert_eq!(tries.keyring_failed(&d.id, std::slice::from_ref(&a), now), [a], "locked again, that's said again");
     }
 }

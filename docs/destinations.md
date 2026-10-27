@@ -30,7 +30,11 @@ went wrong when one didn't, and a *Retry* on the latest failure of a file to a p
 
 Passwords, keys, tokens and webhook addresses are kept in Windows' Credential Manager, or on Linux the
 desktop's keyring (GNOME Keyring, KWallet: any Secret Service), never in RSnip's settings. On Linux
-without a keyring, places that need one can't be saved.
+without a keyring, places that need one can't be saved. When the keyring is locked (as it often is
+over remote desktop), Settings asks for it to be unlocked when it needs a password, and gives up
+after a minute if that isn't answered; automatic pushes never ask. They wait, without using up
+their tries, and look again every minute; *Recent pushes* says so, with a *Retry* that asks for the
+keyring to be unlocked.
 Give RSnip its own key, token or app password where the service has them, with no more than it
 needs, so it can be taken back without changing anything else.
 

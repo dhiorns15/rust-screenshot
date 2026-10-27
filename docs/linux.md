@@ -161,3 +161,10 @@ running, as can happen over remote desktop), or the package manager fails (anoth
 say), the downloaded package is kept, and Settings shows the command that installs it in a terminal,
 such as `sudo apt install /tmp/rsnip-update-…/rsnip-X.Y.Z.deb`. Other copies can't update
 themselves: download the new version and run `./install.sh` again.
+
+Passwords and keys for *Push to* and *Descriptions* are kept in the desktop's keyring (GNOME
+Keyring, KWallet: any Secret Service). Over remote desktop (xrdp) the login keyring is often locked:
+Settings asks for it to be unlocked when it needs one of them, and says *The keyring is locked* if
+that isn't answered within a minute. Automatic pushes and descriptions never ask; they wait, and
+carry on within a minute of it being unlocked, say with *Test* in Settings (see
+[Places to push to](destinations.md#the-places)).

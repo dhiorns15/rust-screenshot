@@ -498,13 +498,19 @@ pub fn import_sxcu(text: &str) -> Result<(Destination, Option<String>), String> 
 /// The secret saved for `destination`, which may wait for the keyring to be unlocked; an error if
 /// it needs one and has none.
 pub fn saved_secret(destination: &Destination) -> Result<Option<String>, String> {
-    let Some(label) = destination.kind.secret_label() else { return Ok(None) };
-    match crate::secrets::get(&destination.id)? {
+    saved_secret_from(destination, crate::secrets::get)?
+}
+
+/// As `saved_secret`, read from the credential store with `read`; the outer error is the store's,
+/// the inner one that there's none saved.
+pub fn saved_secret_from(destination: &Destination, read: impl FnOnce(&str) -> Result<Option<String>, String>) -> Result<Result<Option<String>, String>, String> {
+    let Some(label) = destination.kind.secret_label() else { return Ok(Ok(None)) };
+    Ok(match read(&destination.id)? {
         Some(secret) => Ok(Some(secret)),
         None if destination.kind.secret_optional() => Ok(None),
         None if matches!(destination.kind, Kind::Dropbox { .. }) => Err("Not signed in to Dropbox; choose Edit to sign in".into()),
         None => Err(format!("No {} is saved; choose Edit to enter it", label.to_lowercase())),
-    }
+    })
 }
 
 /// Where something pushed as `path` can be seen: under the public address given, if any.

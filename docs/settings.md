@@ -41,7 +41,9 @@ New screenshots are described a few seconds after they are saved, one at a time,
 pushes automatically (the tray app on Windows, the background icon on Linux); only those taken since
 you turned it on. If the provider is busy or limiting requests, RSnip waits and tries again; if your key
 isn't accepted or your account is out of credit, it stops and Settings says so, and carries on once you
-save a key. Recordings aren't described.
+save a key. On Linux it never asks for a locked keyring to be unlocked: Settings says it's locked, and
+it carries on within a minute of it being unlocked (Settings asks for that when *Descriptions* is
+opened). Recordings aren't described.
 
 **Privacy:** each screenshot that is described is sent to the provider you chose, scaled to at most
 1568 pixels on its longer side, under your key, and is handled by them under their own terms. A

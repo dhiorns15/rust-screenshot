@@ -22,10 +22,12 @@ use crate::options;
 const EVERY: Duration = Duration::from_secs(5);
 /// A file this new may still be being written.
 const SETTLE: Duration = Duration::from_secs(2);
-/// How long a key read from the credential store is kept (so a new one is picked up).
+/// How long a key read from the credential store (or that there's none) is kept, so a new one is
+/// picked up.
 const KEY_KEPT: Duration = Duration::from_secs(60);
-/// How long to wait after the credential store wouldn't give the key.
-const KEYRING_WAIT: Duration = Duration::from_secs(5 * 60);
+/// How long to wait after the credential store wouldn't give the key (say the keyring is locked:
+/// it's never asked to unlock from here, which is left to Settings).
+const KEYRING_WAIT: Duration = Duration::from_secs(60);
 
 /// What the describer reads and does outside itself, so tests can stand in for it.
 pub trait World {
@@ -59,7 +61,7 @@ impl World for Real {
     }
 
     fn key(&self, provider: Provider) -> Result<Option<String>, String> {
-        crate::secrets::get(provider.secret_id())
+        crate::secrets::get_quietly(provider.secret_id())
     }
 
     fn describe(&self, provider: Provider, key: &str, model: &str, image: &Path) -> Result<Described, Problem> {
@@ -89,6 +91,8 @@ pub struct Describer {
     wait_until: Option<SystemTime>,
     /// The key for a provider, and when it was read.
     key: Option<(Provider, Option<String>, SystemTime)>,
+    /// The credential store wouldn't give the key, which Settings is showing.
+    keyring_failed: bool,
     /// Screenshots the provider declined, or that couldn't be read, so they're not asked about again.
     skipped: HashSet<PathBuf>,
 }
@@ -115,19 +119,25 @@ impl Describer {
         let Some(since) = world.setting(options::DESCRIBE_SINCE) else { return false };
         let provider = Provider::from_setting(options::DESCRIBE_PROVIDER.read(|name| world.setting(name)));
         let model = chosen_model(provider, world.text_setting(options::DESCRIBE_MODEL));
-        let dir = world.dir();
-        let Some(file) = due(&library_files_with_times(&dir), UNIX_EPOCH + Duration::from_secs(u64::from(since)), now, &self.skipped).into_iter().next() else { return false };
-
+        // The key first: without one, the folder's search data isn't worth reading every few seconds.
         let key = match self.key(world, provider, now) {
-            Ok(Some(key)) => key,
-            // Nothing to describe with; Settings says so.
-            Ok(None) => return false,
+            Ok(key) => key,
             Err(e) => {
                 self.wait_until = Some(now + KEYRING_WAIT);
+                self.keyring_failed = true;
                 set_status(world, &e);
                 return false;
             }
         };
+        // It gave the key (or that there's none) after all, so that's no longer the problem.
+        if std::mem::take(&mut self.keyring_failed) {
+            set_status(world, "");
+        }
+        // Nothing to describe with; Settings says so.
+        let Some(key) = key else { return false };
+        let dir = world.dir();
+        let Some(file) = due(&library_files_with_times(&dir), UNIX_EPOCH + Duration::from_secs(u64::from(since)), now, &self.skipped).into_iter().next() else { return false };
+
         let described = world.describe(provider, &key, &model, &file).and_then(|d| search::record_description(&file, &d.text, &d.model).map_err(Problem::Skip));
         let name = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
         match described {
@@ -290,6 +300,8 @@ mod tests {
         /// The files asked about, with the model and key used.
         asked: RefCell<Vec<(String, String, String)>>,
         key_reads: Cell<usize>,
+        /// How many times the folder was looked in.
+        dir_reads: Cell<usize>,
     }
 
     impl Fake {
@@ -302,6 +314,7 @@ mod tests {
                 answers: Default::default(),
                 asked: Default::default(),
                 key_reads: Cell::new(0),
+                dir_reads: Cell::new(0),
             };
             fake.numbers.borrow_mut().insert(options::DESCRIBE.name.into(), 1);
             fake.numbers.borrow_mut().insert(options::DESCRIBE_SINCE.into(), 1000);
@@ -339,6 +352,7 @@ mod tests {
         }
 
         fn dir(&self) -> PathBuf {
+            self.dir_reads.set(self.dir_reads.get() + 1);
             self.dir.clone()
         }
 
@@ -521,11 +535,50 @@ mod tests {
         let mut describer = Describer::default();
         run(&mut describer, &fake, 5000);
         assert_eq!(fake.status(), "No keyring is running");
-        run(&mut describer, &fake, 5100);
+        run(&mut describer, &fake, 5030);
         assert_eq!(fake.key_reads.get(), 1);
         *fake.key.borrow_mut() = Ok(Some("sk".into()));
         run(&mut describer, &fake, 5000 + KEYRING_WAIT.as_secs());
         assert_eq!(fake.asked().len(), 1);
+    }
+
+    #[test]
+    fn without_a_key_the_folder_isnt_looked_in() {
+        let fake = Fake::new("describer-key-first");
+        fake.file("Screenshot a.png", 2000);
+        *fake.key.borrow_mut() = Ok(None);
+        let mut describer = Describer::default();
+        for now in (5000..5060).step_by(5) {
+            run(&mut describer, &fake, now);
+        }
+        assert_eq!((fake.dir_reads.get(), fake.key_reads.get()), (0, 1), "no search data read, and the key looked for once a minute");
+        run(&mut describer, &fake, 5060);
+        assert_eq!(fake.key_reads.get(), 2);
+
+        // Nor while the keyring is locked, which Settings shows.
+        *fake.key.borrow_mut() = Err("The keyring is locked".into());
+        run(&mut describer, &fake, 5120);
+        run(&mut describer, &fake, 5150);
+        assert_eq!((fake.dir_reads.get(), fake.key_reads.get()), (0, 3));
+        assert_eq!(fake.status(), "The keyring is locked");
+
+        // Unlocked, it carries on within a minute.
+        *fake.key.borrow_mut() = Ok(Some("sk".into()));
+        run(&mut describer, &fake, 5180);
+        assert_eq!(fake.asked(), ["Screenshot a.png"]);
+        assert_eq!(fake.status(), "");
+    }
+
+    #[test]
+    fn a_keyring_unlocked_again_is_no_longer_shown_as_the_problem() {
+        let fake = Fake::new("describer-unlocked");
+        *fake.key.borrow_mut() = Err("The keyring is locked".into());
+        let mut describer = Describer::default();
+        run(&mut describer, &fake, 5000);
+        assert_eq!(fake.status(), "The keyring is locked");
+        *fake.key.borrow_mut() = Ok(Some("sk".into()));
+        run(&mut describer, &fake, 5000 + KEYRING_WAIT.as_secs());
+        assert_eq!((fake.status(), fake.asked().len()), (String::new(), 0), "cleared, with nothing to describe");
     }
 
     fn fake_files(fake: &Fake, names: &[&str]) -> Vec<PathBuf> {

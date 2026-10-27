@@ -3,9 +3,17 @@
 //! so they never reach `settings.json` or the registry. Each belongs to a destination, by its id.
 //! Nothing here prints or logs a secret, or puts one in an error.
 
-/// The secret saved for the destination `id`, if there is one.
+/// The secret saved for the destination `id`, if there is one. On Linux the keyring may ask the
+/// user to unlock it first, for up to a minute.
 pub fn get(id: &str) -> Result<Option<String>, String> {
-    imp::get(id)
+    imp::get(id, true)
+}
+
+/// The secret saved for the destination `id`, as `get` gives it, but without asking the user to
+/// unlock the keyring: an error if it's locked. For what runs by itself, on a timer, where a
+/// window asking for the password out of nowhere (again and again) would be no good.
+pub fn get_quietly(id: &str) -> Result<Option<String>, String> {
+    imp::get(id, false)
 }
 
 /// Saves `secret` for the destination `id` (replacing any), named `label` where the user can see it.
@@ -50,7 +58,8 @@ mod imp {
         }
     }
 
-    pub fn get(id: &str) -> Result<Option<String>, String> {
+    /// Credential Manager never asks anything, so `_ask` makes no difference.
+    pub fn get(id: &str, _ask: bool) -> Result<Option<String>, String> {
         let name = target(id);
         let mut found: *mut CREDENTIALW = null_mut();
         if unsafe { CredReadW(name.as_ptr(), CRED_TYPE_GENERIC, 0, &mut found) } == 0 {
@@ -102,8 +111,10 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     use std::collections::HashMap;
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use std::time::Duration;
 
-    use zbus::blocking::{Connection, Proxy};
+    use zbus::blocking::{connection, Connection, Proxy};
     use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
     const SERVICE: &str = "org.freedesktop.secrets";
@@ -112,6 +123,11 @@ mod imp {
     const COLLECTION_IFACE: &str = "org.freedesktop.Secret.Collection";
     const DEFAULT_COLLECTION: &str = "/org/freedesktop/secrets/aliases/default";
     const NO_KEYRING: &str = "No keyring is running. Install GNOME Keyring or KWallet (any Secret Service) to save passwords.";
+    /// How long the keyring has to answer a call, and the user its window asking to unlock it
+    /// (which may never show, say over remote desktop).
+    const WAIT: Duration = Duration::from_secs(60);
+    const LOCKED: &str = "The keyring is locked. RSnip waits for it to be unlocked (Settings asks for that when it needs a password).";
+    const NOT_UNLOCKED: &str = "The keyring is locked, and wasn't unlocked within a minute of asking.";
 
     /// A secret as the Secret Service takes and gives it: session, parameters, value, content type.
     type Secret = (OwnedObjectPath, Vec<u8>, Vec<u8>, String);
@@ -132,6 +148,8 @@ mod imp {
         };
         if ["ServiceUnknown", "NameHasNoOwner", "NotSupported", "Spawn"].iter().any(|s| name.contains(s)) {
             NO_KEYRING.to_owned()
+        } else if matches!(&e, zbus::Error::InputOutput(io) if io.kind() == std::io::ErrorKind::TimedOut) {
+            "The keyring didn't answer within a minute".to_owned()
         } else {
             format!("The keyring wouldn't save or read the password ({e})")
         }
@@ -139,7 +157,9 @@ mod imp {
 
     impl Keyring {
         fn open() -> Result<Keyring, String> {
-            let conn = Connection::session().map_err(|e| format!("Couldn't reach the desktop's session bus: {e}"))?;
+            let conn = connection::Builder::session()
+                .and_then(|builder| builder.method_timeout(WAIT).build())
+                .map_err(|e| format!("Couldn't reach the desktop's session bus: {e}"))?;
             let service = Proxy::new(&conn, SERVICE, SERVICE_PATH, SERVICE_IFACE).map_err(failed)?;
             let (_, session): (OwnedValue, OwnedObjectPath) = service.call("OpenSession", &("plain", Value::from(""))).map_err(failed)?;
             Ok(Keyring { conn, session })
@@ -165,7 +185,8 @@ mod imp {
             if exists { Ok(fallback) } else { Err("The keyring has no default collection to save passwords in.".to_owned()) }
         }
 
-        /// Waits for the user to answer what `prompt` asks (in the keyring's own window), if it is one.
+        /// Waits for the user to answer what `prompt` asks (in the keyring's own window), if it is
+        /// one, for up to a minute; then it's dismissed.
         fn prompt(&self, prompt: &OwnedObjectPath) -> Result<(), String> {
             if prompt.as_str() == "/" {
                 return Ok(());
@@ -174,15 +195,32 @@ mod imp {
             // Listen before calling, so the answer can't be missed.
             let mut completed = proxy.receive_signal("Completed").map_err(failed)?;
             proxy.call_method("Prompt", &("",)).map_err(failed)?;
-            let message = completed.next().ok_or("The keyring stopped answering")?;
+            // The wait has no end of its own, so it's on a thread that's waited for only so long.
+            // Dismissing the prompt answers it, which ends that thread.
+            let (tx, rx) = channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(completed.next());
+            });
+            let message = match rx.recv_timeout(WAIT) {
+                Ok(Some(message)) => message,
+                Ok(None) | Err(RecvTimeoutError::Disconnected) => return Err("The keyring stopped answering".to_owned()),
+                Err(RecvTimeoutError::Timeout) => {
+                    let _ = proxy.call_method("Dismiss", &());
+                    return Err(NOT_UNLOCKED.to_owned());
+                }
+            };
             let (dismissed, _): (bool, OwnedValue) = message.body().deserialize().map_err(|e| e.to_string())?;
             if dismissed { Err("Cancelled".to_owned()) } else { Ok(()) }
         }
 
-        /// Unlocks `paths`, asking the user if need be.
-        fn unlock(&self, paths: Vec<OwnedObjectPath>) -> Result<Vec<OwnedObjectPath>, String> {
+        /// Unlocks `paths`, asking the user if need be; unless `ask` is false, when locked is an
+        /// error.
+        fn unlock(&self, paths: Vec<OwnedObjectPath>, ask: bool) -> Result<Vec<OwnedObjectPath>, String> {
             if paths.is_empty() {
                 return Ok(paths);
+            }
+            if !ask {
+                return Err(LOCKED.to_owned());
             }
             let (mut unlocked, prompt): (Vec<OwnedObjectPath>, OwnedObjectPath) = self.service()?.call("Unlock", &(&paths,)).map_err(failed)?;
             if prompt.as_str() != "/" {
@@ -193,11 +231,15 @@ mod imp {
             Ok(unlocked)
         }
 
-        /// The items for the destination `id`, unlocked.
-        fn find(&self, id: &str) -> Result<Vec<OwnedObjectPath>, String> {
+        /// The items for the destination `id`, unlocked: by asking the user if need be when `ask`,
+        /// else only those unlocked already (an error if all of them are locked).
+        fn find(&self, id: &str, ask: bool) -> Result<Vec<OwnedObjectPath>, String> {
             let attributes = HashMap::from([("application", "rsnip"), ("destination", id)]);
             let (mut items, locked): (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) = self.service()?.call("SearchItems", &(attributes,)).map_err(failed)?;
-            items.extend(self.unlock(locked)?);
+            // Without asking, an unlocked one will do.
+            if ask || items.is_empty() {
+                items.extend(self.unlock(locked, ask)?);
+            }
             Ok(items)
         }
     }
@@ -210,9 +252,9 @@ mod imp {
         }
     }
 
-    pub fn get(id: &str) -> Result<Option<String>, String> {
+    pub fn get(id: &str, ask: bool) -> Result<Option<String>, String> {
         let keyring = Keyring::open()?;
-        let items = keyring.find(id)?;
+        let items = keyring.find(id, ask)?;
         if items.is_empty() {
             return Ok(None);
         }
@@ -227,7 +269,7 @@ mod imp {
     pub fn set(id: &str, label: &str, secret: &str) -> Result<(), String> {
         let keyring = Keyring::open()?;
         let collection = keyring.collection()?;
-        keyring.unlock(vec![collection.clone()])?;
+        keyring.unlock(vec![collection.clone()], true)?;
         let attributes = HashMap::from([("application".to_owned(), "rsnip".to_owned()), ("destination".to_owned(), id.to_owned())]);
         let properties: HashMap<&str, Value> = HashMap::from([
             ("org.freedesktop.Secret.Item.Label", Value::from(format!("RSnip: {label}"))),
@@ -241,7 +283,7 @@ mod imp {
 
     pub fn delete(id: &str) -> Result<(), String> {
         let keyring = Keyring::open()?;
-        for item in keyring.find(id)? {
+        for item in keyring.find(id, true)? {
             let prompt: OwnedObjectPath = keyring.proxy(&item, "org.freedesktop.Secret.Item")?.call("Delete", &()).map_err(failed)?;
             keyring.prompt(&prompt)?;
         }
