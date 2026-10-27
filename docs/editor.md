@@ -103,7 +103,9 @@ Recordings play in the library: click one for play and pause (Space), a timeline
 and ←/→ to skip 5 seconds. *Trim* marks the part to keep, with the timeline's handles or *Start
 here* / *End here*, and *Save trimmed copy* saves it beside the original as "… (trimmed)". MP4s are
 cut without re-encoding, so it's instant and loses nothing, but the cut starts on the keyframe at or
-before the start (recordings have one every second); GIFs are cut to the frame. On Linux, playing
+before the start (recordings have one every second); GIFs are cut to the frame. A recording with
+sound keeps the sound of the part kept, in step with the picture, and the library's details say
+"with sound" beside its length. On Linux, playing
 MP4s needs GStreamer's H.264 decoder (`gstreamer1.0-libav` on Debian and Ubuntu, which the `.deb`
 recommends). For a recording, *Copy* copies the file, to paste into a folder, chat or email,
 and *Export* saves a copy to another folder or shows it in its folder, selected (as

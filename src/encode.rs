@@ -396,10 +396,21 @@ mod tests {
         assert_eq!(handlers(&bytes), ["vide", "soun"]);
         let (video, _) = read_stream(&path, false);
         let (sound, peak) = read_stream(&path, true);
-        std::fs::remove_file(&path).unwrap();
         assert!(video.abs_diff(Duration::from_secs(2)) < Duration::from_millis(100), "{video:?}");
         assert!(sound.abs_diff(video) < Duration::from_millis(150), "video {video:?}, sound {sound:?}");
         assert!(peak > 10_000, "the tone survives encoding and decoding: {peak}");
+
+        // Trimmed (as the library does), it keeps the sound of the part kept.
+        let cut = path.with_extension("cut.mp4");
+        let (from, to) = crate::mp4::Movie::open(&path).unwrap().cut(&path, &cut, Duration::from_millis(1100), Duration::from_millis(1800)).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(handlers(&std::fs::read(&cut).unwrap()), ["vide", "soun"]);
+        let (video, _) = read_stream(&cut, false);
+        let (sound, peak) = read_stream(&cut, true);
+        std::fs::remove_file(&cut).unwrap();
+        assert!(video.abs_diff(to - from) < Duration::from_millis(100), "{from:?}..{to:?}: {video:?}");
+        assert!(sound.abs_diff(video) < Duration::from_millis(150), "trimmed: video {video:?}, sound {sound:?}");
+        assert!(peak > 10_000, "the trimmed copy's tone: {peak}");
     }
 
     #[test]

@@ -26,19 +26,21 @@ pub(super) struct Details {
     size: Option<(u32, u32)>,
     /// How long a recording is.
     length: Option<Duration>,
+    /// A recording with a sound track.
+    sound: bool,
     /// Has annotations that can still be edited.
     edited: bool,
 }
 
 impl Details {
     fn read(entry: &Entry) -> Details {
-        let (size, length) = if entry.video {
+        let (size, length, sound) = if entry.video {
             let info = player::info(&entry.path);
-            (info.size, info.duration)
+            (info.size, info.duration, info.sound)
         } else {
-            (image::image_dimensions(&entry.path).ok(), None)
+            (image::image_dimensions(&entry.path).ok(), None, false)
         };
-        Details { path: entry.path.clone(), modified: entry.modified, len: entry.len, size, length, edited: !entry.video && doc::has_layers(&entry.path) }
+        Details { path: entry.path.clone(), modified: entry.modified, len: entry.len, size, length, sound, edited: !entry.video && doc::has_layers(&entry.path) }
     }
 }
 
@@ -153,7 +155,8 @@ impl App {
             field(ui, "Dimensions", &format!("{width} × {height} px"));
         }
         if let Some(length) = details.length {
-            field(ui, "Length", &player::clock(length));
+            let sound = if details.sound { ", with sound" } else { "" };
+            field(ui, "Length", &format!("{}{sound}", player::clock(length)));
         }
         field(ui, "File size", &human_size(details.len));
         field(ui, "Date", &date_and_time(modified));

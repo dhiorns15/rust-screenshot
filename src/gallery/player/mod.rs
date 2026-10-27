@@ -50,21 +50,24 @@ impl Kind {
     }
 }
 
-/// How long a recording is, and how big, when that can be told without decoding it all.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// How long a recording is, how big, and whether it has sound, when that can be told without
+/// decoding it all.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Info {
     pub duration: Option<Duration>,
     pub size: Option<(u32, u32)>,
+    /// An MP4 with a sound track. (GIFs have none; WebMs aren't looked into.)
+    pub sound: bool,
 }
 
 pub fn info(path: &Path) -> Info {
     match Kind::of(path) {
         Some(Kind::Mp4) => match Movie::open(path) {
-            Ok(m) => Info { duration: Some(m.duration()), size: Some((m.width, m.height)) },
-            Err(_) => Info { duration: None, size: None },
+            Ok(m) => Info { duration: Some(m.duration()), size: Some((m.width, m.height)), sound: m.has_sound() },
+            Err(_) => Info::default(),
         },
-        Some(Kind::Gif) => gif_info(path).unwrap_or(Info { duration: None, size: None }),
-        _ => Info { duration: None, size: None },
+        Some(Kind::Gif) => gif_info(path).unwrap_or_default(),
+        _ => Info::default(),
     }
 }
 
@@ -167,7 +170,7 @@ fn gif_info(path: &Path) -> Result<Info, String> {
     while let Some(frame) = decoder.next_frame_info().map_err(|e| e.to_string())? {
         hundredths += frame.delay as u64;
     }
-    Ok(Info { duration: Some(Duration::from_millis(hundredths * 10)), size: Some(size) })
+    Ok(Info { duration: Some(Duration::from_millis(hundredths * 10)), size: Some(size), sound: false })
 }
 
 /// GIFs, decoded whole frame by whole frame (GIF frames can be patches over the one before).
@@ -701,7 +704,7 @@ pub mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("Recording.gif");
         gif(&path, 10);
-        assert_eq!(info(&path), Info { duration: Some(Duration::from_secs(1)), size: Some((8, 6)) });
+        assert_eq!(info(&path), Info { duration: Some(Duration::from_secs(1)), size: Some((8, 6)), sound: false });
 
         // From 0.45 s: the frame shown then (the fifth, from 0.4 s) and the rest.
         let decoding = decode(&path, Duration::from_millis(450), MAX_SIZE, None);

@@ -624,6 +624,22 @@ fn the_info_panel_describes_a_recording() {
 }
 
 #[test]
+fn the_info_panel_says_which_recordings_have_sound() {
+    let (mut h, _) = with_recording("kittest-info-sound");
+    let dir = h.state().env.dir.clone();
+    crate::mp4::tests::recording(&dir.join("Recording loud.mp4"), true);
+    crate::mp4::tests::recording(&dir.join("Recording quiet.mp4"), false);
+    h.state_mut().rescan();
+    click(&mut h, "Gallery");
+    click(&mut h, "Recording loud");
+    assert!(shows(&h, "0:03, with sound"));
+    click(&mut h, "Recording quiet");
+    assert!(shows(&h, "0:03") && !shows(&h, "0:03, with sound"));
+    click(&mut h, "Recording z");
+    assert!(shows(&h, "0:02"), "a GIF is silent");
+}
+
+#[test]
 fn the_info_panel_totals_several_selected() {
     let mut h = gallery("kittest-info-several");
     click(&mut h, "Screenshot a");

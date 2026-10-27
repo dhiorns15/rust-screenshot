@@ -1,33 +1,44 @@
-//! Reading and cutting the MP4s RSnip records: one video track, as GStreamer's mp4mux (Linux) and
-//! Media Foundation (Windows) write them. A cut copies the frames it keeps into a new file without
-//! re-encoding them, so it's instant and loses nothing, but it starts on a keyframe: a frame the
-//! ones after it are drawn from. Recordings have one every second.
+//! Reading and cutting the MP4s RSnip records: a video track, and a sound track if there is one,
+//! as GStreamer's mp4mux (Linux) and Media Foundation (Windows) write them. A cut copies the frames
+//! it keeps into a new file without re-encoding them, so it's instant and loses nothing, but it
+//! starts on a keyframe: a frame the ones after it are drawn from. Recordings have one every second.
 
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::ops::Range;
 use std::path::Path;
 use std::time::Duration;
 
-/// A recording's video track: its frames, and what's needed to write them out again.
+/// A recording: its video track, any sound tracks, and what's needed to write them out again.
 pub struct Movie {
     pub width: u32,
     pub height: u32,
-    /// The track's time units per second.
-    timescale: u32,
     /// The movie header's units per second (for the durations in `mvhd` and `tkhd`).
     movie_timescale: u32,
-    /// Each frame, in the order it's decoded.
-    samples: Vec<Sample>,
-    /// The boxes copied as they are: `ftyp`, and the track's headers and sample description.
+    /// The boxes copied as they are: `ftyp` and `mvhd`.
     ftyp: Vec<u8>,
     mvhd: Vec<u8>,
+    /// The video: it decides what a cut keeps.
+    video: Track,
+    /// The sound tracks that could be read. Tracks of any other kind (text, hints) are left out.
+    sound: Vec<Track>,
+}
+
+/// A track's samples (a video track's frames, a sound track's audio frames), and what's needed to
+/// write them out again.
+struct Track {
+    /// The track's time units per second.
+    timescale: u32,
+    /// Each sample, in the order it's decoded.
+    samples: Vec<Sample>,
+    /// The boxes copied as they are: the track's headers and sample description.
     tkhd: Vec<u8>,
     mdhd: Vec<u8>,
     hdlr: Vec<u8>,
-    /// `minf`'s boxes besides `stbl` (`vmhd`, `dinf`).
+    /// `minf`'s boxes besides `stbl` (`vmhd` or `smhd`, and `dinf`).
     minf_rest: Vec<u8>,
     stsd: Vec<u8>,
-    /// `ctts`'s version, if the frames are shown in another order than they're decoded.
+    /// `ctts`'s version, if the samples are shown in another order than they're decoded.
     ctts_version: Option<u8>,
 }
 
@@ -41,6 +52,16 @@ struct Sample {
     /// How much later it's shown than decoded.
     cts: i32,
     keyframe: bool,
+}
+
+fn bad(what: &str) -> String {
+    format!("Not an MP4 RSnip can read: {what}")
+}
+
+/// What kind of media a `trak` box has ("vide", "soun"), from its handler.
+fn handler(trak: &[u8]) -> Option<&[u8]> {
+    let hdlr = find(content(trak), b"mdia").and_then(|m| find(content(m), b"hdlr"))?;
+    content(hdlr).get(8..12)
 }
 
 impl Movie {
@@ -60,23 +81,163 @@ impl Movie {
             at += size;
         }
         let moov = moov.ok_or("Not an MP4 RSnip can read: it has no index (moov), so it wasn't finished")?;
-        Movie::parse(ftyp.unwrap_or_default(), &moov)
+        let mut movie = Movie::parse(ftyp.unwrap_or_default(), &moov)?;
+        // A sound track with samples outside the file is left out, rather than failing a cut half
+        // way through.
+        movie.sound.retain(|t| t.samples.iter().all(|s| s.offset.checked_add(s.size as u64).is_some_and(|end| end <= len)));
+        Ok(movie)
     }
 
     /// The movie from its `ftyp` box and `moov`'s contents.
     fn parse(ftyp: Vec<u8>, moov: &[u8]) -> Result<Movie, String> {
-        let bad = |what: &str| format!("Not an MP4 RSnip can read: {what}");
         if find(moov, b"mvex").is_some() {
             return Err(bad("it's fragmented"));
         }
         // Each header long enough for what's read from it and changed in it.
         let mvhd = header(find(moov, b"mvhd"), 16, 28).ok_or_else(|| bad("no movie header"))?;
         let movie_timescale = be32(full(mvhd), if mvhd[8] == 1 { 16 } else { 8 });
-        let trak = children(moov).filter(|(k, _)| k == b"trak").map(|(_, b)| b).find(|t| {
-            let hdlr = find(content(t), b"mdia").and_then(|m| find(content(m), b"hdlr"));
-            hdlr.is_some_and(|h| content(h).get(8..12) == Some(&b"vide"[..]))
-        });
-        let trak = content(trak.ok_or_else(|| bad("no video"))?);
+        let traks: Vec<&[u8]> = children(moov).filter(|(k, _)| k == b"trak").map(|(_, b)| b).collect();
+        let video = traks.iter().find(|t| handler(t) == Some(&b"vide"[..]));
+        let video = Track::parse(video.ok_or_else(|| bad("no video"))?)?;
+        // The size is in tkhd's last 8 bytes, as 16.16 fixed point.
+        let t = full(&video.tkhd);
+        let (width, height) = (be32(t, t.len() - 8) >> 16, be32(t, t.len() - 4) >> 16);
+
+        // A sound track that can't be read is left out: the video is still worth keeping. Each
+        // track needs a number of its own; if two have the same, the first keeps it.
+        let mut ids = vec![video.id()];
+        let mut sound = Vec::new();
+        for trak in traks.iter().filter(|t| handler(t) == Some(&b"soun"[..])) {
+            if let Ok(track) = Track::parse(trak) {
+                if track.id() != 0 && !ids.contains(&track.id()) {
+                    ids.push(track.id());
+                    sound.push(track);
+                }
+            }
+        }
+        Ok(Movie { width, height, movie_timescale: movie_timescale.max(1), ftyp, mvhd: mvhd.to_vec(), video, sound })
+    }
+
+    pub fn duration(&self) -> Duration {
+        let end = self.video.samples.last().map_or(0, |s| s.dts + s.duration as u64);
+        self.time(end)
+    }
+
+    /// Whether it has a sound track.
+    pub fn has_sound(&self) -> bool {
+        !self.sound.is_empty()
+    }
+
+    #[cfg(test)]
+    pub fn frames(&self) -> usize {
+        self.video.samples.len()
+    }
+
+    fn time(&self, units: u64) -> Duration {
+        Duration::from_secs_f64(units as f64 / self.video.timescale as f64)
+    }
+
+    /// When each keyframe is, in order.
+    #[cfg(test)]
+    pub fn keyframes(&self) -> Vec<Duration> {
+        self.video.samples.iter().filter(|s| s.keyframe).map(|s| self.time(s.dts)).collect()
+    }
+
+    /// The frames to keep for `from`..`to`: from the last keyframe at or before `from`, to the
+    /// last frame before `to`.
+    fn span(&self, from: Duration, to: Duration) -> Range<usize> {
+        let samples = &self.video.samples;
+        let at = |t: Duration| (t.as_secs_f64() * self.video.timescale as f64).round() as u64;
+        let (from, to) = (at(from), at(to));
+        let first = samples.iter().rposition(|s| s.keyframe && s.dts <= from).unwrap_or(0);
+        let end = samples.iter().position(|s| s.dts >= to).unwrap_or(samples.len()).max(first + 1);
+        first..end
+    }
+
+    /// Copies `from`..`to` of `src` (this movie's file) to `dst`; returns the times it actually
+    /// starts and ends at, the start moved back to a keyframe. The sound tracks keep the audio
+    /// frames that start inside that, so they start with the video, to within an audio frame.
+    pub fn cut(&self, src: &Path, dst: &Path, from: Duration, to: Duration) -> Result<(Duration, Duration), String> {
+        let span = self.span(from, to);
+        let video = &self.video.samples[span];
+        let start = video[0].dts;
+        let end = video.last().map_or(start, |s| s.dts + s.duration as u64);
+
+        let mut parts = vec![Part::new(&self.video, video, true)];
+        for track in &self.sound {
+            let kept = track.within(start, end, self.video.timescale);
+            if !kept.is_empty() {
+                parts.push(Part::new(track, kept, false));
+            }
+        }
+        // Each second's data of each track goes together, as players like to read it, the video's
+        // first. Only the order of the data and the chunk offsets depend on this.
+        let mut order: Vec<(u64, usize, usize)> = parts.iter().enumerate().flat_map(|(p, part)| part.chunks.iter().enumerate().map(move |(c, chunk)| (chunk.0, p, c))).collect();
+        order.sort_unstable();
+
+        let mut input = File::open(src).map_err(|e| format!("Couldn't open {}: {e}", src.display()))?;
+        let out = File::create(dst).map_err(|e| format!("Couldn't write {}: {e}", dst.display()))?;
+        let result = (|| {
+            let mut out = BufWriter::new(out);
+            let write = |out: &mut BufWriter<File>, bytes: &[u8]| out.write_all(bytes).map_err(|e| format!("Couldn't write {}: {e}", dst.display()));
+
+            // The index goes first, so players can start before the end has loaded. Its chunk
+            // offsets are 64-bit, so its size doesn't depend on them.
+            let media: u64 = parts.iter().flat_map(|p| p.kept).map(|s| s.size as u64).sum();
+            let moov_len = self.moov(&parts).len() as u64;
+            let mut at = self.ftyp.len() as u64 + moov_len + 16;
+            for &(_, p, c) in &order {
+                let size: u64 = parts[p].samples(c).iter().map(|s| s.size as u64).sum();
+                parts[p].offsets[c] = at;
+                at += size;
+            }
+            let moov = self.moov(&parts);
+            debug_assert_eq!(moov.len() as u64, moov_len);
+            write(&mut out, &self.ftyp)?;
+            write(&mut out, &moov)?;
+            // A 64-bit mdat header, for long recordings.
+            write(&mut out, &1u32.to_be_bytes())?;
+            write(&mut out, b"mdat")?;
+            write(&mut out, &(16 + media).to_be_bytes())?;
+            let mut buf = Vec::new();
+            for &(_, p, c) in &order {
+                for s in parts[p].samples(c) {
+                    buf.resize(s.size as usize, 0);
+                    input.seek(SeekFrom::Start(s.offset)).and_then(|_| input.read_exact(&mut buf)).map_err(|e| format!("Couldn't read {}: {e}", src.display()))?;
+                    write(&mut out, &buf)?;
+                }
+            }
+            out.flush().map_err(|e| format!("Couldn't write {}: {e}", dst.display()))
+        })();
+        if let Err(e) = result {
+            // Not a half-written file.
+            let _ = std::fs::remove_file(dst);
+            return Err(e);
+        }
+        Ok((self.time(start), self.time(end)))
+    }
+
+    /// The `moov` box for the `parts` kept, with their data where each part's `offsets` say.
+    fn moov(&self, parts: &[Part]) -> Vec<u8> {
+        let length = |p: &Part| scale(p.length(), p.track.timescale, self.movie_timescale);
+        let movie_length = parts.iter().map(length).max().unwrap_or(0);
+        let mut mvhd = with_duration(&self.mvhd, movie_length, 16, 24);
+        // The next track number goes past the ones used. It's the last thing in the header, so
+        // there if the header is long enough.
+        let next = parts.iter().map(|p| p.track.id()).max().map_or(1, |id| id.saturating_add(1));
+        let at = if mvhd[8] == 1 { 116 } else { 104 };
+        if mvhd.len() >= at + 4 && be32(&mvhd, at) < next {
+            mvhd[at..at + 4].copy_from_slice(&next.to_be_bytes());
+        }
+        let traks: Vec<u8> = parts.iter().flat_map(|p| p.trak(length(p))).collect();
+        plain_box(b"moov", &[mvhd, traks].concat())
+    }
+}
+
+impl Track {
+    /// A `trak` box's samples and the boxes to write them out again.
+    fn parse(trak: &[u8]) -> Result<Track, String> {
+        let trak = content(trak);
         let tkhd = header(find(trak, b"tkhd"), 80, 92).ok_or_else(|| bad("no track header"))?;
         let mdia = content(find(trak, b"mdia").ok_or_else(|| bad("no media"))?);
         let mdhd = header(find(mdia, b"mdhd"), 16, 28).ok_or_else(|| bad("no media header"))?;
@@ -85,10 +246,6 @@ impl Movie {
         let stbl = content(find(minf, b"stbl").ok_or_else(|| bad("no sample table"))?);
         let table = |kind: &[u8; 4]| find(stbl, kind).map(full);
         let stsd = find(stbl, b"stsd").ok_or_else(|| bad("no sample description"))?;
-
-        // The size is in tkhd's last 8 bytes, as 16.16 fixed point.
-        let t = full(tkhd);
-        let (width, height) = (be32(t, t.len() - 8) >> 16, be32(t, t.len() - 4) >> 16);
         let timescale = be32(full(mdhd), if mdhd[8] == 1 { 16 } else { 8 });
 
         let sizes = table(b"stsz").ok_or_else(|| bad("no sample sizes"))?;
@@ -109,9 +266,11 @@ impl Movie {
         let durations: Vec<(u32, u32)> = entries(table(b"stts").ok_or_else(|| bad("no timing"))?, 8).map(|e| (be32(e, 0), be32(e, 4))).collect();
         let ctts = find(stbl, b"ctts");
         let offsets: Vec<(u32, i32)> = ctts.map(|c| entries(full(c), 8).map(|e| (be32(e, 0), be32(e, 4) as i32)).collect()).unwrap_or_default();
+        // Sound has none: every sample is a sync sample.
         let keyframes: Option<Vec<u32>> = table(b"stss").map(|t| entries(t, 4).map(|e| be32(e, 0)).collect());
 
-        let mut samples = Vec::with_capacity(count);
+        // (The count is from the file, so it doesn't decide how much to reserve.)
+        let mut samples = Vec::with_capacity(count.min(1 << 20));
         let (mut map, mut timing, mut shift) = (stsc.iter().peekable(), runs(&durations), runs(&offsets));
         let mut per_chunk = 0;
         let mut dts = 0u64;
@@ -133,7 +292,7 @@ impl Movie {
                 let n = i as u32 + 1;
                 let keyframe = keyframes.as_ref().is_none_or(|k| k.binary_search(&n).is_ok());
                 samples.push(Sample { offset, size: size(i), dts, duration, cts: shift.next().unwrap_or(0), keyframe });
-                offset += size(i) as u64;
+                offset = offset.saturating_add(size(i) as u64);
                 dts += duration as u64;
             }
         }
@@ -141,14 +300,9 @@ impl Movie {
             return Err(bad("its frames don't add up"));
         }
         let minf_rest = children(minf).filter(|(k, _)| k != b"stbl").flat_map(|(_, b)| b.to_vec()).collect();
-        Ok(Movie {
-            width,
-            height,
+        Ok(Track {
             timescale: timescale.max(1),
-            movie_timescale: movie_timescale.max(1),
             samples,
-            ftyp,
-            mvhd: mvhd.to_vec(),
             tkhd: tkhd.to_vec(),
             mdhd: mdhd.to_vec(),
             hdlr: hdlr.to_vec(),
@@ -158,84 +312,63 @@ impl Movie {
         })
     }
 
-    pub fn duration(&self) -> Duration {
-        let end = self.samples.last().map_or(0, |s| s.dts + s.duration as u64);
-        self.time(end)
+    /// The track's number, from `tkhd`.
+    fn id(&self) -> u32 {
+        be32(full(&self.tkhd), if self.tkhd[8] == 1 { 16 } else { 8 })
     }
 
-    #[cfg(test)]
-    pub fn frames(&self) -> usize {
-        self.samples.len()
+    /// The samples that start from `from` up to `to`, which are in units of `1 / scale` seconds.
+    fn within(&self, from: u64, to: u64, scale: u32) -> &[Sample] {
+        let before = |t: u64| self.samples.partition_point(|s| (s.dts as u128 * scale as u128) < t as u128 * self.timescale as u128);
+        &self.samples[before(from)..before(to)]
     }
+}
 
-    fn time(&self, units: u64) -> Duration {
-        Duration::from_secs_f64(units as f64 / self.timescale as f64)
-    }
+/// A track's samples that a cut keeps, and how they're laid out in the new file.
+struct Part<'a> {
+    track: &'a Track,
+    kept: &'a [Sample],
+    /// The chunks the samples are stored in, as (the second they start in, which samples).
+    chunks: Vec<(u64, Range<usize>)>,
+    /// Where each chunk starts in the new file.
+    offsets: Vec<u64>,
+}
 
-    /// When each keyframe is, in order.
-    #[cfg(test)]
-    pub fn keyframes(&self) -> Vec<Duration> {
-        self.samples.iter().filter(|s| s.keyframe).map(|s| self.time(s.dts)).collect()
-    }
-
-    /// The frames to keep for `from`..`to`: from the last keyframe at or before `from`, to the
-    /// last frame before `to`.
-    fn span(&self, from: Duration, to: Duration) -> std::ops::Range<usize> {
-        let at = |t: Duration| (t.as_secs_f64() * self.timescale as f64).round() as u64;
-        let (from, to) = (at(from), at(to));
-        let first = self.samples.iter().rposition(|s| s.keyframe && s.dts <= from).unwrap_or(0);
-        let end = self.samples.iter().position(|s| s.dts >= to).unwrap_or(self.samples.len()).max(first + 1);
-        first..end
-    }
-
-    /// Copies `from`..`to` of `src` (this movie's file) to `dst`; returns the times it actually
-    /// starts and ends at, the start moved back to a keyframe.
-    pub fn cut(&self, src: &Path, dst: &Path, from: Duration, to: Duration) -> Result<(Duration, Duration), String> {
-        let span = self.span(from, to);
-        let kept = &self.samples[span.clone()];
-        let start = kept[0].dts;
-        let mut input = File::open(src).map_err(|e| format!("Couldn't open {}: {e}", src.display()))?;
-        let out = File::create(dst).map_err(|e| format!("Couldn't write {}: {e}", dst.display()))?;
-        let mut out = BufWriter::new(out);
-        let write = |out: &mut BufWriter<File>, bytes: &[u8]| out.write_all(bytes).map_err(|e| format!("Couldn't write {}: {e}", dst.display()));
-
-        // The index goes first, so players can start before the end has loaded. Its chunk
-        // offsets are 64-bit, so its size doesn't depend on them.
-        let media: u64 = kept.iter().map(|s| s.size as u64).sum();
-        let moov_len = self.moov(kept, 0).len() as u64;
-        let mdat_at = self.ftyp.len() as u64 + moov_len;
-        let first_byte = mdat_at + 16;
-        let moov = self.moov(kept, first_byte);
-        debug_assert_eq!(moov.len() as u64, moov_len);
-        write(&mut out, &self.ftyp)?;
-        write(&mut out, &moov)?;
-        // A 64-bit mdat header, for long recordings.
-        write(&mut out, &1u32.to_be_bytes())?;
-        write(&mut out, b"mdat")?;
-        write(&mut out, &(16 + media).to_be_bytes())?;
-        let mut buf = Vec::new();
-        for s in kept {
-            buf.resize(s.size as usize, 0);
-            input.seek(SeekFrom::Start(s.offset)).and_then(|_| input.read_exact(&mut buf)).map_err(|e| format!("Couldn't read {}: {e}", src.display()))?;
-            write(&mut out, &buf)?;
+impl<'a> Part<'a> {
+    /// `kept`, in a chunk for each sample if `each` (a video's frames are big), or else a chunk
+    /// for each second.
+    fn new(track: &'a Track, kept: &'a [Sample], each: bool) -> Part<'a> {
+        let mut chunks: Vec<(u64, Range<usize>)> = Vec::new();
+        for (i, s) in kept.iter().enumerate() {
+            let second = (s.dts - kept[0].dts) / track.timescale as u64;
+            match chunks.last_mut() {
+                Some((last, range)) if *last == second && !each => range.end = i + 1,
+                _ => chunks.push((second, i..i + 1)),
+            }
         }
-        out.flush().map_err(|e| format!("Couldn't write {}: {e}", dst.display()))?;
-        let end = kept.last().map_or(start, |s| s.dts + s.duration as u64);
-        Ok((self.time(start), self.time(end)))
+        Part { track, kept, offsets: vec![0; chunks.len()], chunks }
     }
 
-    /// The `moov` box for the `kept` frames, with their data from `first_byte`.
-    fn moov(&self, kept: &[Sample], first_byte: u64) -> Vec<u8> {
-        let length: u64 = kept.iter().map(|s| s.duration as u64).sum();
-        let movie_length = length * self.movie_timescale as u64 / self.timescale as u64;
+    /// The samples in chunk `c`.
+    fn samples(&self, c: usize) -> &'a [Sample] {
+        &self.kept[self.chunks[c].1.clone()]
+    }
 
+    /// How long the samples last, in track units.
+    fn length(&self) -> u64 {
+        self.kept.iter().map(|s| s.duration as u64).sum()
+    }
+
+    /// The `trak` box, `movie_length` long (in the movie's units).
+    fn trak(&self, movie_length: u64) -> Vec<u8> {
+        let (track, kept) = (self.track, self.kept);
         let mut stts = Vec::new();
         for (count, duration) in run_lengths(kept.iter().map(|s| s.duration)) {
             stts.extend([count.to_be_bytes(), duration.to_be_bytes()].concat());
         }
-        let mut stbl = self.stsd.clone();
+        let mut stbl = track.stsd.clone();
         stbl.extend(full_box(b"stts", 0, &[&(stts.len() as u32 / 8).to_be_bytes()[..], &stts].concat()));
-        if let Some(version) = self.ctts_version {
+        if let Some(version) = track.ctts_version {
             let mut ctts = Vec::new();
             for (count, cts) in run_lengths(kept.iter().map(|s| s.cts as u32)) {
                 ctts.extend([count.to_be_bytes(), cts.to_be_bytes()].concat());
@@ -246,24 +379,31 @@ impl Movie {
             let keys: Vec<u8> = (1..).zip(kept).filter(|(_, s)| s.keyframe).flat_map(|(n, _)| (n as u32).to_be_bytes()).collect();
             stbl.extend(full_box(b"stss", 0, &[&(keys.len() as u32 / 4).to_be_bytes()[..], &keys].concat()));
         }
-        // A chunk for each frame.
-        stbl.extend(full_box(b"stsc", 0, &[1u32, 1, 1, 1].iter().flat_map(|n| n.to_be_bytes()).collect::<Vec<u8>>()));
+        // How many samples the chunks have, a row for each change.
+        let mut stsc = Vec::new();
+        for (n, (_, range)) in self.chunks.iter().enumerate() {
+            if n == 0 || self.chunks[n - 1].1.len() != range.len() {
+                stsc.extend([n as u32 + 1, range.len() as u32, 1].iter().flat_map(|n| n.to_be_bytes()));
+            }
+        }
+        stbl.extend(full_box(b"stsc", 0, &[&(stsc.len() as u32 / 12).to_be_bytes()[..], &stsc].concat()));
         let sizes: Vec<u8> = kept.iter().flat_map(|s| s.size.to_be_bytes()).collect();
         stbl.extend(full_box(b"stsz", 0, &[&0u32.to_be_bytes()[..], &(kept.len() as u32).to_be_bytes(), &sizes].concat()));
-        let mut offsets = (kept.len() as u32).to_be_bytes().to_vec();
-        let mut at = first_byte;
-        for s in kept {
-            offsets.extend(at.to_be_bytes());
-            at += s.size as u64;
-        }
-        stbl.extend(full_box(b"co64", 0, &offsets));
+        let offsets: Vec<u8> = self.offsets.iter().flat_map(|o| o.to_be_bytes()).collect();
+        stbl.extend(full_box(b"co64", 0, &[&(self.offsets.len() as u32).to_be_bytes()[..], &offsets].concat()));
 
-        let minf = [self.minf_rest.clone(), plain_box(b"stbl", &stbl)].concat();
-        let mdia = [with_duration(&self.mdhd, length, 16, 24), self.hdlr.clone(), plain_box(b"minf", &minf)].concat();
-        // The track starts at the start (any edit list would be for the old one).
-        let trak = [with_duration(&self.tkhd, movie_length, 20, 28), plain_box(b"mdia", &mdia)].concat();
-        plain_box(b"moov", &[with_duration(&self.mvhd, movie_length, 16, 24), plain_box(b"trak", &trak)].concat())
+        let minf = [track.minf_rest.clone(), plain_box(b"stbl", &stbl)].concat();
+        let mdia = [with_duration(&track.mdhd, self.length(), 16, 24), track.hdlr.clone(), plain_box(b"minf", &minf)].concat();
+        // The track starts at the start (any edit list would be for the old one). That includes the
+        // one an AAC track can have to skip its encoder's delay, a silence of about 21 ms that
+        // isn't worth the trouble of keeping.
+        plain_box(b"trak", &[with_duration(&track.tkhd, movie_length, 20, 28), plain_box(b"mdia", &mdia)].concat())
     }
+}
+
+/// `units` of `1 / from` seconds, in units of `1 / to`.
+fn scale(units: u64, from: u32, to: u32) -> u64 {
+    (units as u128 * to as u128 / from.max(1) as u128).min(u64::MAX as u128) as u64
 }
 
 /// `b`, if it's a full box with at least `v0` bytes after its version and flags (version 0), or
@@ -388,7 +528,7 @@ fn be64(b: &[u8], at: usize) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A movie of `frames` frames at 30 per second, a keyframe every `every`, each frame's data
@@ -407,44 +547,95 @@ mod tests {
         let movie = Movie {
             width: 640,
             height: 480,
-            timescale,
             movie_timescale: 1000,
-            samples,
             ftyp: plain_box(b"ftyp", b"isom\0\0\0\0isom"),
             mvhd: full_box(b"mvhd", 0, &mvhd_content),
-            tkhd,
-            mdhd: full_box(b"mdhd", 0, &mdhd_content),
-            hdlr: full_box(b"hdlr", 0, &[&[0u8; 4][..], b"vide", &[0u8; 13]].concat()),
-            minf_rest: full_box(b"vmhd", 0, &[0u8; 8]),
-            stsd,
-            ctts_version: None,
+            video: Track {
+                timescale,
+                samples,
+                tkhd: with_id(tkhd, 1),
+                mdhd: full_box(b"mdhd", 0, &mdhd_content),
+                hdlr: full_box(b"hdlr", 0, &[&[0u8; 4][..], b"vide", &[0u8; 13]].concat()),
+                minf_rest: full_box(b"vmhd", 0, &[0u8; 8]),
+                stsd,
+                ctts_version: None,
+            },
+            sound: Vec::new(),
         };
         let data: Vec<u8> = (0..frames).flat_map(|n| std::iter::repeat_n(n as u8, 10 + (n % 7) as usize)).collect();
         (movie, data)
     }
 
+    /// `tkhd` with its track number set (version 0).
+    fn with_id(mut tkhd: Vec<u8>, id: u32) -> Vec<u8> {
+        tkhd[20..24].copy_from_slice(&id.to_be_bytes());
+        tkhd
+    }
+
+    /// Audio sample `n`'s data: its number, counting down so that it differs from a frame's.
+    fn audio_byte(n: u32) -> u8 {
+        255 - (n % 200) as u8
+    }
+
+    /// A movie with a sound track too: `frames` AAC-sized frames of 1024 samples at 48 kHz
+    /// (so 21.3 ms each), each its number's bytes. The data is the video's, then the sound's.
+    fn movie_with_sound(frames: u32, audio_frames: u32, every: u32) -> (Movie, Vec<u8>) {
+        let (mut movie, mut data) = movie(frames, every);
+        let samples: Vec<Sample> =
+            (0..audio_frames).map(|n| Sample { offset: 0, size: 20 + n % 5, dts: n as u64 * 1024, duration: 1024, cts: 0, keyframe: true }).collect();
+        let mut mdhd_content = vec![0u8; 20];
+        mdhd_content[8..12].copy_from_slice(&48_000u32.to_be_bytes());
+        let tkhd = full_box(b"tkhd", 0, &[&[0u8; 72][..], &[0u8; 8]].concat());
+        movie.sound.push(Track {
+            timescale: 48_000,
+            samples,
+            tkhd: with_id(tkhd, 2),
+            mdhd: full_box(b"mdhd", 0, &mdhd_content),
+            hdlr: full_box(b"hdlr", 0, &[&[0u8; 4][..], b"soun", &[0u8; 13]].concat()),
+            minf_rest: full_box(b"smhd", 0, &[0u8; 4]),
+            stsd: full_box(b"stsd", 0, &[&1u32.to_be_bytes()[..], &plain_box(b"mp4a", &[0u8; 28])].concat()),
+            ctts_version: None,
+        });
+        data.extend((0..audio_frames).flat_map(|n| std::iter::repeat_n(audio_byte(n), 20 + (n % 5) as usize)));
+        (movie, data)
+    }
+
+    /// A 3 s MP4 at `path` made of nothing but the right headers (it won't play), with a sound
+    /// track too if `sound`.
+    pub(crate) fn recording(path: &Path, sound: bool) {
+        let (mut movie, data) = if sound { movie_with_sound(90, 141, 30) } else { movie(90, 30) };
+        write(&mut movie, &data, path);
+    }
+
     /// Writes `movie` with `data` as an MP4 at `path`, the way a cut does, with nothing cut.
     fn write(movie: &mut Movie, data: &[u8], path: &Path) {
         let mut at = 0;
-        for s in &mut movie.samples {
+        for s in movie.video.samples.iter_mut().chain(movie.sound.iter_mut().flat_map(|t| t.samples.iter_mut())) {
             s.offset = at;
             at += s.size as u64;
         }
         let raw = path.with_extension("raw");
         std::fs::write(&raw, data).unwrap();
         movie.cut(&raw, path, Duration::ZERO, Duration::MAX).unwrap();
+        let _ = std::fs::remove_file(&raw);
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("rsnip-mp4-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]
     fn cuts_from_a_keyframe_and_keeps_the_frames_as_they_were() {
-        let dir = std::env::temp_dir().join(format!("rsnip-mp4-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp_dir("cut");
         let (mut movie, data) = movie(90, 30);
         let whole = dir.join("whole.mp4");
         write(&mut movie, &data, &whole);
 
         let read = Movie::open(&whole).unwrap();
         assert_eq!((read.width, read.height, read.frames()), (640, 480, 90));
+        assert!(!read.has_sound());
         assert!((read.duration().as_secs_f64() - 3.0).abs() < 1e-6);
         assert_eq!(read.keyframes(), [0.0, 1.0, 2.0].map(Duration::from_secs_f64));
 
@@ -455,17 +646,18 @@ mod tests {
         let part = Movie::open(&cut).unwrap();
         assert_eq!(part.frames(), 45);
         assert!((part.duration().as_secs_f64() - 1.5).abs() < 1e-6);
-        assert!(part.samples[0].keyframe && part.samples[30].keyframe && !part.samples[1].keyframe);
+        let frames = &part.video.samples;
+        assert!(frames[0].keyframe && frames[30].keyframe && !frames[1].keyframe);
         // The frames are the 30th to the 74th, byte for byte.
         let bytes = std::fs::read(&cut).unwrap();
-        for (n, s) in (30u8..).zip(&part.samples) {
+        for (n, s) in (30u8..).zip(frames) {
             let frame = &bytes[s.offset as usize..(s.offset + s.size as u64) as usize];
             assert!(frame.iter().all(|&b| b == n) && s.size == 10 + n as u32 % 7, "frame {n}");
         }
         // The headers say how long it is.
         let m = Movie::open(&cut).unwrap();
         assert_eq!(be32(full(&m.mvhd), 12), 1500, "mvhd, in ms");
-        assert_eq!(be32(full(&m.mdhd), 12), 135_000, "mdhd, in track units");
+        assert_eq!(be32(full(&m.video.mdhd), 12), 135_000, "mdhd, in track units");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -475,6 +667,170 @@ mod tests {
         assert_eq!(movie.span(Duration::from_secs(5), Duration::from_secs(9)), 30..60, "past the end: the last second");
         assert_eq!(movie.span(Duration::ZERO, Duration::ZERO), 0..1);
         assert_eq!(movie.span(Duration::from_secs_f64(0.99), Duration::from_secs_f64(1.0)), 0..30);
+    }
+
+    /// The bytes of `track`'s samples in `file`.
+    fn bytes_of(file: &[u8], track: &Track) -> Vec<Vec<u8>> {
+        track.samples.iter().map(|s| file[s.offset as usize..(s.offset + s.size as u64) as usize].to_vec()).collect()
+    }
+
+    #[test]
+    fn a_cut_keeps_the_sound_that_goes_with_the_picture() {
+        let dir = temp_dir("sound");
+        // 3 s of video with a keyframe a second, and 141 audio frames: 3.008 s.
+        let (mut movie, data) = movie_with_sound(90, 141, 30);
+        let whole = dir.join("whole.mp4");
+        write(&mut movie, &data, &whole);
+
+        let read = Movie::open(&whole).unwrap();
+        assert!(read.has_sound());
+        assert_eq!((read.video.samples.len(), read.sound.len()), (90, 1), "both tracks are read back");
+        assert_eq!(read.sound[0].timescale, 48_000);
+        assert_eq!((read.video.id(), read.sound[0].id()), (1, 2));
+        assert_eq!(read.sound[0].samples.len(), 141);
+        assert_eq!(be32(&read.mvhd, 104), 3, "the next track number is past both");
+
+        // 1.5 s to 2.5 s: the video from the keyframe at 1 s, and the audio frames that start
+        // from then to 2.5 s, which are the 47th (1.0027 s) to the 117th (2.4960 s).
+        let cut = dir.join("cut.mp4");
+        let (from, to) = read.cut(&whole, &cut, Duration::from_secs_f64(1.5), Duration::from_secs_f64(2.5)).unwrap();
+        assert_eq!((from, to), (Duration::from_secs(1), Duration::from_secs_f64(2.5)));
+        let part = Movie::open(&cut).unwrap();
+        assert_eq!(part.frames(), 45);
+        assert_eq!(part.sound.len(), 1);
+        let audio = &part.sound[0];
+        assert_eq!(audio.samples.len(), 71);
+        assert_eq!((audio.id(), audio.timescale), (2, 48_000));
+        assert_eq!(audio.samples[0].dts, 0, "starts with the video, which is where its first frame started");
+        assert!(audio.samples.iter().all(|s| s.keyframe));
+
+        // About as long as the video: not before it ends, and no more than a frame after.
+        let video_end = part.duration().as_secs_f64();
+        let audio_end = audio.samples.last().map(|s| (s.dts + s.duration as u64) as f64 / 48_000.0).unwrap();
+        assert!((video_end - 1.5).abs() < 1e-6);
+        assert!(audio_end <= video_end + 1024.0 / 48_000.0 && audio_end > video_end - 1024.0 / 48_000.0, "{audio_end} against {video_end}");
+
+        // The bytes are the same: the 30th to 74th frames, and the 47th to 117th audio frames.
+        let file = std::fs::read(&cut).unwrap();
+        for (n, bytes) in (30u8..).zip(bytes_of(&file, &part.video)) {
+            assert!(bytes.iter().all(|&b| b == n) && bytes.len() == 10 + n as usize % 7, "frame {n}");
+        }
+        for (n, bytes) in (47u32..).zip(bytes_of(&file, audio)) {
+            assert!(bytes.iter().all(|&b| b == audio_byte(n)) && bytes.len() == 20 + n as usize % 5, "audio frame {n}");
+        }
+        // The headers: the movie is as long as the longer track, in ms; the audio's own in 48 kHz.
+        assert_eq!(be32(full(&part.mvhd), 12), 1514, "mvhd, in ms");
+        assert_eq!(be32(full(&audio.mdhd), 12), 71 * 1024, "mdhd, in audio units");
+        assert_eq!(be32(full(&audio.tkhd), 16), 1514, "tkhd, in ms");
+        assert_eq!(be32(full(&part.video.tkhd), 16), 1500);
+        assert_eq!(be32(&part.mvhd, 104), 3);
+        // The data of each second goes together: the first second's sound is before the second's
+        // picture, and all of it is after the first picture.
+        let first_second_of_video = part.video.samples[0].offset;
+        let sound_at = audio.samples[0].offset;
+        assert!(first_second_of_video < sound_at && sound_at < part.video.samples[30].offset, "interleaved");
+
+        // Cut again, from the cut: still both, and with nothing cut it's all there.
+        let again = dir.join("again.mp4");
+        part.cut(&cut, &again, Duration::ZERO, Duration::MAX).unwrap();
+        let again = Movie::open(&again).unwrap();
+        assert_eq!((again.frames(), again.sound[0].samples.len()), (45, 71));
+        let whole_again = dir.join("whole-again.mp4");
+        read.cut(&whole, &whole_again, Duration::ZERO, Duration::MAX).unwrap();
+        let all = Movie::open(&whole_again).unwrap();
+        assert_eq!((all.frames(), all.sound[0].samples.len()), (90, 141));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cut_too_short_for_a_sound_frame_has_no_sound_track() {
+        let dir = temp_dir("short");
+        let (mut movie, data) = movie_with_sound(90, 141, 30);
+        let whole = dir.join("whole.mp4");
+        write(&mut movie, &data, &whole);
+        // Sound that starts 2 s in, as if the file had it that way.
+        let mut read = Movie::open(&whole).unwrap();
+        for s in &mut read.sound[0].samples {
+            s.dts += 96_000;
+        }
+        let cut = dir.join("cut.mp4");
+        read.cut(&whole, &cut, Duration::ZERO, Duration::from_millis(500)).unwrap();
+        let part = Movie::open(&cut).unwrap();
+        assert!(!part.has_sound() && part.frames() == 15);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The offset of the `n`th box of `kind` in `file`.
+    fn nth_box(file: &[u8], kind: &[u8; 4], n: usize) -> usize {
+        let at: Vec<usize> = (4..file.len() - 4).filter(|&i| &file[i..i + 4] == kind).collect();
+        at[n] - 4
+    }
+
+    #[test]
+    fn a_broken_sound_track_is_left_out_not_the_whole_cut() {
+        let dir = temp_dir("broken");
+        let (mut movie, data) = movie_with_sound(90, 141, 30);
+        let whole = dir.join("whole.mp4");
+        write(&mut movie, &data, &whole);
+        let good = std::fs::read(&whole).unwrap();
+        assert!(Movie::open(&whole).unwrap().has_sound());
+
+        let broken = dir.join("broken.mp4");
+        let cut = dir.join("cut.mp4");
+        let damage = |what: &dyn Fn(&mut Vec<u8>)| {
+            let mut file = good.clone();
+            what(&mut file);
+            std::fs::write(&broken, &file).unwrap();
+            let read = Movie::open(&broken).unwrap();
+            assert!(!read.has_sound(), "the sound is left out");
+            read.cut(&broken, &cut, Duration::from_secs(1), Duration::from_secs(2)).unwrap();
+            let part = Movie::open(&cut).unwrap();
+            assert!(!part.has_sound() && part.frames() == 30, "the picture is cut as usual");
+            // Only the picture's data is in it, and its index says so.
+        };
+        // Its sample sizes are cut short (the second stsz is the sound's)...
+        damage(&|file| {
+            let at = nth_box(file, b"stsz", 1);
+            file[at + 16..at + 20].copy_from_slice(&u32::MAX.to_be_bytes());
+        });
+        // ...its samples are past the end of the file...
+        damage(&|file| {
+            let at = nth_box(file, b"co64", 1);
+            file[at + 16..at + 24].copy_from_slice(&(1u64 << 40).to_be_bytes());
+        });
+        // ...its timing is missing...
+        damage(&|file| {
+            let at = nth_box(file, b"stts", 1);
+            file[at + 4..at + 8].copy_from_slice(b"free");
+        });
+        // ...it has the video's track number...
+        damage(&|file| {
+            let at = nth_box(file, b"tkhd", 1);
+            file[at + 20..at + 24].copy_from_slice(&1u32.to_be_bytes());
+        });
+        // ...or it's the kind of track that isn't sound or picture.
+        damage(&|file| {
+            let at = nth_box(file, b"hdlr", 1);
+            file[at + 16..at + 20].copy_from_slice(b"text");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_with_only_sound_is_refused() {
+        let dir = temp_dir("audio-only");
+        let (mut movie, data) = movie_with_sound(30, 47, 30);
+        let whole = dir.join("whole.mp4");
+        write(&mut movie, &data, &whole);
+        let file = std::fs::read(&whole).unwrap();
+        let moov = children(&file).find(|(k, _)| k == b"moov").map(|(_, b)| content(b)).unwrap();
+        let traks: Vec<&[u8]> = children(moov).filter(|(k, _)| k == b"trak").map(|(_, b)| b).collect();
+        assert_eq!(traks.len(), 2);
+        let only_sound = [find(moov, b"mvhd").unwrap().to_vec(), traks[1].to_vec()].concat();
+        let err = Movie::parse(Vec::new(), &only_sound).err().unwrap();
+        assert_eq!(err, "Not an MP4 RSnip can read: no video");
+        assert!(Movie::parse(Vec::new(), &[find(moov, b"mvhd").unwrap().to_vec(), traks[0].to_vec()].concat()).is_ok(), "and the picture alone is fine");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -490,18 +846,81 @@ mod tests {
     proptest::proptest! {
         /// Damaged indexes are refused or read, never a panic.
         #[test]
-        fn damaged_indexes_never_panic(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..400), cut in 0usize..400) {
-            let (mut movie, data) = movie(40, 10);
-            let path = std::env::temp_dir().join(format!("rsnip-damaged-{}-{}", std::process::id(), cut));
+        fn damaged_indexes_never_panic(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..400), cut in 0usize..400, sound in proptest::prelude::any::<bool>()) {
+            let (mut movie, data) = if sound { movie_with_sound(40, 60, 10) } else { movie(40, 10) };
+            let path = std::env::temp_dir().join(format!("rsnip-damaged-{}-{}-{}", std::process::id(), cut, sound));
             write(&mut movie, &data, &path);
             let mut file = std::fs::read(&path).unwrap();
             let at = cut.min(file.len());
             let end = (at + bytes.len()).min(file.len());
             file[at..end].copy_from_slice(&bytes[..end - at]);
             std::fs::write(&path, &file).unwrap();
-            let _ = Movie::open(&path).map(|m| m.span(Duration::from_secs(1), Duration::from_secs(2)));
+            let copy = path.with_extension("copy");
+            let _ = Movie::open(&path).map(|m| (m.span(Duration::from_secs(1), Duration::from_secs(2)), m.cut(&path, &copy, Duration::from_secs(1), Duration::from_secs(2))));
             let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(&copy);
             let _ = std::fs::remove_file(path.with_extension("raw"));
         }
+    }
+
+    /// Whether `program` can be run.
+    fn runs_here(program: &str) -> bool {
+        std::process::Command::new(program).arg("--version").output().is_ok_and(|o| o.status.success())
+    }
+
+    fn gst_inspect(element: &str) -> bool {
+        std::process::Command::new("gst-inspect-1.0").arg(element).output().is_ok_and(|o| o.status.success())
+    }
+
+    /// A file GStreamer's mp4mux wrote, with H.264 and AAC, cut: both streams are still there, as
+    /// long as each other, and it decodes. Skipped without GStreamer's x264 and an AAC encoder.
+    #[test]
+    fn a_cut_of_a_file_from_mp4mux_has_both_streams_and_plays() {
+        let Some(aac) = ["fdkaacenc", "avenc_aac", "voaacenc"].into_iter().find(|e| gst_inspect(e)) else {
+            return eprintln!("skipped: no AAC encoder");
+        };
+        if !runs_here("gst-launch-1.0") || !gst_inspect("x264enc") || !gst_inspect("mp4mux") || !gst_inspect("avdec_h264") {
+            return eprintln!("skipped: no GStreamer x264enc, mp4mux and an H.264 decoder");
+        }
+        let dir = temp_dir("gst");
+        let whole = dir.join("whole.mp4");
+        // 3 s of video with a keyframe a second, and 3 s of sound.
+        let pipeline = format!(
+            "videotestsrc num-buffers=90 ! video/x-raw,width=160,height=120,framerate=30/1 ! x264enc key-int-max=30 ! h264parse ! mp4mux name=m ! filesink location={} \
+             audiotestsrc num-buffers=141 samplesperbuffer=1024 ! audio/x-raw,rate=48000,channels=2 ! audioconvert ! {aac} ! m.",
+            whole.display()
+        );
+        let made = std::process::Command::new("gst-launch-1.0").arg("-q").args(pipeline.split_whitespace()).output().unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+
+        let movie = Movie::open(&whole).unwrap();
+        assert!(movie.has_sound(), "read back from the muxer's file");
+        let cut = dir.join("cut.mp4");
+        let (from, to) = movie.cut(&whole, &cut, Duration::from_millis(1500), Duration::from_millis(2500)).unwrap();
+        assert_eq!(from, Duration::from_secs(1));
+        assert!(to.abs_diff(Duration::from_millis(2500)) < Duration::from_millis(50), "{to:?}");
+
+        let part = Movie::open(&cut).unwrap();
+        assert!(part.has_sound());
+        let seconds = |track: &Track| track.samples.iter().map(|s| s.duration as f64).sum::<f64>() / track.timescale as f64;
+        assert!((seconds(&part.video) - 1.5).abs() < 0.05, "{}", seconds(&part.video));
+        assert!((seconds(&part.sound[0]) - seconds(&part.video)).abs() < 0.05, "{} and {}", seconds(&part.sound[0]), seconds(&part.video));
+
+        // Both streams decode (-v says what comes out of each).
+        let played = std::process::Command::new("gst-launch-1.0")
+            .args(["-v", "filesrc"])
+            .arg(format!("location={}", cut.display()))
+            .args(["!", "decodebin", "name=d", "d.", "!", "queue", "!", "fakesink", "d.", "!", "queue", "!", "fakesink"])
+            .output()
+            .unwrap();
+        let (said, errors) = (String::from_utf8_lossy(&played.stdout), String::from_utf8_lossy(&played.stderr));
+        assert!(played.status.success() && !said.contains("ERROR") && errors.is_empty(), "{said}{errors}");
+        assert!(said.contains("audio/x-raw") && said.contains("video/x-raw"), "{said}");
+        // And GStreamer's own tool, where there is one, finds the same two.
+        if let Ok(found) = std::process::Command::new("gst-discoverer-1.0").arg(&cut).output() {
+            let found = String::from_utf8_lossy(&found.stdout);
+            assert!(found.contains("audio #") && found.contains("video #"), "{found}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
