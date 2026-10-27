@@ -14,8 +14,17 @@ use crate::capture::Image;
 
 pub trait Encoder {
     fn frame(&mut self, img: &Image, at: Duration) -> Result<(), String>;
+    /// Interleaved 48 kHz stereo samples starting `at` into the recording. Only MP4s made with
+    /// sound take them; for the rest it does nothing.
+    fn audio(&mut self, _pcm: &[i16], _at: Duration) -> Result<(), String> {
+        Ok(())
+    }
     fn finish(self: Box<Self>) -> Result<(), String>;
 }
+
+/// The sound sent to `Encoder::audio`: 48 kHz, stereo, 16-bit.
+pub const AUDIO_RATE: u32 = 48_000;
+pub const AUDIO_CHANNELS: u32 = 2;
 
 /// H.264 needs even dimensions.
 pub fn even(n: i32) -> i32 {
@@ -29,6 +38,9 @@ pub struct Mp4 {
     height: i32,
     frame_time: i64,
     last: Option<i64>,
+    /// The sound's stream, if this MP4 has any, and where its last sample ended.
+    audio: Option<u32>,
+    audio_end: i64,
 }
 
 /// 100 ns units, as Media Foundation counts time.
@@ -57,11 +69,18 @@ pub fn hevc_available() -> bool {
 }
 
 impl Mp4 {
+    /// Without sound, as tests make them.
+    #[cfg(test)]
     pub fn new(path: &Path, width: i32, height: i32, fps: u32, hevc: bool) -> Result<Mp4, String> {
-        unsafe { Mp4::create(path, width, height, fps, hevc) }.map_err(|e| format!("Couldn't start the video encoder: {}", e.message()))
+        Mp4::with_sound(path, width, height, fps, hevc, false)
     }
 
-    unsafe fn create(path: &Path, width: i32, height: i32, fps: u32, hevc: bool) -> windows::core::Result<Mp4> {
+    /// As `new`, with a stream for the sound given to `audio` if `sound`.
+    pub fn with_sound(path: &Path, width: i32, height: i32, fps: u32, hevc: bool, sound: bool) -> Result<Mp4, String> {
+        unsafe { Mp4::create(path, width, height, fps, hevc, sound) }.map_err(|e| format!("Couldn't start the video encoder: {}", e.message()))
+    }
+
+    unsafe fn create(path: &Path, width: i32, height: i32, fps: u32, hevc: bool, sound: bool) -> windows::core::Result<Mp4> {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         MFStartup(MF_VERSION, MFSTARTUP_FULL)?;
         let mut attrs = None;
@@ -104,8 +123,51 @@ impl Mp4 {
             let codec = ICodecAPI::from_raw(codec);
             let _ = codec.SetValue(&CODECAPI_AVEncMPVGOPSize, &windows::Win32::System::Variant::VARIANT::from(fps));
         }
+        let audio = if sound { Some(Mp4::add_audio(&writer)?) } else { None };
         writer.BeginWriting()?;
-        Ok(Mp4 { writer, stream, width, height, frame_time: 10_000_000 / fps as i64, last: None })
+        Ok(Mp4 { writer, stream, width, height, frame_time: 10_000_000 / fps as i64, last: None, audio, audio_end: 0 })
+    }
+
+    /// Adds the sound's stream: 16-bit PCM in, AAC at 160 kbit/s out.
+    unsafe fn add_audio(writer: &IMFSinkWriter) -> windows::core::Result<u32> {
+        let common = |t: &IMFMediaType, subtype: &windows::core::GUID, bytes_per_second: u32, block: u32| -> windows::core::Result<()> {
+            t.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)?;
+            t.SetGUID(&MF_MT_SUBTYPE, subtype)?;
+            t.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, AUDIO_RATE)?;
+            t.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, AUDIO_CHANNELS)?;
+            t.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)?;
+            t.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, bytes_per_second)?;
+            t.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, block)
+        };
+        let output = MFCreateMediaType()?;
+        common(&output, &MFAudioFormat_AAC, 20_000, 1)?;
+        // Raw AAC frames, as MP4 holds them, at the profile and level (AAC-LC) players all take.
+        output.SetUINT32(&MF_MT_AAC_PAYLOAD_TYPE, 0)?;
+        output.SetUINT32(&MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0x29)?;
+        let stream = writer.AddStream(&output)?;
+        let input = MFCreateMediaType()?;
+        common(&input, &MFAudioFormat_PCM, AUDIO_RATE * AUDIO_CHANNELS * 2, AUDIO_CHANNELS * 2)?;
+        writer.SetInputMediaType(stream, &input, None)?;
+        Ok(stream)
+    }
+
+    unsafe fn write_audio(&mut self, stream: u32, pcm: &[i16], at: Duration) -> windows::core::Result<()> {
+        let len = std::mem::size_of_val(pcm);
+        let buffer = MFCreateMemoryBuffer(len as u32)?;
+        let mut dst = std::ptr::null_mut();
+        buffer.Lock(&mut dst, None, None)?;
+        std::ptr::copy_nonoverlapping(pcm.as_ptr() as *const u8, dst, len);
+        buffer.Unlock()?;
+        buffer.SetCurrentLength(len as u32)?;
+        let sample = MFCreateSample()?;
+        sample.AddBuffer(&buffer)?;
+        // Chunks are meant to follow one another; keep the times from overlapping if they don't.
+        let time = ticks(at).max(self.audio_end);
+        let duration = (pcm.len() / AUDIO_CHANNELS as usize) as i64 * 10_000_000 / AUDIO_RATE as i64;
+        sample.SetSampleTime(time)?;
+        sample.SetSampleDuration(duration)?;
+        self.audio_end = time + duration;
+        self.writer.WriteSample(stream, &sample)
     }
 
     unsafe fn write(&mut self, img: &Image, at: Duration) -> windows::core::Result<()> {
@@ -137,6 +199,13 @@ impl Encoder for Mp4 {
             return Err("Frame is smaller than the video".into());
         }
         unsafe { self.write(img, at) }.map_err(|e| format!("Couldn't encode the video: {}", e.message()))
+    }
+
+    fn audio(&mut self, pcm: &[i16], at: Duration) -> Result<(), String> {
+        match self.audio {
+            Some(stream) if !pcm.is_empty() => unsafe { self.write_audio(stream, pcm, at) }.map_err(|e| format!("Couldn't encode the sound: {}", e.message())),
+            _ => Ok(()),
+        }
     }
 
     fn finish(self: Box<Self>) -> Result<(), String> {
@@ -196,6 +265,55 @@ impl Encoder for Gif {
     }
 }
 
+/// The tracks in an MP4 ("vide", "soun"), in order, from the handler boxes in its header.
+#[cfg(test)]
+pub fn handlers(mp4: &[u8]) -> Vec<String> {
+    // A handler box is "hdlr", 4 bytes of version and flags, 4 of pre-defined, then the kind.
+    let kinds = mp4.windows(4).enumerate().filter(|(_, w)| w == b"hdlr").filter_map(|(i, _)| mp4.get(i + 12..i + 16));
+    // (The metadata box has one too, "mdir".)
+    kinds.filter(|k| *k == b"vide" || *k == b"soun").map(|k| String::from_utf8_lossy(k).into_owned()).collect()
+}
+
+/// Reads the first video (or sound) track of an MP4 through Media Foundation, as a player would:
+/// how long it runs, and for sound the loudest sample once decoded.
+#[cfg(test)]
+pub fn read_stream(path: &Path, sound: bool) -> (Duration, i16) {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        MFStartup(MF_VERSION, MFSTARTUP_FULL).unwrap();
+        let reader = MFCreateSourceReaderFromURL(&HSTRING::from(path.as_os_str()), None).unwrap();
+        let stream = if sound { MF_SOURCE_READER_FIRST_AUDIO_STREAM } else { MF_SOURCE_READER_FIRST_VIDEO_STREAM }.0 as u32;
+        if sound {
+            let wanted = MFCreateMediaType().unwrap();
+            wanted.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio).unwrap();
+            wanted.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_PCM).unwrap();
+            wanted.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16).unwrap();
+            reader.SetCurrentMediaType(stream, None, &wanted).unwrap();
+        }
+        let (mut end, mut peak) = (0i64, 0i16);
+        loop {
+            let (mut flags, mut time, mut sample) = (0, 0, None);
+            reader.ReadSample(stream, 0, None, Some(&mut flags), Some(&mut time), Some(&mut sample)).unwrap();
+            if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
+                break;
+            }
+            let Some(sample) = sample else { continue };
+            end = end.max(time + sample.GetSampleDuration().unwrap());
+            if sound {
+                let buffer = sample.ConvertToContiguousBuffer().unwrap();
+                let (mut data, mut len) = (std::ptr::null_mut(), 0);
+                buffer.Lock(&mut data, None, Some(&mut len)).unwrap();
+                let pcm = std::slice::from_raw_parts(data as *const i16, len as usize / 2);
+                peak = pcm.iter().fold(peak, |peak, s| peak.max(s.saturating_abs()));
+                buffer.Unlock().unwrap();
+            }
+        }
+        drop(reader);
+        let _ = MFShutdown();
+        (Duration::from_nanos(end as u64 * 100), peak)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +368,53 @@ mod tests {
     fn mp4_writes_a_playable_file() {
         writes_a_playable_mp4(false, 30);
         writes_a_playable_mp4(false, 60);
+    }
+
+    /// Two seconds of video with a 440 Hz tone, sent in 10 ms pieces as a recording would.
+    #[test]
+    fn mp4_with_sound_has_a_video_and_a_sound_track_of_the_same_length() {
+        let path = std::env::temp_dir().join(format!("rsnip-test-sound-{}.mp4", std::process::id()));
+        let mut mp4: Box<dyn Encoder> = match Mp4::with_sound(&path, 64, 48, 30, false, true) {
+            Ok(mp4) => Box::new(mp4),
+            Err(e) => return eprintln!("skipped: {e}"),
+        };
+        let piece = AUDIO_RATE as usize / 100;
+        let tone = |n: usize| (0.5 * (n as f32 * 440.0 * std::f32::consts::TAU / AUDIO_RATE as f32).sin() * i16::MAX as f32) as i16;
+        let mut written = 0;
+        for (i, img) in frames(60, 64, 48).iter().enumerate() {
+            let at = Duration::from_millis(i as u64 * 1000 / 30);
+            mp4.frame(img, at).unwrap();
+            // The sound up to this frame's time.
+            while written < at.as_millis() as usize * AUDIO_RATE as usize / 1000 {
+                let pcm: Vec<i16> = (written..written + piece).flat_map(|n| [tone(n), tone(n)]).collect();
+                mp4.audio(&pcm, Duration::from_nanos(written as u64 * 1_000_000_000 / AUDIO_RATE as u64)).unwrap();
+                written += piece;
+            }
+        }
+        mp4.finish().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(handlers(&bytes), ["vide", "soun"]);
+        let (video, _) = read_stream(&path, false);
+        let (sound, peak) = read_stream(&path, true);
+        std::fs::remove_file(&path).unwrap();
+        assert!(video.abs_diff(Duration::from_secs(2)) < Duration::from_millis(100), "{video:?}");
+        assert!(sound.abs_diff(video) < Duration::from_millis(150), "video {video:?}, sound {sound:?}");
+        assert!(peak > 10_000, "the tone survives encoding and decoding: {peak}");
+    }
+
+    #[test]
+    fn mp4_without_sound_has_only_video_and_ignores_audio() {
+        let path = std::env::temp_dir().join(format!("rsnip-test-silent-{}.mp4", std::process::id()));
+        let mut mp4: Box<dyn Encoder> = match Mp4::new(&path, 64, 48, 30, false) {
+            Ok(mp4) => Box::new(mp4),
+            Err(e) => return eprintln!("skipped: {e}"),
+        };
+        mp4.frame(&frames(1, 64, 48)[0], Duration::ZERO).unwrap();
+        mp4.audio(&[1, 2, 3, 4], Duration::ZERO).unwrap();
+        mp4.finish().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(handlers(&bytes), ["vide"]);
     }
 
     #[test]

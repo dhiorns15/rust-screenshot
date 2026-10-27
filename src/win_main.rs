@@ -14,6 +14,7 @@
 // `rsnip --settings` opens the Settings window.
 // `rsnip --quick-settings` opens the quick-settings flyout (`--at X,Y`: by that point).
 
+mod audio;
 mod capture;
 mod encode;
 mod hook;
@@ -759,7 +760,9 @@ fn pick_area() -> Option<RECT> {
 
 unsafe fn start_recording(hwnd: HWND, area: RECT) {
     let s = SETTINGS.get();
-    let format = record::Format { gif: s.record_gif, hevc: s.record_hevc, fps: s.record_fps };
+    // Read now rather than from `Settings`: the library window can change these (see `settings::get`).
+    let microphone = crate::options::RECORD_MICROPHONE.read(settings::get).then(|| settings::get_text(crate::options::RECORD_MICROPHONE_DEVICE));
+    let format = record::Format { gif: s.record_gif, hevc: s.record_hevc, fps: s.record_fps, sound: crate::options::RECORD_SOUND.read(settings::get), microphone };
     match record::start(hwnd, area, format) {
         Ok(recording) => {
             RECORDING.with(|r| *r.borrow_mut() = Some(recording));

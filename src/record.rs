@@ -16,6 +16,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use crate::audio;
 use crate::capture::capture_rect_with_cursor;
 use crate::encode::{even, Encoder, Gif, Mp4};
 use windows_sys::core::PCWSTR;
@@ -38,18 +39,22 @@ pub struct Recording {
 }
 
 /// What recordings are saved as (see Settings → Recording).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Format {
     pub gif: bool,
     /// H.265 rather than H.264, for MP4s.
     pub hevc: bool,
     /// Frames per second, for MP4s.
     pub fps: u32,
+    /// Record what the computer plays (MP4s only).
+    pub sound: bool,
+    /// Record a microphone too: the default one, or the one with this id (MP4s only).
+    pub microphone: Option<Option<String>>,
 }
 
 impl Format {
     /// GIFs are bigger and slower to encode per frame, so they keep to 12.
-    fn fps(self) -> u32 {
+    fn fps(&self) -> u32 {
         if self.gif {
             12
         } else {
@@ -77,31 +82,56 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
     let working = crate::gallery::working_path(&path)?;
     let fps = format.fps();
     let stop = Arc::new(AtomicBool::new(false));
-    let started = Instant::now();
     // The encoder lives on the recording thread (Media Foundation objects stay on the thread that
-    // made them); it reports whether it started so a failure shows straight away.
+    // made them); it reports when it started, or why it didn't, so a failure shows straight away.
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let thread = {
         let stop = stop.clone();
         std::thread::spawn(move || {
-            let mut note = None;
-            let encoder: Result<Box<dyn Encoder>, String> = if format.gif {
-                Gif::new(&working, w, h, fps).map(|e| Box::new(e) as _)
-            } else {
-                Mp4::new(&working, w, h, fps, format.hevc)
+            let mut notes = Vec::new();
+            let mut hevc = format.hevc;
+            let open = |sound: bool, hevc: &mut bool, notes: &mut Vec<String>| -> Result<Box<dyn Encoder>, String> {
+                if format.gif {
+                    return Gif::new(&working, w, h, fps).map(|e| Box::new(e) as _);
+                }
+                Mp4::with_sound(&working, w, h, fps, *hevc, sound)
                     .or_else(|e| {
                         // Not every PC has an H.265 encoder; H.264 is always there.
-                        if !format.hevc {
+                        if !*hevc {
                             return Err(e);
                         }
-                        note = Some("This PC has no H.265 encoder, so it was recorded as H.264.".to_string());
-                        Mp4::new(&working, w, h, fps, false)
+                        *hevc = false;
+                        notes.push("This PC has no H.265 encoder, so it was recorded as H.264.".to_string());
+                        Mp4::with_sound(&working, w, h, fps, false, sound)
                     })
                     .map(|e| Box::new(e) as _)
             };
-            let _ = ready_tx.send(encoder.as_ref().map(|_| ()).map_err(Clone::clone));
-            match encoder.and_then(|encoder| run(encoder, area, fps, started, &stop)) {
-                Ok(()) => crate::gallery::finish_recording(&working, &path).map(|()| Recorded { path, note }),
+            let sources = audio::Sources { computer: format.sound, microphone: format.microphone.clone() };
+            let with_sound = !format.gif && sources.any();
+            let mut encoder = open(with_sound, &mut hevc, &mut notes);
+            // Time zero is when the encoder is ready (it can take a while), so neither the video
+            // nor the sound opens on a stretch the other doesn't have.
+            let mut started = Instant::now();
+            let mut sound = None;
+            if with_sound && encoder.is_ok() {
+                match audio::Capture::start(&sources, audio::Clock::now()) {
+                    Ok(capture) => sound = Some(capture),
+                    Err(note) => {
+                        // None of the sources worked: the MP4 gets no stream for sound.
+                        notes.push(note);
+                        drop(encoder);
+                        encoder = open(false, &mut hevc, &mut notes);
+                        started = Instant::now();
+                    }
+                }
+            }
+            let _ = ready_tx.send(encoder.as_ref().map(|_| started).map_err(Clone::clone));
+            match encoder.and_then(|encoder| run(encoder, area, fps, started, &stop, sound)) {
+                Ok(later) => {
+                    notes.extend(later);
+                    let note = Some(notes.join(" ")).filter(|n| !n.is_empty());
+                    crate::gallery::finish_recording(&working, &path).map(|()| Recorded { path, note })
+                }
                 Err(e) => {
                     let _ = std::fs::remove_file(&working);
                     Err(e)
@@ -109,7 +139,7 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
             }
         })
     };
-    ready_rx.recv().map_err(|_| "The recording didn't start".to_string())??;
+    let started = ready_rx.recv().map_err(|_| "The recording didn't start".to_string())??;
     let windows = unsafe { [frame_window(area), bar_window(main, area, started)] };
     Ok(Recording { stop, thread, windows })
 }
@@ -125,10 +155,26 @@ impl Recording {
     }
 }
 
-fn run(mut encoder: Box<dyn Encoder>, area: RECT, fps: u32, started: Instant, stop: &AtomicBool) -> Result<(), String> {
+/// Gives the encoder the sound made so far.
+fn give_sound(encoder: &mut dyn Encoder, chunks: Vec<audio::Chunk>) -> Result<(), String> {
+    chunks.iter().try_for_each(|chunk| encoder.audio(&chunk.pcm, chunk.at))
+}
+
+/// Captures frames until `stop` (or the longest recording), writing the sound along with them.
+/// Returns what to tell the user about the sound, if anything went wrong with it.
+fn run(mut encoder: Box<dyn Encoder>, area: RECT, fps: u32, started: Instant, stop: &AtomicBool, mut sound: Option<audio::Capture>) -> Result<Vec<String>, String> {
     let interval = Duration::from_secs(1) / fps;
     let mut next = started;
+    let mut notes = Vec::new();
+    // The sound is the thing that can go wrong without spoiling the video: carry on without it.
+    let lost = |e: String| format!("{}. The rest of the recording has no sound.", e.trim_end_matches('.'));
     while !stop.load(Ordering::Relaxed) && started.elapsed() < MAX_LENGTH {
+        if let Some(capture) = &sound {
+            if let Err(e) = give_sound(&mut *encoder, capture.ready()) {
+                notes.push(lost(e));
+                sound = None;
+            }
+        }
         let now = Instant::now();
         if now < next {
             std::thread::sleep(next - now);
@@ -140,7 +186,15 @@ fn run(mut encoder: Box<dyn Encoder>, area: RECT, fps: u32, started: Instant, st
         // If encoding falls behind, skip ahead rather than queueing frames.
         next = (next + interval).max(Instant::now());
     }
-    encoder.finish()
+    if let Some(capture) = sound {
+        let (rest, problems) = capture.stop();
+        notes.extend(problems);
+        if let Err(e) = give_sound(&mut *encoder, rest) {
+            notes.push(lost(e));
+        }
+    }
+    encoder.finish()?;
+    Ok(notes)
 }
 
 unsafe fn register(class: &str, wndproc: WNDPROC, background: COLORREF, cursor: PCWSTR) {
@@ -303,11 +357,45 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(300));
                 stop.store(true, Ordering::Relaxed);
             });
-            run(encoder, rect(0, 0, 64, 48), 30, started, &stop).unwrap();
+            run(encoder, rect(0, 0, 64, 48), 30, started, &stop, None).unwrap();
         });
         let bytes = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(&bytes[4..8], b"ftyp");
+        assert_eq!(crate::encode::handlers(&bytes), ["vide"], "no sound unless asked for");
+    }
+
+    /// Records the screen and the computer's sound (silence, if nothing plays) for a moment, and
+    /// the MP4 has both, about as long as each other.
+    #[test]
+    fn records_the_screen_with_sound() {
+        let path = std::env::temp_dir().join(format!("rsnip-rec-sound-{}.mp4", std::process::id()));
+        let started = Instant::now();
+        let sources = audio::Sources { computer: true, microphone: None };
+        let sound = match audio::Capture::start(&sources, audio::Clock::now()) {
+            Ok(sound) => sound,
+            // CI's machines may have no sound device, or no Media Foundation.
+            Err(e) => return eprintln!("skipped: {e}"),
+        };
+        let encoder = match Mp4::with_sound(&path, 64, 48, 30, false, true) {
+            Ok(mp4) => Box::new(mp4),
+            Err(e) => return eprintln!("skipped: {e}"),
+        };
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(1500));
+                stop.store(true, Ordering::Relaxed);
+            });
+            let notes = run(encoder, rect(0, 0, 64, 48), 30, started, &stop, Some(sound)).unwrap();
+            assert!(notes.is_empty(), "{notes:?}");
+        });
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(crate::encode::handlers(&bytes), ["vide", "soun"]);
+        let (video, _) = crate::encode::read_stream(&path, false);
+        let (sound, _) = crate::encode::read_stream(&path, true);
+        std::fs::remove_file(&path).unwrap();
+        assert!(sound.abs_diff(video) < Duration::from_millis(250), "video {video:?}, sound {sound:?}");
     }
 
     #[test]

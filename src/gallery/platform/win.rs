@@ -385,9 +385,9 @@ pub struct Microphone {
     pub name: String,
 }
 
-/// The microphones that are connected. Nothing yet: recording sound fills this in.
+/// The microphones that are connected and turned on, to choose from.
 pub fn microphones() -> Vec<Microphone> {
-    Vec::new()
+    crate::audio::microphones().into_iter().map(|(id, name)| Microphone { id, name }).collect()
 }
 
 /// What reads the text in screenshots, for Settings.

@@ -24,6 +24,20 @@ Run `rsnip.exe`. It sits in the notification area.
 
 Alt+PrtScn and Win+PrtScn are left alone and keep their Windows behaviour.
 
+## Sound in recordings
+
+On Windows, MP4 recordings include whatever the computer is playing, so a video of a demo has its
+sound. Turn on *Microphone* as well to add your voice, mixed in with it (the default microphone,
+or one you pick). Both switches are in *Settings → Recording*, and in the tray menu's *Quick
+settings*. Computer sound is on by default and the microphone is off. GIFs have no sound.
+
+The sound is AAC, 48 kHz stereo. Quiet stretches are recorded as silence, so the sound stays in
+step with the picture however long nothing plays.
+
+If the microphone can't be used, RSnip records without it and says so when the recording is
+saved. The usual reason is Windows' own privacy setting: under *Settings → Privacy & security →
+Microphone*, turn on *Let desktop apps access your microphone*.
+
 ## Shortcuts
 
 Giving an action Print Screen is how you choose what Print Screen does, e.g. PrtScn for all screens
