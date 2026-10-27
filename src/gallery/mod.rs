@@ -8,6 +8,7 @@ mod background;
 #[cfg(not(windows))]
 mod bring_in;
 mod clean_up;
+mod describer;
 #[cfg(all(test, target_os = "linux"))]
 mod desktop_tests;
 #[cfg(not(windows))]

@@ -20,6 +20,7 @@ use crate::options::{self, Flag};
 use crate::shortcuts::{self, Action};
 use crate::update::Release;
 
+mod descriptions;
 mod push;
 
 pub const TITLE: &str = "RSnip Settings";
@@ -164,6 +165,7 @@ pub struct SettingsApp {
     old: Option<(Instant, u32, usize)>,
     installing: Installing,
     push: push::PushState,
+    describe: descriptions::DescribeState,
 }
 
 /// Installing an update from Settings → Updates.
@@ -180,7 +182,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, sound_devices: Default::default(), picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, push: Default::default() }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, sound_devices: Default::default(), picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, push: Default::default(), describe: Default::default() }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -464,6 +466,7 @@ impl SettingsApp {
             }
         });
         self.clean_up(ui);
+        self.descriptions(ui);
     }
 
     /// Moving old screenshots and recordings to the Recycle Bin, and how many that would be.

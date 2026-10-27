@@ -1530,3 +1530,29 @@ fn a_screenshot_deleted_elsewhere_doesnt_stay_open() {
     settle(&mut h);
     assert!(h.state().editor.as_ref().is_some_and(|e| e.doc.path == a));
 }
+
+#[test]
+fn the_info_panel_shows_the_description_and_which_model_wrote_it() {
+    let (mut h, b) = described("kittest-info-description");
+    super::search::record_description(&b, "A bar chart of sales.\nKeywords: chart, sales", "claude-opus-5-5").unwrap();
+    h.state_mut().metas.insert(b.clone(), super::search::load(&b));
+    click(&mut h, "Screenshot b");
+    assert!(shows(&h, "Description") && shows(&h, "A bar chart of sales.\nKeywords: chart, sales") && shows(&h, "Described by claude-opus-5-5"));
+    assert!(shows(&h, "Invoice 2026\nTotal due"), "and the text read from it");
+    click(&mut h, "Screenshot a");
+    assert!(!shows(&h, "Description") && !shows(&h, "Described by claude-opus-5-5"), "only what has one");
+}
+
+#[test]
+fn searches_the_descriptions_too_and_reading_text_keeps_them() {
+    let (mut h, dir) = library_with_text("kittest-search-description", "Invoice 2026", |env| {
+        let shot = env.dir.join("Screenshot c.png");
+        super::search::record_description(&shot, "A bar chart of quarterly sales.\nKeywords: chart, revenue", "claude-opus-5-5").unwrap();
+    });
+    let c = super::search::load(&dir.join("Screenshot c.png"));
+    assert!(c.text.is_some(), "its text was read");
+    assert_eq!(c.described_by.as_deref(), Some("claude-opus-5-5"), "and the description is still there");
+    search(&mut h, "REVENUE bar");
+    assert!(shows(&h, "Screenshot c"));
+    assert!(!shows(&h, "Screenshot a") && !shows(&h, "Screenshot b"));
+}

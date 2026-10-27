@@ -13,6 +13,8 @@ use super::{doc, platform, player, theme, App, Entry};
 pub(super) const MIN_WINDOW: f32 = 900.0;
 /// How much of a screenshot's text the panel shows.
 const TEXT_SHOWN: usize = 300;
+/// And of its description; the rest is there when it's hovered.
+const DESCRIPTION_SHOWN: usize = 360;
 /// The preview is never taller than this.
 const PREVIEW_HEIGHT: f32 = 260.0;
 
@@ -83,8 +85,13 @@ pub(super) fn date_and_time(t: SystemTime) -> String {
 
 /// The first part of `text`, for the panel.
 fn text_start(text: &str) -> String {
+    shortened(text, TEXT_SHOWN)
+}
+
+/// The first `max` characters of `text`, with an ellipsis if there were more.
+fn shortened(text: &str, max: usize) -> String {
     let text = text.trim();
-    match text.char_indices().nth(TEXT_SHOWN) {
+    match text.char_indices().nth(max) {
         Some((end, _)) => format!("{}…", text[..end].trim_end()),
         None => text.to_owned(),
     }
@@ -193,6 +200,17 @@ impl App {
                 }
             }
         }
+        if let Some(description) = meta.description.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+            caption_only(ui, "Description");
+            let shown = shortened(description, DESCRIPTION_SHOWN);
+            let label = ui.label(&shown);
+            if shown != description {
+                label.on_hover_text(description);
+            }
+            if let Some(model) = meta.described_by.as_deref().filter(|m| !m.is_empty()) {
+                ui.label(RichText::new(format!("Described by {model}")).small().color(theme::palette(ui).muted));
+            }
+        }
         let text = meta.text.as_deref().map(str::trim).filter(|t| !t.is_empty());
         if let Some(text) = text {
             field(ui, "Text", &text_start(text));
@@ -278,5 +296,6 @@ mod tests {
         let shown = text_start(&long);
         assert!(shown.ends_with('…') && shown.chars().count() <= TEXT_SHOWN + 1, "{shown:?}");
         assert_eq!(text_start(&"é".repeat(TEXT_SHOWN)), "é".repeat(TEXT_SHOWN), "exactly as much as fits");
+        assert_eq!(shortened("  A page. ", DESCRIPTION_SHOWN), "A page.");
     }
 }

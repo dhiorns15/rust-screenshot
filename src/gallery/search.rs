@@ -1,5 +1,5 @@
-//! Finding screenshots by what's in them: the text read from each one, the app and window it was
-//! captured from, and its name. What's known about a screenshot is cached beside it, in
+//! Finding screenshots by what's in them: the text read from each one, an AI model's description of
+//! it (see `describe`), the app and window it was captured from, and its name. What's known about a screenshot is cached beside it, in
 //! `.rsnip/<name>.meta.json`.
 
 use std::collections::BTreeMap;
@@ -25,6 +25,13 @@ pub struct Meta {
     pub text: Option<String>,
     #[serde(default)]
     pub stamp: Option<FileStamp>,
+    /// What an AI model said it shows, with keywords. It describes the capture, so an edit later
+    /// leaves it be.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The model that wrote it, by id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub described_by: Option<String>,
     /// Where it's been pushed, by destination id (see `push`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pushed: BTreeMap<String, Pushed>,
@@ -73,6 +80,15 @@ pub fn remove(path: &Path) {
     }
 }
 
+/// Notes the description `model` gave of `path`.
+pub fn record_description(path: &Path, description: &str, model: &str) -> Result<(), String> {
+    // From the file, not a copy kept since: the text may have been read, or a push noted, meanwhile.
+    let mut meta = load(path);
+    meta.description = Some(description.to_owned());
+    meta.described_by = Some(model.to_owned());
+    save(path, &meta)
+}
+
 /// Records where a capture came from, before its file is written.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn record_source(path: &Path, app: &str, window: &str) {
@@ -89,16 +105,17 @@ fn words(query: &str) -> Vec<String> {
     query.split_whitespace().map(str::to_lowercase).collect()
 }
 
-/// Every word of `query` appears somewhere in the name, app, window title or text, ignoring case.
+/// Every word of `query` appears somewhere in the name, app, window title, text or description,
+/// ignoring case.
 pub fn matches(query: &str, name: &str, meta: &Meta) -> bool {
-    let fields = [name, &meta.app, &meta.window, meta.text.as_deref().unwrap_or("")].map(str::to_lowercase);
+    let fields = [name, &meta.app, &meta.window, meta.text.as_deref().unwrap_or(""), meta.description.as_deref().unwrap_or("")].map(str::to_lowercase);
     words(query).iter().all(|w| fields.iter().any(|f| f.contains(w.as_str())))
 }
 
-/// The first line of text with a word of `query` in it, shortened.
+/// The first line of text, or else of the description, with a word of `query` in it, shortened.
 pub fn matched_line<'a>(query: &str, meta: &'a Meta) -> Option<&'a str> {
     let words = words(query);
-    let line = meta.text.as_deref()?.lines().map(str::trim).find(|l| {
+    let line = [&meta.text, &meta.description].into_iter().flatten().flat_map(|t| t.lines()).map(str::trim).find(|l| {
         let l = l.to_lowercase();
         words.iter().any(|w| l.contains(w.as_str()))
     })?;
@@ -140,6 +157,36 @@ mod tests {
         assert!(matches("acme screenshot", "Screenshot 1", &m));
         assert!(!matches("invoice april", "Screenshot 1", &m), "all words must match");
         assert!(matches("shot", "Screenshot 1", &Meta::default()), "names still match without text");
+    }
+
+    #[test]
+    fn the_description_is_searched_too() {
+        let mut m = meta("Google Chrome", "Sales", "Q3");
+        m.description = Some("A bar chart of quarterly sales.\nKeywords: chart, revenue".into());
+        assert!(matches("BAR chart", "Screenshot 1", &m));
+        assert!(matches("revenue q3 chrome", "Screenshot 1", &m), "any field, any word");
+        assert!(!matches("pie", "Screenshot 1", &m));
+        assert_eq!(matched_line("revenue", &m), Some("Keywords: chart, revenue"));
+        assert_eq!(matched_line("q3", &m), Some("Q3"), "the text first");
+        assert_eq!(describe("revenue", &m).unwrap(), "Google Chrome — Sales\n“Keywords: chart, revenue”");
+    }
+
+    #[test]
+    fn the_description_is_kept_beside_the_text_and_pushes() {
+        let dir = crate::gallery::tests::sandbox_dir("meta-description");
+        let path = dir.join("shot.png");
+        std::fs::write(&path, b"one").unwrap();
+        record_push(&path, "dest", None).unwrap();
+        let mut m = load(&path);
+        m.text = Some("hello".into());
+        save(&path, &m).unwrap();
+        record_description(&path, "A page.", "claude-opus-5-5").unwrap();
+        let m = load(&path);
+        assert_eq!((m.text.as_deref(), m.description.as_deref(), m.described_by.as_deref()), (Some("hello"), Some("A page."), Some("claude-opus-5-5")));
+        assert!(m.pushed.contains_key("dest"));
+        std::fs::write(meta_path(&path).unwrap(), br#"{"app":"Notepad"}"#).unwrap();
+        assert_eq!(load(&path).description, None, "older files have none");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

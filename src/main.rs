@@ -7,6 +7,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod crash;
+mod describe;
 mod gallery;
 mod http;
 mod icon_art;

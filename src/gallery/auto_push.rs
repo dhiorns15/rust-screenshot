@@ -4,13 +4,14 @@
 //! looks in the save folder for what's been saved since the destination was set to Automatically
 //! and hasn't been pushed there since it last changed; a failure is tried again later, and
 //! reported if it keeps failing. The same process moves old screenshots and recordings out of the
-//! folder, if Settings says to (see `clean_up`).
+//! folder, if Settings says to (see `clean_up`), and describes new screenshots, if Settings says to
+//! (see `describer`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::{clean_up, library_files_with_times, platform, search};
+use super::{clean_up, describer, library_files_with_times, platform, search};
 use crate::options;
 use crate::push::{self, Destination};
 
@@ -24,16 +25,20 @@ const RETRIES: [Duration; 3] = [Duration::from_secs(60), Duration::from_secs(5 *
 /// Pushes automatically from this process, while no other RSnip process does (it takes over when
 /// that one ends, say the library closing with the background icon still there). `notify` shows
 /// a desktop notification (title, text).
-pub fn start(notify: impl Fn(&str, &str) + Send + 'static) {
+pub fn start(notify: impl Fn(&str, &str) + Send + Sync + 'static) {
     std::thread::spawn(move || {
         while !platform::claim_lock("Push") {
             std::thread::sleep(EVERY);
         }
+        // On a thread of its own: a description takes a while, and a push shouldn't wait for it.
+        let notify = std::sync::Arc::new(notify);
+        let for_describer = notify.clone();
+        describer::start(move |title, text| for_describer(title, text));
         let mut tries = Tries::default();
         let mut clean_up_at = SystemTime::now() + clean_up::FIRST;
         loop {
             let now = SystemTime::now();
-            run_once(&mut tries, now, &notify);
+            run_once(&mut tries, now, &*notify);
             // Counted from when it's turned on, so the first clean-up isn't a day away.
             if !options::CLEAN_UP.read(platform::setting) {
                 clean_up_at = now + clean_up::FIRST;

@@ -60,8 +60,11 @@ switch with the two layout buttons next to *Library*. RSnip remembers the choice
 Search finds screenshots by the words in them, the app and window they were captured from, and their name
 (every word must match something, in any order). RSnip reads the text with Windows' built-in text
 recognition (Tesseract on Linux), in the background, and keeps it beside the screenshots in the hidden
-`.rsnip` folder; nothing leaves your computer. Hover a result to see where it came from and the line that
-matched. On Linux without Tesseract, search uses names only.
+`.rsnip` folder; nothing leaves your computer. If you turn on *Settings → Library & editor →
+Descriptions*, search also looks in an AI model's description of each screenshot (what app or site it
+shows and what's happening in it, with a few keywords), so "bar chart" or "error dialog" can find a
+screenshot with no such words in it; see [Descriptions](settings.md#descriptions). Hover a result to see
+where it came from and the line that matched. On Linux without Tesseract, search uses names only.
 
 The library groups screenshots by date (Today, Yesterday, This week, …), each heading saying how many
 it has. Click a heading to fold that date away, and again to bring it back; RSnip remembers which

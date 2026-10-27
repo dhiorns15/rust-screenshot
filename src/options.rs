@@ -66,6 +66,20 @@ pub const CLEAN_UP_DAYS: Choice = Choice { name: "CleanUpDays", default: 30, val
 /// When that last moved any, and how many: seconds since 1970, a space, the count (a text setting).
 pub const CLEAN_UP_LAST: &str = "CleanUpLast";
 
+/// Describe each new screenshot with an AI model, with the user's own key, to search by what's in
+/// it (see `describe` and `gallery::describer`). Off unless asked for.
+pub const DESCRIBE: Flag = Flag { name: "Describe", default: false };
+/// Which provider: 0 Anthropic, 1 OpenAI (see `describe::Provider`).
+pub const DESCRIBE_PROVIDER: Choice = Choice { name: "DescribeProvider", default: 0, values: &[0, 1] };
+/// Which of its models, by id (a text setting); empty means the provider's default one.
+pub const DESCRIBE_MODEL: &str = "DescribeModel";
+/// When Describe was turned on (seconds since 1970), so only screenshots taken since are described
+/// by themselves.
+pub const DESCRIBE_SINCE: &str = "DescribeSince";
+/// What stopped the last description, if something did (a text setting): the process that
+/// describes writes it, and Settings shows it. Empty when all is well.
+pub const DESCRIBE_STATUS: &str = "DescribeStatus";
+
 /// A setting that holds one of a few numbers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Choice {

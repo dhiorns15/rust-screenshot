@@ -8,12 +8,14 @@ use eframe::egui::Vec2;
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
+use super::describer::Event;
 use super::env::{Env, TrayRequest};
 use super::platform::SoundDevice;
 use super::settings_window::{Section, SettingsApp};
 use super::theme::Appearance;
 use super::{tests, Dock};
 use crate::crash;
+use crate::describe::{Model, Provider};
 use crate::options;
 use crate::push::{self, Destination, Kind};
 use crate::shortcuts::{self, Action};
@@ -1160,4 +1162,274 @@ fn shortcut_keys_line_up_in_a_column() {
     let lefts: Vec<f32> = h.get_all_by_label("None").map(|n| n.rect().left()).collect();
     assert_eq!(lefts.len(), shortcuts::COUNT - 1, "all but the region capture are unset");
     assert!(lefts.windows(2).all(|w| (w[0] - w[1]).abs() < 0.5), "{lefts:?}");
+}
+
+// Settings → Library & editor → Descriptions.
+
+const DESCRIBE_TITLE: &str = "Describe screenshots with AI";
+
+/// `settings`, in a window tall enough to show the whole of the Library & editor section.
+fn tall_settings(name: &str, setup: impl FnOnce(&mut Env)) -> Harness<'static, SettingsApp> {
+    let mut env = Env::sandbox(tests::sandbox_dir(name));
+    env.tray_app = true;
+    setup(&mut env);
+    let mut h = Harness::builder().with_size(Vec2::new(SIZE.x, 1300.0)).build_eframe(move |cc| SettingsApp::new(&cc.egui_ctx, env));
+    settle(&mut h);
+    h
+}
+
+/// Screenshots in the sandbox's folder, as many as there are names; `described` have descriptions.
+fn shots(env: &Env, names: &[&str], described: &[&str]) {
+    for name in names {
+        std::fs::write(env.dir.join(name), b"data").unwrap();
+    }
+    for name in described {
+        super::search::record_description(&env.dir.join(name), "Done already.", "claude-opus-5-5").unwrap();
+    }
+}
+
+/// The Descriptions card, on, with a key saved for Anthropic.
+fn descriptions_on(name: &str, setup: impl FnOnce(&mut Env)) -> Harness<'static, SettingsApp> {
+    let mut h = tall_settings(name, |env| {
+        env.set_setting(options::DESCRIBE.name, 1);
+        env.sandboxed().secrets.insert("describe-anthropic".into(), "sk-ant-saved".into());
+        setup(env);
+    });
+    open(&mut h, Section::Library);
+    settle(&mut h);
+    h
+}
+
+#[test]
+fn descriptions_are_off_until_asked_for_and_turning_them_on_notes_when() {
+    let mut h = tall_settings("settings-describe-off", |_| {});
+    open(&mut h, Section::Library);
+    assert!(!is_on(&h, DESCRIBE_TITLE), "off by default");
+    assert!(h.query_by_label_contains("Each new screenshot is sent to Anthropic or OpenAI, with your own API key").is_some());
+    assert!(h.query_by_label("Provider").is_none() && h.query_by_label("Model").is_none(), "nothing to set while it's off");
+    assert_eq!(h.state().env.setting(options::DESCRIBE_SINCE), None);
+
+    let before = crate::push::history::now();
+    toggle(&mut h, DESCRIBE_TITLE);
+    assert!(is_on(&h, DESCRIBE_TITLE));
+    assert_eq!(h.state().env.setting(options::DESCRIBE.name), Some(1));
+    let since = u64::from(h.state().env.setting(options::DESCRIBE_SINCE).unwrap());
+    assert!((before..=before + 10).contains(&since), "only what's taken from now on is described by itself");
+    assert_eq!(requests(&h), [TrayRequest::SettingsChanged, TrayRequest::SettingsChanged]);
+    assert!(h.query_by_label("Provider").is_some() && h.query_by_label_contains("No key is saved").is_some());
+    assert!(h.query_by_value("claude-opus-5-5").is_some(), "the default model");
+    assert!(h.query_by_label("About $1.39 per 100 screenshots").is_some());
+
+    toggle(&mut h, DESCRIBE_TITLE);
+    assert_eq!(h.state().env.setting(options::DESCRIBE.name), Some(0));
+    assert!(h.query_by_label("Provider").is_none());
+}
+
+#[test]
+fn another_provider_has_its_own_default_model_and_cost() {
+    let mut h = descriptions_on("settings-describe-provider", |env| env.set_text_setting(options::DESCRIBE_MODEL, "claude-haiku-5-5"));
+    h.state().env.set_text_setting(options::DESCRIBE_STATUS, "Old trouble");
+    settle(&mut h);
+    assert!(h.query_by_label("About $0.03 per 100 screenshots").is_some(), "Haiku's");
+    assert!(h.query_by_label_contains("Last problem describing new screenshots: Old trouble").is_some());
+
+    click(&mut h, "OpenAI");
+    assert_eq!(h.state().env.setting(options::DESCRIBE_PROVIDER.name), Some(1));
+    assert_eq!(h.state().env.text_setting(options::DESCRIBE_MODEL).as_deref(), Some(""), "the other one's models aren't OpenAI's");
+    assert_eq!(h.state().env.text_setting(options::DESCRIBE_STATUS).as_deref(), Some(""));
+    assert!(h.query_by_value("gpt-6.1-sol").is_some());
+    assert!(h.query_by_label("About $0.45 per 100 screenshots").is_some());
+    assert!(h.query_by_label_contains("No key is saved. Get one at platform.openai.com/api-keys").is_some(), "a key for each provider");
+    assert!(h.query_by_label_contains("Last problem").is_none());
+
+    click(&mut h, "Anthropic");
+    assert_eq!(h.state().env.setting(options::DESCRIBE_PROVIDER.name), Some(0));
+    assert!(h.query_by_value("claude-opus-5-5").is_some());
+    assert!(h.query_by_label_contains("A key is saved").is_some());
+}
+
+#[test]
+fn the_key_is_kept_in_the_credential_store_and_the_models_are_listed_with_it() {
+    let models = vec!["claude-opus-5-5", "claude-sonnet-5-5", "claude-mystery-1"].into_iter().map(|id| Model { id: id.into() }).collect();
+    let mut h = tall_settings("settings-describe-key", |env| {
+        env.set_setting(options::DESCRIBE.name, 1);
+        env.sandboxed().models = Some(Ok(models));
+    });
+    open(&mut h, Section::Library);
+    assert!(!is_enabled(&h, "Save"), "nothing typed yet");
+    assert!(!is_enabled(&h, "Test"), "no key to try");
+    assert!(!is_enabled(&h, "Describe the library…"));
+    assert!(h.query_by_label("Forget").is_none());
+    type_into(&mut h, "API key", " sk-ant-123 ");
+    click(&mut h, "Save");
+    settle(&mut h);
+    assert_eq!(h.state().env.sandboxed().secrets.get("describe-anthropic").map(String::as_str), Some("sk-ant-123"));
+    assert!(h.query_by_label_contains("A key is saved").is_some() && h.query_by_label("Forget").is_some());
+    let kept = h.state().env.text_setting(options::DESTINATIONS).unwrap_or_default();
+    assert!(!kept.contains("sk-ant"), "never among the settings");
+    assert!(is_enabled(&h, "Test") && is_enabled(&h, "Describe the library…"));
+    assert!(h.query_by_label_contains("Loading the models").is_none());
+
+    // The drop-down has what the provider lists, and the choice is remembered.
+    h.get_by_value("claude-opus-5-5").click();
+    settle(&mut h);
+    assert!(h.query_by_label("claude-sonnet-5-5").is_some());
+    click(&mut h, "claude-sonnet-5-5");
+    assert_eq!(h.state().env.text_setting(options::DESCRIBE_MODEL).as_deref(), Some("claude-sonnet-5-5"));
+    assert!(h.query_by_label("About $0.69 per 100 screenshots").is_some());
+    h.get_by_value("claude-sonnet-5-5").click();
+    settle(&mut h);
+    click(&mut h, "claude-mystery-1");
+    assert!(h.query_by_label("Cost unknown for this model").is_some(), "no price in the built-in table");
+
+    click(&mut h, "Forget");
+    settle(&mut h);
+    assert!(h.state().env.sandboxed().secrets.is_empty());
+    assert!(h.query_by_label_contains("No key is saved").is_some() && !is_enabled(&h, "Test"));
+}
+
+#[test]
+fn a_new_key_clears_what_stopped_the_describing() {
+    let mut h = descriptions_on("settings-describe-status", |env| env.set_text_setting(options::DESCRIBE_STATUS, "The key wasn't accepted by Anthropic"));
+    assert!(h.query_by_label("Last problem describing new screenshots: The key wasn't accepted by Anthropic").is_some());
+    type_into(&mut h, "API key", "sk-ant-new");
+    click(&mut h, "Save");
+    settle(&mut h);
+    assert!(h.query_by_label_contains("Last problem").is_none());
+    assert_eq!(h.state().env.text_setting(options::DESCRIBE_STATUS).as_deref(), Some(""), "the describing carries on");
+}
+
+#[test]
+fn models_that_couldnt_be_listed_say_why_and_can_be_listed_again() {
+    let mut h = descriptions_on("settings-describe-models", |env| env.sandboxed().models = Some(Err("The key wasn't accepted by Anthropic".into())));
+    assert!(h.query_by_label("Couldn't list the models: The key wasn't accepted by Anthropic").is_some());
+    h.state().env.sandboxed().models = Some(Ok(vec![Model { id: "claude-haiku-5-5".into() }]));
+    click(&mut h, "Try again");
+    settle(&mut h);
+    assert!(h.query_by_label_contains("Couldn't list").is_none());
+    h.get_by_value("claude-opus-5-5").click();
+    settle(&mut h);
+    assert!(h.query_by_label("claude-haiku-5-5").is_some());
+    assert!(h.query_by_label("claude-opus-5-5").is_some(), "the one in use stays chosen even if it isn't listed");
+}
+
+#[test]
+fn test_describes_a_sample_and_says_how_it_went() {
+    let mut h = descriptions_on("settings-describe-test", |_| {});
+    click(&mut h, "Test");
+    settle(&mut h);
+    assert!(h.query_by_label("It works. claude-opus-5-5 said: A sample, described by claude-opus-5-5").is_some());
+    h.state().env.sandboxed().sample_description = Some(Err("The key wasn't accepted by Anthropic".into()));
+    click(&mut h, "Test");
+    settle(&mut h);
+    assert!(h.query_by_label("The key wasn't accepted by Anthropic").is_some() && h.query_by_label_contains("It works").is_none());
+}
+
+#[test]
+fn describing_the_library_says_what_it_comes_to_then_shows_progress_and_stops() {
+    let mut h = descriptions_on("settings-describe-library", |env| {
+        shots(env, &["Screenshot a.png", "Screenshot b.png", "Screenshot c.png", "Recording d.mp4", "Recording e.gif"], &["Screenshot c.png"]);
+    });
+    click(&mut h, "Describe the library…");
+    assert!(h.query_by_label("2 screenshots, about $0.03 — Describe them?").is_some(), "not the one described, not the recordings");
+    assert!(h.state().env.sandboxed().describing.is_none(), "nothing is sent until it's agreed to");
+    click(&mut h, "Cancel");
+    assert!(h.query_by_label("Describe the library…").is_some() && h.query_by_label_contains("Describe them?").is_none());
+
+    click(&mut h, "Describe the library…");
+    click(&mut h, "Describe");
+    {
+        let sandbox = h.state().env.sandboxed();
+        let job = sandbox.describing.as_ref().expect("started");
+        assert_eq!((job.provider, job.model.as_str(), job.files.len()), (Provider::Anthropic, "claude-opus-5-5", 2));
+    }
+    assert!(h.query_by_label("Described 0 of 2").is_some() && h.query_by_label("Stop").is_some());
+    let send = |h: &Harness<SettingsApp>, event| h.state().env.sandboxed().describing.as_ref().unwrap().events.send(event).unwrap();
+    let first = h.state().env.dir.join("Screenshot b.png");
+    send(&h, Event::Described(first));
+    settle(&mut h);
+    assert!(h.query_by_label("Described 1 of 2").is_some());
+
+    click(&mut h, "Stop");
+    assert!(h.state().env.sandboxed().describing.as_ref().unwrap().stop.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(!is_enabled(&h, "Stopping…"));
+    send(&h, Event::Finished(None));
+    settle(&mut h);
+    assert!(h.query_by_label("Stopped after 1 of 2").is_some());
+    assert!(is_enabled(&h, "Describe the library…"), "it can be run again to carry on");
+}
+
+#[test]
+fn describing_the_library_says_how_it_ended() {
+    let mut h = descriptions_on("settings-describe-library-end", |env| shots(env, &["Screenshot a.png", "Screenshot b.png", "Screenshot c.png"], &[]));
+    let run = |h: &mut Harness<SettingsApp>, events: Vec<Event>| {
+        click(h, "Describe the library…");
+        assert!(h.query_by_label("3 screenshots, about $0.04 — Describe them?").is_some());
+        click(h, "Describe");
+        for event in events {
+            h.state().env.sandboxed().describing.as_ref().unwrap().events.send(event).unwrap();
+        }
+        settle(h);
+    };
+    let file = |name: &str| std::path::PathBuf::from(name);
+    run(&mut h, vec![Event::Described(file("a")), Event::Skipped(file("b"), "Anthropic declined to describe it".into()), Event::Described(file("c")), Event::Finished(None)]);
+    assert!(h.query_by_label("Described 2 screenshots, 1 couldn't be").is_some());
+    run(&mut h, vec![Event::Described(file("a")), Event::Finished(Some("Your Anthropic account is out of credit".into()))]);
+    assert!(h.query_by_label("Stopped after 1 of 3: Your Anthropic account is out of credit").is_some());
+}
+
+#[test]
+fn nothing_to_describe_is_said_not_offered() {
+    let mut h = descriptions_on("settings-describe-nothing", |env| shots(env, &["Screenshot a.png", "Recording b.mp4"], &["Screenshot a.png"]));
+    click(&mut h, "Describe the library…");
+    assert!(h.query_by_label("Every screenshot has a description already").is_some());
+    assert!(h.query_by_label_contains("Describe them?").is_none());
+}
+
+#[test]
+fn the_library_estimate_is_unknown_for_a_model_without_a_price() {
+    let mut h = descriptions_on("settings-describe-unknown", |env| {
+        env.set_text_setting(options::DESCRIBE_MODEL, "claude-mystery-1");
+        shots(env, &["Screenshot a.png"], &[]);
+    });
+    click(&mut h, "Describe the library…");
+    assert!(h.query_by_label("1 screenshot, cost unknown for this model — Describe them?").is_some());
+}
+
+/// The card, as the Settings window shows it, on Linux.
+#[cfg(target_os = "linux")]
+mod description_snapshots {
+    use super::*;
+
+    #[test]
+    fn descriptions() {
+        let _gpu = super::super::tests::gpu();
+        let mut env = Env::sandbox(tests::sandbox_dir("snap-settings-descriptions"));
+        env.tray_app = true;
+        env.set_setting(options::DESCRIBE.name, 1);
+        env.sandboxed().secrets.insert("describe-anthropic".into(), "sk-ant-saved".into());
+        env.sandboxed().models = Some(Ok(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"].into_iter().map(|id| Model { id: id.into() }).collect()));
+        // 340 screenshots, 10 of them described.
+        for i in 0..340 {
+            let name = format!("Screenshot 2026-10-{:02} {:06}.png", i % 28 + 1, i);
+            std::fs::write(env.dir.join(&name), b"data").unwrap();
+            if i < 10 {
+                super::super::search::record_description(&env.dir.join(&name), "Done.", "claude-opus-5-5").unwrap();
+            }
+        }
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(800.0, 1250.0))
+            .with_pixels_per_point(1.0)
+            .wgpu()
+            .build_eframe(move |cc| SettingsApp::new(&cc.egui_ctx, env));
+        settle(&mut h);
+        open(&mut h, Section::Library);
+        settle(&mut h);
+        click(&mut h, "Test");
+        settle(&mut h);
+        click(&mut h, "Describe the library…");
+        h.remove_cursor();
+        settle(&mut h);
+        h.snapshot("settings_descriptions");
+    }
 }

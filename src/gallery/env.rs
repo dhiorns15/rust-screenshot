@@ -6,14 +6,17 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
-use std::sync::mpsc::{channel, Receiver};
 
 use image::RgbaImage;
 
+use super::describer::{self, Event};
 use super::platform;
 use super::system_info::Host;
 use super::words::Word;
+use crate::describe::{self, Described, Model, Provider, Service};
 use crate::push::Destination;
 use crate::shortcuts::Action;
 use crate::update::{Release, Version};
@@ -144,6 +147,22 @@ pub struct Sandbox {
     pub pushed: Vec<(String, PathBuf)>,
     /// What pushing a file gives (`None`: a link ending in its name).
     pub push_result: Option<Result<Option<String>, String>>,
+    /// The models the provider lists for describing screenshots (`None`: its default one).
+    pub models: Option<Result<Vec<Model>, String>>,
+    /// What describing the sample picture gives (`None`: a description saying who wrote it).
+    pub sample_description: Option<Result<Described, String>>,
+    /// The library being described by hand, until the test says how it went.
+    pub describing: Option<Describing>,
+}
+
+/// Describing the library, in the sandbox: what it was asked for, and how to say how it's going.
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct Describing {
+    pub provider: Provider,
+    pub model: String,
+    pub files: Vec<PathBuf>,
+    pub stop: Arc<AtomicBool>,
+    pub events: Sender<Event>,
 }
 
 enum Store {
@@ -519,7 +538,6 @@ impl Env {
     }
 
     /// The secret saved in the system's credential store for the destination `id`.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn secret(&self, id: &str) -> Result<Option<String>, String> {
         match &self.sandbox {
             Some(s) => Ok(s.borrow().secrets.get(id).cloned()),
@@ -608,6 +626,88 @@ impl Env {
                     }
                     let _ = tx.send(PushEvent::Done);
                     ctx.request_repaint();
+                });
+            }
+        }
+        rx
+    }
+
+    /// Whether a key for describing screenshots with `provider` is saved; asked off the UI thread
+    /// (see `save_secret`), and the answer arrives on the channel.
+    pub fn describe_key_saved(&self, ctx: &eframe::egui::Context, provider: Provider) -> Receiver<Result<bool, String>> {
+        let (tx, rx) = channel();
+        if self.sandbox.is_some() {
+            let _ = tx.send(self.secret(provider.secret_id()).map(|key| key.is_some()));
+        } else {
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::secrets::get(provider.secret_id()).map(|key| key.is_some_and(|key| !key.trim().is_empty())));
+                ctx.request_repaint();
+            });
+        }
+        rx
+    }
+
+    /// The models `provider` offers for describing screenshots, with the key saved for it.
+    pub fn describe_models(&self, ctx: &eframe::egui::Context, provider: Provider) -> Receiver<Result<Vec<Model>, String>> {
+        let (tx, rx) = channel();
+        match &self.sandbox {
+            Some(s) => {
+                let _ = tx.send(s.borrow().models.clone().unwrap_or_else(|| Ok(vec![Model { id: provider.default_model().to_owned() }])));
+            }
+            None => {
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(saved_service(provider).and_then(|service| describe::models(&service).map_err(|p| p.message().to_owned())));
+                    ctx.request_repaint();
+                });
+            }
+        }
+        rx
+    }
+
+    /// Describes a sample picture with `model`, to see that the key and model work.
+    pub fn describe_sample(&self, ctx: &eframe::egui::Context, provider: Provider, model: &str) -> Receiver<Result<Described, String>> {
+        let (tx, rx) = channel();
+        match &self.sandbox {
+            Some(s) => {
+                let sample = s.borrow().sample_description.clone();
+                let _ = tx.send(sample.unwrap_or_else(|| Ok(Described { text: format!("A sample, described by {model}"), model: model.to_owned() })));
+            }
+            None => {
+                let (ctx, model) = (ctx.clone(), model.to_owned());
+                std::thread::spawn(move || {
+                    let _ = tx.send(saved_service(provider).and_then(|service| describe::describe_sample(&service, &model).map_err(|p| p.message().to_owned())));
+                    ctx.request_repaint();
+                });
+            }
+        }
+        rx
+    }
+
+    /// Describes `files` one after another (see `describer::describe_all`) until they're done or
+    /// `stop` is set; how it goes arrives on the channel, and `ctx` repaints as it does. In the
+    /// sandbox it waits for the test to send the events (`Sandbox::describing`).
+    pub fn describe_library(&self, ctx: &eframe::egui::Context, provider: Provider, model: &str, files: Vec<PathBuf>, stop: Arc<AtomicBool>) -> Receiver<Event> {
+        let (tx, rx) = channel();
+        match &self.sandbox {
+            Some(s) => s.borrow_mut().describing = Some(Describing { provider, model: model.to_owned(), files, stop, events: tx }),
+            None => {
+                let (ctx, model) = (ctx.clone(), model.to_owned());
+                std::thread::spawn(move || {
+                    let service = match saved_service(provider) {
+                        Ok(service) => service,
+                        Err(e) => {
+                            let _ = tx.send(Event::Finished(Some(e)));
+                            ctx.request_repaint();
+                            return;
+                        }
+                    };
+                    let report = |event| {
+                        let _ = tx.send(event);
+                        ctx.request_repaint();
+                    };
+                    describer::describe_all(&files, &|file| describe::describe(&service, &model, file), &stop, &report);
                 });
             }
         }
@@ -743,6 +843,15 @@ fn saved_secret(destination: &Destination, given: Option<String>) -> Result<Opti
     match given {
         Some(secret) if destination.kind.secret_label().is_some() => Ok(Some(secret)),
         _ => crate::push::saved_secret(destination),
+    }
+}
+
+/// The provider, with the key saved for it in the credential store (which may wait for the keyring
+/// to be unlocked), or what to do about there not being one.
+fn saved_service(provider: Provider) -> Result<Service, String> {
+    match crate::secrets::get(provider.secret_id())?.filter(|key| !key.trim().is_empty()) {
+        Some(key) => Ok(Service::new(provider, &key)),
+        None => Err(format!("Save your {} key first", provider.name())),
     }
 }
 
