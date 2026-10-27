@@ -730,7 +730,9 @@ impl XServer {
 
 impl Drop for XServer {
     fn drop(&mut self) {
+        // Gone before the next test starts one, which may be on the same display.
         let _ = self.0.kill();
+        let _ = self.0.wait();
         std::env::remove_var("DISPLAY");
     }
 }

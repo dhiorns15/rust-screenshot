@@ -619,7 +619,7 @@ fn desktop_the_panel_stays_off_the_taskbar_and_on_top() {
     use x11rb::connection::Connection as _;
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, CreateWindowAux, WindowClass};
     use x11rb::wrapper::ConnectionExt as _;
-    let _server = super::desktop_tests::XServer::start(73);
+    let _server = super::desktop_tests::XServer::start(74);
     let (conn, screen) = x11rb::connect(None).unwrap();
     let root = conn.setup().roots[screen].root;
     // Made but not shown yet, as eframe has it when the panel starts.
