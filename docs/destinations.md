@@ -191,6 +191,9 @@ RSnip.
      folder; add more places for more folders.
   2. Choose *Sign in to Dropbox*. Dropbox opens in your browser: allow the app, and it shows a
      code. Paste the code into *Code from Dropbox* and choose *Finish signing in*, then *Save*.
+     If no browser opens (over remote desktop, or with no default browser set), choose *Copy
+     link* beside the *Sign-in link* and paste it into a browser yourself; RSnip says so when it
+     knows the browser couldn't be opened.
   3. *Share link* (on by default) makes a Dropbox link to each file pushed, and copies it.
 - **Signs in with:** OAuth with PKCE, as desktop apps do, so there's no app secret to keep. RSnip
   keeps only the refresh token Dropbox gives, in the credential store with the other secrets; it

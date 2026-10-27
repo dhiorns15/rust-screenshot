@@ -134,6 +134,8 @@ pub struct Sandbox {
     pub copied_files: Vec<PathBuf>,
     /// Files, folders and links opened in other apps.
     pub opened: Vec<PathBuf>,
+    /// Why opening a link in the browser failed (`None`: it opened).
+    pub open_error: Option<String>,
     /// Files shown in their folder in the file manager.
     pub shown_in_folder: Vec<PathBuf>,
     /// Where the desktop's screenshot tool saves (Linux), if anywhere.
@@ -541,6 +543,26 @@ impl Env {
             Some(s) => s.borrow_mut().opened.push(path.to_owned()),
             None => platform::open(path),
         }
+    }
+
+    /// Opens a link in the browser as `open` does; whether it could arrives on the channel, and
+    /// `ctx` repaints when it does.
+    pub fn open_link(&self, ctx: &eframe::egui::Context, path: &Path) -> Receiver<Result<(), String>> {
+        let (tx, rx) = channel();
+        match &self.sandbox {
+            Some(s) => {
+                s.borrow_mut().opened.push(path.to_owned());
+                let _ = tx.send(s.borrow().open_error.clone().map_or(Ok(()), Err));
+            }
+            None => {
+                let ctx = ctx.clone();
+                platform::open_then(path, move |opened| {
+                    let _ = tx.send(opened);
+                    ctx.request_repaint();
+                });
+            }
+        }
+        rx
     }
 
     /// Opens the file manager on `path`'s folder, with it selected.

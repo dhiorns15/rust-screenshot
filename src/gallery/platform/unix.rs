@@ -591,6 +591,24 @@ pub fn open(path: &Path) {
     reap(Command::new("xdg-open").arg(path).spawn());
 }
 
+/// Opens `path` as `open` does, then tells `then` (on another thread) whether xdg-open managed to:
+/// it's missing, or fails when there's no browser, over xrdp say.
+pub fn open_then(path: &Path, then: impl FnOnce(Result<(), String>) + Send + 'static) {
+    match Command::new("xdg-open").arg(path).spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                then(match child.wait() {
+                    Ok(status) if status.success() => Ok(()),
+                    Ok(status) => Err(format!("xdg-open failed, {status}")),
+                    Err(e) => Err(format!("xdg-open: {e}")),
+                })
+            });
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => then(Err("xdg-open isn't installed".into())),
+        Err(e) => then(Err(format!("couldn't run xdg-open: {e}"))),
+    }
+}
+
 /// Opens the file manager on `path`'s folder with it selected, where the file manager can (GNOME's
 /// Files, Dolphin, Nemo and Caja answer `org.freedesktop.FileManager1`), else just the folder.
 pub fn show_in_folder(path: &Path) {

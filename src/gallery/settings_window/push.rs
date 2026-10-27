@@ -75,6 +75,14 @@ struct Form {
 struct SignIn {
     /// Started: the browser was opened, and this is what the code is traded in with.
     pkce: Option<Pkce>,
+    /// The page that was opened, shown to copy where no browser opens (over xrdp, say).
+    url: String,
+    /// Whether the browser opened, until it's known.
+    opening: Option<Answer<()>>,
+    /// Why the browser didn't open, when it's known it didn't.
+    unopened: Option<String>,
+    /// The link was copied.
+    copied: bool,
     /// The app key it was started with.
     app_key: String,
     /// The code as pasted.
@@ -91,6 +99,7 @@ struct SignIn {
 struct DropboxClicks {
     sign_in: bool,
     finish: bool,
+    copy: bool,
 }
 
 impl Form {
@@ -399,6 +408,10 @@ impl SettingsApp {
             }
         }
         if let Some(form) = self.push.form.as_mut() {
+            if let Some(Ok(opened)) = form.sign_in.opening.as_ref().map(|rx| rx.try_recv()) {
+                form.sign_in.opening = None;
+                form.sign_in.unopened = opened.err();
+            }
             if let Some(Ok(traded)) = form.sign_in.exchanging.as_ref().map(|rx| rx.try_recv()) {
                 form.sign_in.exchanging = None;
                 match traded {
@@ -560,8 +573,9 @@ impl SettingsApp {
         if clicks.sign_in {
             match Pkce::new() {
                 Ok(pkce) => {
-                    self.env.open(std::path::Path::new(&pkce.authorize_url(app_key)));
-                    form.sign_in = SignIn { pkce: Some(pkce), app_key: app_key.trim().to_owned(), saved_for: form.sign_in.saved_for.take(), ..SignIn::default() };
+                    let url = pkce.authorize_url(app_key);
+                    let opening = Some(self.env.open_link(ctx, std::path::Path::new(&url)));
+                    form.sign_in = SignIn { pkce: Some(pkce), url, opening, app_key: app_key.trim().to_owned(), saved_for: form.sign_in.saved_for.take(), ..SignIn::default() };
                 }
                 Err(e) => form.error = Some(e),
             }
@@ -636,6 +650,12 @@ impl SettingsApp {
             if clicks.sign_in || clicks.finish {
                 self.dropbox_click(ui.ctx(), &mut form, &clicks);
             }
+            if clicks.copy {
+                match self.env.copy_text(&form.sign_in.url) {
+                    Ok(()) => form.sign_in.copied = true,
+                    Err(e) => form.error = Some(format!("Couldn't copy it: {e}")),
+                }
+            }
             if let Some(e) = &form.error {
                 ui.label(RichText::new(e).color(error_color()));
             }
@@ -699,6 +719,22 @@ fn dropbox_rows(ui: &mut Ui, form: &mut Form) -> DropboxClicks {
     ui.end_row();
 
     if sign_in.pkce.is_some() {
+        // The page to allow RSnip, for when no browser opened: xdg-open can't always find one.
+        let text = ui.label("Sign-in link");
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut sign_in.url.as_str()).desired_width(220.0)).labelled_by(text.id);
+                clicks.copy = ui.button("Copy link").clicked();
+            });
+            let note = match (&sign_in.unopened, sign_in.copied) {
+                (_, true) => RichText::new("Copied: paste it into a browser's address bar").color(muted),
+                (Some(e), false) => RichText::new(format!("The browser didn't open ({e}): copy this link into one")).color(error_color()),
+                (None, false) => RichText::new("If no browser opened, copy this link into one").color(muted),
+            };
+            ui.label(note.small());
+        });
+        ui.end_row();
+
         let text = ui.label("Code from Dropbox");
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut sign_in.code).desired_width(220.0)).labelled_by(text.id);

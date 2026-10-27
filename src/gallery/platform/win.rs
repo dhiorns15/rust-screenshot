@@ -237,6 +237,12 @@ pub fn open(path: &Path) {
     crate::shell_open(path);
 }
 
+/// Opens `path` as `open` does; Windows always has something to open links with.
+pub fn open_then(path: &Path, then: impl FnOnce(Result<(), String>) + Send + 'static) {
+    open(path);
+    then(Ok(()));
+}
+
 pub fn show_in_folder(path: &Path) {
     let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.display())).spawn();
 }

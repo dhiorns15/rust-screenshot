@@ -840,12 +840,20 @@ fn dropbox_signs_in_in_the_browser_and_keeps_the_token_as_the_secret() {
     }
     let challenge = query.iter().find_map(|q| q.strip_prefix("code_challenge=")).unwrap();
     assert_eq!(challenge.len(), 43, "a SHA-256 hash in base64url");
+    // The link shows too, to copy where no browser opened.
+    let shown = h.get_by_role_and_label(eframe::egui::accesskit::Role::TextInput, "Sign-in link").accesskit_node().value();
+    assert_eq!(shown.as_deref(), Some(opened.as_str()));
+    assert!(h.query_by_label("If no browser opened, copy this link into one").is_some());
+    click(&mut h, "Copy link");
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some(opened.as_str()));
+    assert!(h.query_by_label("Copied: paste it into a browser's address bar").is_some());
     assert!(!is_enabled(&h, "Finish signing in"), "needs the code");
     assert!(!is_enabled(&h, "Save"));
 
     type_into(&mut h, "Code from Dropbox", " the-code ");
     click(&mut h, "Finish signing in");
     assert!(h.query_by_label_contains("Signed in. Save to keep it").is_some());
+    assert!(h.query_by_label("Sign-in link").is_none(), "gone once signed in");
     assert!(is_enabled(&h, "Save"));
     assert!(h.state().env.sandboxed().secrets.is_empty(), "kept only once saved");
     click(&mut h, "Save");
@@ -857,6 +865,21 @@ fn dropbox_signs_in_in_the_browser_and_keeps_the_token_as_the_secret() {
     let json = h.state().env.text_setting(options::DESTINATIONS).unwrap();
     assert!(!json.contains("refresh-for"), "{json}");
     assert!(h.query_by_label_contains("Dropbox · /Screenshots2").is_some());
+}
+
+#[test]
+fn dropbox_says_when_no_browser_opened_and_the_link_can_still_be_copied() {
+    let mut h = settings("settings-push-dropbox-no-browser", |env| env.sandboxed().open_error = Some("xdg-open isn't installed".into()));
+    start_dropbox(&mut h);
+    type_into(&mut h, "App key", "abc123");
+    click(&mut h, "Sign in to Dropbox");
+    assert!(h.query_by_label("The browser didn't open (xdg-open isn't installed): copy this link into one").is_some());
+    click(&mut h, "Copy link");
+    let copied = h.state().env.sandboxed().copied.clone().expect("copied");
+    assert!(copied.starts_with("https://www.dropbox.com/oauth2/authorize?client_id=abc123&"), "{copied}");
+    type_into(&mut h, "Code from Dropbox", "the-code");
+    click(&mut h, "Finish signing in");
+    assert!(h.query_by_label_contains("Signed in. Save to keep it").is_some());
 }
 
 #[test]
