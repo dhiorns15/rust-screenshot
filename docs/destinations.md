@@ -7,7 +7,7 @@ edits to it are saved; what was there before isn't) or **By hand**: *Export → 
 editor and player, or *Push to* in the library's right-click menu, for everything selected. When
 the place gives a link, it's copied, and the item's right-click menu has *Copy link* for each place
 it went; an edited one pushed again to SFTP, WebDAV, S3, an SMB share or FTPS replaces the file
-there, while Discord, Slack, Immich and PhotoPrism get a new copy, and *Copy link* gives the newest. A push that fails by itself is
+there, while Dropbox, Discord, Slack, Immich and PhotoPrism get a new copy, and *Copy link* gives the newest. A push that fails by itself is
 tried again after a minute, five minutes and half an hour, then reported with a notification.
 *Recent pushes*, under the places, lists the last ten pushes, by hand and automatic, with what
 went wrong when one didn't, and a *Retry* on the latest failure of a file to a place.
@@ -21,6 +21,7 @@ went wrong when one didn't, and a *Retry* on the latest failure of a file to a p
 | S3-compatible | Endpoint, bucket, an access key ID and secret (AWS, R2, B2, Wasabi, MinIO) | With a public address for the bucket |
 | SMB share | The share (`\\nas\shots`), and a user and password or none; Samba's `smbclient` on Linux | With a public address for the folder |
 | FTPS | The server, user, password and folder; FTP over TLS only, and a NAS's self-signed certificate can be trusted by its fingerprint | With a public address for the folder |
+| Dropbox | A free Dropbox app of your own (its App key), and signing in to it from RSnip | A Dropbox link to the file |
 | Discord | A channel's webhook address | The attachment |
 | Slack | A bot token from a Slack app of your own (`files:write`) and the channel's ID | The file in Slack |
 | Immich | The server's address and an API key (`asset.upload`, `user.read`) | The photo in Immich |
@@ -33,7 +34,7 @@ without a keyring, places that need one can't be saved.
 Give RSnip its own key, token or app password where the service has them, with no more than it
 needs, so it can be taken back without changing anything else.
 
-**Coming later:** Dropbox, Google Drive, OneDrive, Imgur (with albums) and Box (each needs RSnip
+**Coming later:** Google Drive, OneDrive, Imgur (with albums) and Box (each needs RSnip
 registered with them), Microsoft Teams, Gyazo, Streamable and Synology Photos. Mattermost, Imgbb
 and Catbox if someone asks: [suggest a place](https://github.com/dhiorns15/rust-screenshot/issues/new?template=push_destination.yml),
 though many hosts with an upload API already work as a custom uploader.
@@ -53,6 +54,7 @@ the connection*: check that it's running and reachable from this computer, and t
 - [S3-compatible](#s3-compatible)
 - [SMB share](#smb-share)
 - [FTPS](#ftps)
+- [Dropbox](#dropbox)
 - [Discord](#discord)
 - [Slack](#slack)
 - [Immich](#immich)
@@ -162,6 +164,50 @@ A folder on an FTP server, over TLS (a NAS, most web hosts).
   since you trusted it*: if you renewed it, trust the new one; if not, something may be between you
   and the server.
 - **Link:** with *Link to share* set, that plus the file's name.
+
+## Dropbox
+
+A folder in your Dropbox, through a free Dropbox app of your own (RSnip has no key of its own to
+register, so nothing is shared with anyone else). You make the app once, then sign in to it from
+RSnip.
+
+- **Make the app:** at [dropbox.com/developers/apps](https://www.dropbox.com/developers/apps):
+  1. *Create app*, then *Scoped access*.
+  2. Choose the access: *App folder* (recommended: RSnip can only reach the folder Dropbox makes
+     for it, `Apps/<app name>` in your Dropbox) or *Full Dropbox*.
+  3. Name the app (any unused name, e.g. `RSnip-<your name>`) and *Create app*.
+  4. On the *Permissions* tab, turn on `files.content.write`, `sharing.write` and
+     `account_info.read`, then choose *Submit*. (Changing permissions later means signing in
+     again.)
+  5. On the *Settings* tab, copy the **App key**. The app stays in *Development* status, which is
+     fine for one account (yours); nothing needs to be applied for.
+- **Set up in RSnip:** *Settings → Push to → Add… → Dropbox*:
+  1. Paste the **App key**, and give the **Folder** (`/Screenshots`; in the app's folder with *App
+     folder* access, so the files land in `Apps/<app name>/Screenshots`). Each Dropbox place is one
+     folder; add more places for more folders.
+  2. Choose *Sign in to Dropbox*. Dropbox opens in your browser: allow the app, and it shows a
+     code. Paste the code into *Code from Dropbox* and choose *Finish signing in*, then *Save*.
+  3. *Share link* (on by default) makes a Dropbox link to each file pushed, and copies it.
+- **Signs in with:** OAuth with PKCE, as desktop apps do, so there's no app secret to keep. RSnip
+  keeps only the refresh token Dropbox gives, in the credential store with the other secrets; it
+  trades it for a short-lived access token at each push, and *Remove* forgets it. To take access
+  back, remove the app under *Settings → Connected apps* on dropbox.com.
+- **Needs:** the three permissions above (`files.content.write` to upload, `sharing.write` for the
+  link, `account_info.read` for *Test*); with *Share link* off, `sharing.write` isn't used.
+- **Test:** signs in and asks whose Dropbox it is (*Connected as …*), changing nothing.
+- **Files:** one by that name already in the folder isn't replaced: Dropbox adds a number to the
+  new one (`Screenshot (1).png`), and the link is to that. Over 150 MB (recordings) goes up in 8 MB
+  pieces.
+- **Errors:** *Dropbox signed RSnip out: sign in again in Settings → Push to*: the app was removed
+  from your account, or its permissions changed; choose *Edit → Sign in to Dropbox*. *The Dropbox
+  app needs the … permission*: turn it on under *Permissions*, choose *Submit*, and sign in again.
+  *Your Dropbox is full*. *Dropbox doesn't accept that folder or file name*: check the folder.
+  *Dropbox says RSnip is sending too many requests*: wait a little. *Dropbox didn't accept that
+  code*: a code works once and expires, so choose *Sign in to Dropbox* again for a new one.
+  *Dropbox doesn't know this app key*: check it on the app's *Settings* tab. *The Dropbox app can't
+  make links* (from Test connection): turn on `sharing.write`, or turn off Share link; a push that
+  can't make its link still puts the file up, without a link.
+- **Link:** a Dropbox link to the file (it opens a preview page; add `dl=1` to the end to download).
 
 ## Discord
 

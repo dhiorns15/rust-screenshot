@@ -138,6 +138,8 @@ pub struct Sandbox {
     pub test_result: Option<Result<String, String>>,
     /// The fingerprint an FTPS server's certificate has (`None`: a made-up one).
     pub certificate: Option<Result<String, String>>,
+    /// The refresh token Dropbox gives for a code (`None`: one made from the code).
+    pub dropbox_token: Option<Result<String, String>>,
     /// Files pushed, with the destination's name.
     pub pushed: Vec<(String, PathBuf)>,
     /// What pushing a file gives (`None`: a link ending in its name).
@@ -624,6 +626,25 @@ impl Env {
                 let (ctx, host) = (ctx.clone(), host.to_owned());
                 std::thread::spawn(move || {
                     let _ = tx.send(crate::push::ftps_certificate(&host, port));
+                    ctx.request_repaint();
+                });
+            }
+        }
+        rx
+    }
+
+    /// Trades the code Dropbox showed at the end of signing in for the refresh token (see
+    /// `push::Pkce`); the answer arrives on the channel, and `ctx` repaints when it does.
+    pub fn finish_dropbox_sign_in(&self, ctx: &eframe::egui::Context, pkce: &crate::push::Pkce, app_key: &str, code: &str) -> Receiver<Result<String, String>> {
+        let (tx, rx) = channel();
+        match &self.sandbox {
+            Some(s) => {
+                let _ = tx.send(s.borrow().dropbox_token.clone().unwrap_or_else(|| Ok(format!("refresh-for-{}", code.trim()))));
+            }
+            None => {
+                let (ctx, pkce, app_key, code) = (ctx.clone(), pkce.clone(), app_key.to_owned(), code.to_owned());
+                std::thread::spawn(move || {
+                    let _ = tx.send(pkce.exchange(&app_key, &code));
                     ctx.request_repaint();
                 });
             }

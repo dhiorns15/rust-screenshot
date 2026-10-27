@@ -6,9 +6,11 @@
 
 mod custom;
 mod discord;
+mod dropbox;
 mod ftps;
 pub mod history;
 mod immich;
+mod oauth;
 mod photoprism;
 mod s3;
 mod sftp;
@@ -24,6 +26,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::gallery::env::Env;
 use crate::options;
+
+pub use oauth::Pkce;
 
 /// One place to push to.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -115,6 +119,17 @@ pub enum Kind {
         #[serde(default)]
         public_url: String,
     },
+    /// A folder in the user's Dropbox, through an app of their own. Secret: the refresh token that
+    /// signing in gave (see `oauth`).
+    Dropbox {
+        /// The app's key, from its page at dropbox.com/developers.
+        app_key: String,
+        /// From the top of what the app may reach: its own folder, or the whole Dropbox.
+        folder: String,
+        /// Make a link to what's pushed.
+        #[serde(default = "default_true")]
+        share_link: bool,
+    },
     /// Any HTTP upload API, described as ShareX's custom uploaders are (see `custom`). Secret, if it
     /// needs one: a token, put wherever `{secret}` is written.
     Custom {
@@ -144,9 +159,13 @@ fn default_ftps_port() -> u16 {
     21
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Kind {
     /// An empty one of each kind, in the order they're offered.
-    pub const ALL: [fn() -> Kind; 10] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::smb, Kind::ftps, Kind::discord, Kind::slack, Kind::immich, Kind::photoprism, Kind::custom];
+    pub const ALL: [fn() -> Kind; 11] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::smb, Kind::ftps, Kind::dropbox, Kind::discord, Kind::slack, Kind::immich, Kind::photoprism, Kind::custom];
 
     pub fn sftp() -> Kind {
         Kind::Sftp { host: String::new(), port: default_port(), user: String::new(), folder: String::new(), public_url: String::new() }
@@ -187,6 +206,10 @@ impl Kind {
         Kind::Ftps { host: String::new(), port: default_ftps_port(), user: String::new(), folder: String::new(), public_url: String::new(), trusted: String::new() }
     }
 
+    pub fn dropbox() -> Kind {
+        Kind::Dropbox { app_key: String::new(), folder: "/Screenshots".into(), share_link: true }
+    }
+
     pub fn smb() -> Kind {
         Kind::Smb { share: String::new(), folder: String::new(), user: String::new(), public_url: String::new() }
     }
@@ -213,6 +236,7 @@ impl Kind {
             Kind::PhotoPrism { .. } => "PhotoPrism",
             Kind::Ftps { .. } => "FTPS",
             Kind::Smb { .. } => "SMB share",
+            Kind::Dropbox { .. } => "Dropbox",
             Kind::Custom { .. } => "Custom uploader",
         }
     }
@@ -229,6 +253,7 @@ impl Kind {
             Kind::PhotoPrism { .. } => Some("App password"),
             Kind::Ftps { .. } => Some("Password"),
             Kind::Smb { .. } => Some("Password"),
+            Kind::Dropbox { .. } => Some("Sign-in"),
             Kind::Custom { .. } => Some("Token"),
         }
     }
@@ -272,6 +297,7 @@ impl Kind {
             Kind::Slack { channel } => vec![channel.clone()],
             Kind::Immich { server } => address(server).into(),
             Kind::PhotoPrism { server, album } => address(server).into_iter().chain([album.clone()]).collect(),
+            Kind::Dropbox { app_key, folder, .. } => vec![app_key.clone(), folder.clone()],
             Kind::Custom { url, .. } => address(url).into(),
         };
         words.into_iter().map(|w| w.trim().to_owned()).filter(|w| !w.is_empty()).collect()
@@ -297,6 +323,10 @@ impl Kind {
             Kind::Smb { share, folder, .. } => {
                 let folder = folder.trim_matches(['/', '\\']);
                 if folder.is_empty() { share.clone() } else { format!("{share}, {folder}") }
+            }
+            Kind::Dropbox { folder, .. } => {
+                let folder = folder.trim();
+                if folder.is_empty() { "/".to_owned() } else { folder.to_owned() }
             }
             // Without the query, which may carry a key.
             Kind::Custom { url, .. } => url.split('?').next().unwrap_or_default().to_owned(),
@@ -354,6 +384,7 @@ impl Destination {
             Kind::Smb { share, public_url, .. } => {
                 smb::parse(share, "").is_none().then(|| smb::BAD_SHARE.to_owned()).or_else(|| public(public_url))
             }
+            Kind::Dropbox { app_key, .. } => required(app_key, "the app key"),
             Kind::Custom { url, .. } => address(url, "the upload address").or_else(|| custom::problems(&uploader(&self.kind, ""))),
         }
     }
@@ -406,6 +437,7 @@ pub fn test(destination: &Destination, secret: Option<&str>) -> Result<String, S
         Kind::PhotoPrism { server, .. } => photoprism::test(server, secret),
         Kind::Ftps { host, port, user, folder, trusted, .. } => ftps::test(&ftps::Server { host, port: *port, user, password: secret, folder, trusted }),
         Kind::Smb { share, folder, user, .. } => smb::test(&smb::Share { share, folder, user, password: secret }),
+        Kind::Dropbox { app_key, share_link, .. } => dropbox::test(app_key, secret, *share_link),
         Kind::Custom { .. } => custom::test(&uploader(&destination.kind, secret)),
     }
 }
@@ -441,6 +473,7 @@ pub fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Res
             smb::put(&smb::Share { share, folder, user, password: secret }, &name, file)?;
             Ok(link(public_url, &name))
         }
+        Kind::Dropbox { app_key, folder, share_link } => dropbox::upload(app_key, secret, folder, *share_link, file),
         Kind::Custom { .. } => custom::upload(&uploader(&destination.kind, secret), file),
     }
 }
@@ -469,6 +502,7 @@ pub fn saved_secret(destination: &Destination) -> Result<Option<String>, String>
     match crate::secrets::get(&destination.id)? {
         Some(secret) => Ok(Some(secret)),
         None if destination.kind.secret_optional() => Ok(None),
+        None if matches!(destination.kind, Kind::Dropbox { .. }) => Err("Not signed in to Dropbox; choose Edit to sign in".into()),
         None => Err(format!("No {} is saved; choose Edit to enter it", label.to_lowercase())),
     }
 }
@@ -639,6 +673,7 @@ mod tests {
             Kind::PhotoPrism { .. } => Kind::PhotoPrism { server: "https://pp.example.com".into(), album: "Screenshots".into() },
             Kind::Ftps { port, .. } => Kind::Ftps { host: "nas.local".into(), port, user: "me".into(), folder: "shots".into(), public_url: String::new(), trusted: String::new() },
             Kind::Smb { .. } => Kind::Smb { share: "\\\\nas\\shots".into(), folder: "rsnip".into(), user: String::new(), public_url: String::new() },
+            Kind::Dropbox { .. } => Kind::Dropbox { app_key: "abc123".into(), folder: "/Screenshots".into(), share_link: false },
             Kind::Custom { .. } => Kind::Custom {
                 url: "https://i.example.com/api/upload".into(),
                 method: "POST".into(),
@@ -678,6 +713,18 @@ mod tests {
         let json = r#"{"id":"a","name":"x","kind":"Sftp","host":"h","user":"u","folder":"","auto":false,"auto_since":null}"#;
         let d: Destination = serde_json::from_str(json).unwrap();
         assert!(matches!(d.kind, Kind::Sftp { port: 22, .. }));
+    }
+
+    #[test]
+    fn dropbox_makes_links_unless_told_not_to_and_needs_its_app_key() {
+        let json = r#"{"id":"a","name":"x","kind":"Dropbox","app_key":"k","folder":"/S","auto":false,"auto_since":null}"#;
+        let d: Destination = serde_json::from_str(json).unwrap();
+        assert!(matches!(d.kind, Kind::Dropbox { share_link: true, .. }), "an older list, or one written by hand, still gets links");
+        assert_eq!((d.kind.target().as_str(), d.problems()), ("/S", None));
+        let new = Destination::new(Kind::dropbox());
+        assert_eq!((new.kind.target().as_str(), new.problems().as_deref()), ("/Screenshots", Some("Enter the app key")));
+        assert_eq!(Destination::new(Kind::Dropbox { app_key: "k".into(), folder: " ".into(), share_link: true }).kind.target(), "/");
+        assert_eq!(d.kind.private_words(), ["k", "/S"]);
     }
 
     /// Against real servers, as ci/test-destinations.sh starts them: rclone's S3 and WebDAV at
@@ -813,6 +860,7 @@ mod tests {
                 ("S3-compatible", Some("Secret access key")),
                 ("SMB share", Some("Password")),
                 ("FTPS", Some("Password")),
+                ("Dropbox", Some("Sign-in")),
                 ("Discord", Some("Webhook URL")),
                 ("Slack", Some("Bot token")),
                 ("Immich", Some("API key")),

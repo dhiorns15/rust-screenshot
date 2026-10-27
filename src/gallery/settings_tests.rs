@@ -591,7 +591,7 @@ fn push_to_starts_empty() {
     open(&mut h, Section::Destinations);
     assert!(h.query_by_label("Nowhere yet. Add a place to push to.").is_some());
     click(&mut h, "Add…");
-    for kind in ["SFTP", "WebDAV", "S3-compatible", "SMB share", "FTPS", "Discord", "Slack", "Immich", "PhotoPrism", "Custom uploader", "Custom uploader from a ShareX file (.sxcu)…"] {
+    for kind in ["SFTP", "WebDAV", "S3-compatible", "SMB share", "FTPS", "Dropbox", "Discord", "Slack", "Immich", "PhotoPrism", "Custom uploader", "Custom uploader from a ShareX file (.sxcu)…"] {
         assert!(h.query_by_label(kind).is_some(), "{kind}");
     }
 }
@@ -757,6 +757,103 @@ fn an_ftps_servers_own_certificate_can_be_trusted() {
     click(&mut h, "Edit");
     click(&mut h, "Trust the server's certificate…");
     assert!(h.query_by_label("Couldn't get the server's certificate: Couldn't find that server: check its name").is_some());
+}
+
+/// Starts adding a Dropbox place with the app key "abc123".
+fn start_dropbox(h: &mut Harness<SettingsApp>) {
+    open(h, Section::Destinations);
+    click(h, "Add…");
+    click(h, "Dropbox");
+}
+
+#[test]
+fn dropbox_signs_in_in_the_browser_and_keeps_the_token_as_the_secret() {
+    let mut h = settings("settings-push-dropbox", |_| {});
+    start_dropbox(&mut h);
+    assert!(h.query_by_label("Add Dropbox").is_some());
+    assert!(h.query_by_label("Password").is_none() && h.query_by_label("Sign-in").is_none(), "no box for the secret");
+    assert!(is_on(&h, "Share link"), "links by default");
+    assert!(!is_enabled(&h, "Sign in to Dropbox"), "needs the app key first");
+    assert!(!is_enabled(&h, "Save"));
+    type_into(&mut h, "App key", "abc123");
+    type_into(&mut h, "Folder", "2");
+    assert!(h.query_by_label_contains("Sign in to Dropbox first").is_some(), "why it can't be saved");
+    assert!(h.query_by_label("Code from Dropbox").is_none(), "nothing to paste yet");
+
+    click(&mut h, "Sign in to Dropbox");
+    let opened = h.state().env.sandboxed().opened.last().map(|p| p.to_string_lossy().into_owned()).unwrap();
+    let query = opened.strip_prefix("https://www.dropbox.com/oauth2/authorize?").unwrap_or_else(|| panic!("{opened}"));
+    let query: Vec<&str> = query.split('&').collect();
+    for part in ["client_id=abc123", "response_type=code", "code_challenge_method=S256", "token_access_type=offline"] {
+        assert!(query.contains(&part), "{part} in {opened}");
+    }
+    let challenge = query.iter().find_map(|q| q.strip_prefix("code_challenge=")).unwrap();
+    assert_eq!(challenge.len(), 43, "a SHA-256 hash in base64url");
+    assert!(!is_enabled(&h, "Finish signing in"), "needs the code");
+    assert!(!is_enabled(&h, "Save"));
+
+    type_into(&mut h, "Code from Dropbox", " the-code ");
+    click(&mut h, "Finish signing in");
+    assert!(h.query_by_label_contains("Signed in. Save to keep it").is_some());
+    assert!(is_enabled(&h, "Save"));
+    assert!(h.state().env.sandboxed().secrets.is_empty(), "kept only once saved");
+    click(&mut h, "Save");
+
+    let saved = destinations(&h);
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].kind, crate::push::Kind::Dropbox { app_key: "abc123".into(), folder: "/Screenshots2".into(), share_link: true });
+    assert_eq!(h.state().env.sandboxed().secrets.get(&saved[0].id).map(String::as_str), Some("refresh-for-the-code"));
+    let json = h.state().env.text_setting(options::DESTINATIONS).unwrap();
+    assert!(!json.contains("refresh-for"), "{json}");
+    assert!(h.query_by_label_contains("Dropbox · /Screenshots2").is_some());
+}
+
+#[test]
+fn dropbox_says_when_the_code_is_refused_and_lets_it_be_tried_again() {
+    let mut h = settings("settings-push-dropbox-refused", |env| env.sandboxed().dropbox_token = Some(Err("Dropbox didn't accept that code".into())));
+    start_dropbox(&mut h);
+    type_into(&mut h, "App key", "abc123");
+    click(&mut h, "Sign in to Dropbox");
+    type_into(&mut h, "Code from Dropbox", "stale");
+    click(&mut h, "Finish signing in");
+    assert!(h.query_by_label("Dropbox didn't accept that code").is_some());
+    assert!(!is_enabled(&h, "Save"));
+    h.state().env.sandboxed().dropbox_token = None;
+    click(&mut h, "Finish signing in");
+    assert!(is_enabled(&h, "Save"));
+    assert!(h.query_by_label("Dropbox didn't accept that code").is_none());
+}
+
+#[test]
+fn editing_dropbox_keeps_the_sign_in_unless_the_app_changes() {
+    let mut h = settings("settings-push-dropbox-edit", |_| {});
+    start_dropbox(&mut h);
+    type_into(&mut h, "App key", "abc123");
+    click(&mut h, "Sign in to Dropbox");
+    type_into(&mut h, "Code from Dropbox", "c1");
+    click(&mut h, "Finish signing in");
+    click(&mut h, "Save");
+    let id = destinations(&h)[0].id.clone();
+
+    click(&mut h, "Edit");
+    assert!(h.query_by_label_contains("Signed in. Sign in again only to use another account").is_some());
+    assert!(is_enabled(&h, "Save"), "no need to sign in again");
+    toggle(&mut h, "Share link");
+    click(&mut h, "Save");
+    assert!(matches!(destinations(&h)[0].kind, crate::push::Kind::Dropbox { share_link: false, .. }));
+    assert_eq!(h.state().env.sandboxed().secrets.get(&id).map(String::as_str), Some("refresh-for-c1"), "kept");
+
+    // Another app's sign-in isn't this one's.
+    click(&mut h, "Edit");
+    type_into(&mut h, "App key", "2");
+    assert!(!is_enabled(&h, "Save"));
+    assert!(h.query_by_label_contains("The app key has changed: sign in to Dropbox again").is_some());
+    click(&mut h, "Sign in to Dropbox");
+    type_into(&mut h, "Code from Dropbox", "c2");
+    click(&mut h, "Finish signing in");
+    click(&mut h, "Save");
+    assert!(matches!(&destinations(&h)[0].kind, crate::push::Kind::Dropbox { app_key, .. } if app_key == "abc1232"));
+    assert_eq!(h.state().env.sandboxed().secrets.get(&id).map(String::as_str), Some("refresh-for-c2"), "replaced");
 }
 
 #[test]
@@ -969,6 +1066,17 @@ mod snapshots {
         type_into(&mut h, "Server address", "https://photos.example.com");
         type_into(&mut h, "API key", "secret-key");
         snapshot(&mut h, Section::Destinations, "settings_push_form");
+    }
+
+    /// Part way through signing in: the browser's open, and the code is waiting to be pasted.
+    #[test]
+    fn push_to_dropbox_form() {
+        let _gpu = super::super::tests::gpu();
+        let mut h = rendered("snap-settings-push-dropbox", |_| {});
+        start_dropbox(&mut h);
+        type_into(&mut h, "App key", "abc123xyz789");
+        click(&mut h, "Sign in to Dropbox");
+        snapshot(&mut h, Section::Destinations, "settings_push_dropbox");
     }
 
     #[test]

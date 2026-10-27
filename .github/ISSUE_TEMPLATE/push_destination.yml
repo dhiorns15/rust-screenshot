@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Already planned: Dropbox, Google Drive, OneDrive, Imgur, Box, Teams, Gyazo, Streamable and
+        Already planned: Google Drive, OneDrive, Imgur, Box, Teams, Gyazo, Streamable and
         Synology Photos (see "Coming later" in docs/destinations.md). A thumbs-up on an existing issue for one
         of these helps us choose what's next. Many hosts with an upload API already work as a custom
         uploader (Settings → Push to → Add… → Custom uploader), or from their ShareX `.sxcu` file.

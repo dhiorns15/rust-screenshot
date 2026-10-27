@@ -13,7 +13,7 @@ use super::{row, SettingsApp};
 use crate::gallery::env::{PickedFolder, PushEvent, TrayRequest};
 use crate::gallery::theme::{self, icon};
 use crate::push::history::{self, Entry};
-use crate::push::{self, Destination, Kind};
+use crate::push::{self, Destination, Kind, Pkce};
 
 type Answer<T> = Receiver<Result<T, String>>;
 
@@ -65,22 +65,64 @@ struct Form {
     /// An FTPS server's certificate being fetched, then its fingerprint, for the user to trust or not.
     fetching: Option<Answer<String>>,
     offered: Option<String>,
+    /// Signing in to Dropbox, for the kind that does.
+    sign_in: SignIn,
+}
+
+/// Signing in to Dropbox: the browser is opened on its page, which shows a code to paste back. The
+/// refresh token that comes of it is kept as the form's `secret`, to be saved with the rest.
+#[derive(Default)]
+struct SignIn {
+    /// Started: the browser was opened, and this is what the code is traded in with.
+    pkce: Option<Pkce>,
+    /// The app key it was started with.
+    app_key: String,
+    /// The code as pasted.
+    code: String,
+    exchanging: Option<Answer<String>>,
+    /// Signed in just now.
+    done: bool,
+    /// The app key the saved sign-in is for, when changing a destination.
+    saved_for: Option<String>,
+}
+
+/// What was clicked in Dropbox's rows of the form.
+#[derive(Default)]
+struct DropboxClicks {
+    sign_in: bool,
+    finish: bool,
 }
 
 impl Form {
     fn new(destination: Destination, editing: bool) -> Form {
         let mut kind = destination.kind.clone();
         let port = kind.port_mut().map(|p| p.to_string()).unwrap_or_default();
-        Form { editing, destination, port, secret: String::new(), saving: None, error: None, fetching: None, offered: None }
+        let saved_for = match (&destination.kind, editing) {
+            (Kind::Dropbox { app_key, .. }, true) => Some(app_key.clone()),
+            _ => None,
+        };
+        let sign_in = SignIn { saved_for, ..SignIn::default() };
+        Form { editing, destination, port, secret: String::new(), saving: None, error: None, fetching: None, offered: None, sign_in }
     }
 
     /// What must be fixed before it can be saved.
     fn problem(&self) -> Option<String> {
-        self.destination.problems().or_else(|| {
+        self.destination.problems().or_else(|| self.dropbox_problem()).or_else(|| {
             let label = self.destination.kind.secret_label()?;
             let needed = !self.editing && !self.destination.kind.secret_optional();
             (needed && self.secret.is_empty()).then(|| format!("Enter the {}", lowercase_first(label)))
         })
+    }
+
+    /// Dropbox needs to be signed in to, with the app key that's in the form.
+    fn dropbox_problem(&self) -> Option<String> {
+        let Kind::Dropbox { app_key, .. } = &self.destination.kind else { return None };
+        let signed_in_for = if self.sign_in.done { Some(&self.sign_in.app_key) } else { self.sign_in.saved_for.as_ref() };
+        match signed_in_for {
+            None => Some("Sign in to Dropbox first".into()),
+            Some(key) if key.trim() != app_key.trim() => Some("The app key has changed: sign in to Dropbox again".into()),
+            Some(_) => None,
+        }
     }
 }
 
@@ -147,6 +189,10 @@ fn fields(kind: &mut Kind) -> Vec<Field<'_>> {
             field("User", "Empty to sign in as you are (a guest on Linux)", user),
             field("Link to share", "Optional: where the pushed files can be opened, e.g. https://img.example.com/", public_url),
         ],
+        Kind::Dropbox { app_key, folder, .. } => vec![
+            field("App key", "From the Settings tab of your app at dropbox.com/developers", app_key),
+            field("Folder", "/Screenshots, in the app's folder (or Dropbox, with full access)", folder),
+        ],
         Kind::Custom { url, method, file_field, fields, headers, link } => vec![
             field("Upload address", "https://i.example.com/api/upload", url),
             field("Method", "POST", method),
@@ -169,6 +215,7 @@ fn help(kind: &Kind) -> &'static str {
         Kind::PhotoPrism { .. } => "Settings > Account > Apps and Devices: an app password with full access, or the files and sessions scopes (and albums, for an album).",
         Kind::Ftps { .. } => "FTP over TLS: port 21 for explicit TLS, 990 for implicit. Plain FTP isn't offered, as it sends the password unencrypted.",
         Kind::Smb { .. } => "A Windows or Samba share, a NAS's say. On Linux it needs Samba's smbclient.",
+        Kind::Dropbox { .. } => "Uses a free Dropbox app of your own, made as docs/destinations.md says: enter its App key, then sign in to Dropbox.",
         Kind::Custom { .. } => "Any upload API, like ShareX's custom uploaders. {secret} is replaced by the token, {filename} by the file's name.",
     }
 }
@@ -351,6 +398,18 @@ impl SettingsApp {
                 }
             }
         }
+        if let Some(form) = self.push.form.as_mut() {
+            if let Some(Ok(traded)) = form.sign_in.exchanging.as_ref().map(|rx| rx.try_recv()) {
+                form.sign_in.exchanging = None;
+                match traded {
+                    Ok(token) => {
+                        form.secret = token;
+                        form.sign_in = SignIn { app_key: std::mem::take(&mut form.sign_in.app_key), done: true, ..SignIn::default() };
+                    }
+                    Err(e) => form.error = Some(e),
+                }
+            }
+        }
         let saved = self.push.form.as_mut().and_then(|form| {
             let result = form.saving.as_ref()?.try_recv().ok()?;
             form.saving = None;
@@ -494,6 +553,23 @@ impl SettingsApp {
         action
     }
 
+    /// Opens Dropbox's page to allow RSnip, or trades the code that page showed for the sign-in.
+    fn dropbox_click(&mut self, ctx: &egui::Context, form: &mut Form, clicks: &DropboxClicks) {
+        let Kind::Dropbox { app_key, .. } = &form.destination.kind else { return };
+        form.error = None;
+        if clicks.sign_in {
+            match Pkce::new() {
+                Ok(pkce) => {
+                    self.env.open(std::path::Path::new(&pkce.authorize_url(app_key)));
+                    form.sign_in = SignIn { pkce: Some(pkce), app_key: app_key.trim().to_owned(), saved_for: form.sign_in.saved_for.take(), ..SignIn::default() };
+                }
+                Err(e) => form.error = Some(e),
+            }
+        } else if let Some(pkce) = &form.sign_in.pkce {
+            form.sign_in.exchanging = Some(self.env.finish_dropbox_sign_in(ctx, pkce, &form.sign_in.app_key, &form.sign_in.code));
+        }
+    }
+
     fn form_card(&mut self, ui: &mut Ui) {
         let Some(mut form) = self.push.form.take() else { return };
         let muted = theme::palette(ui).muted;
@@ -513,6 +589,7 @@ impl SettingsApp {
             ui.add_space(4.0);
             let busy = form.saving.is_some();
             let mut fetch = false;
+            let mut clicks = DropboxClicks::default();
             ui.add_enabled_ui(!busy, |ui| {
                 egui::Grid::new("destination-form").num_columns(2).spacing([16.0, 8.0]).min_col_width(130.0).show(ui, |ui| {
                     text_row(ui, "Name", "", &mut form.destination.name, false);
@@ -529,7 +606,9 @@ impl SettingsApp {
                             text_row(ui, "Port", default_port, &mut form.port, false);
                         }
                     }
-                    if let Some(label) = form.destination.kind.secret_label() {
+                    if matches!(form.destination.kind, Kind::Dropbox { .. }) {
+                        clicks = dropbox_rows(ui, &mut form);
+                    } else if let Some(label) = form.destination.kind.secret_label() {
                         let hint = match (form.editing, form.destination.kind.secret_optional()) {
                             (true, _) => "Leave empty to keep the saved one",
                             (false, true) => "Optional",
@@ -553,6 +632,9 @@ impl SettingsApp {
             }
             if let Some(port) = form.destination.kind.port_mut() {
                 *port = form.port.trim().parse().unwrap_or(0);
+            }
+            if clicks.sign_in || clicks.finish {
+                self.dropbox_click(ui.ctx(), &mut form, &clicks);
             }
             if let Some(e) = &form.error {
                 ui.label(RichText::new(e).color(error_color()));
@@ -587,6 +669,46 @@ impl SettingsApp {
         }
         self.push.form = Some(form);
     }
+}
+
+/// Dropbox's rows of the form's grid: whether to make links, signing in, and the code to paste.
+fn dropbox_rows(ui: &mut Ui, form: &mut Form) -> DropboxClicks {
+    let mut clicks = DropboxClicks::default();
+    let muted = theme::palette(ui).muted;
+    let Kind::Dropbox { app_key, share_link, .. } = &mut form.destination.kind else { return clicks };
+    ui.label("Share link");
+    ui.horizontal(|ui| {
+        theme::switch(ui, share_link, "Share link");
+        ui.label(RichText::new("Copy a link to each push, as other places do").small().color(muted));
+    });
+    ui.end_row();
+
+    let sign_in = &mut form.sign_in;
+    let status = match (sign_in.done, sign_in.saved_for.is_some()) {
+        (true, _) => "Signed in. Save to keep it",
+        (false, true) => "Signed in. Sign in again only to use another account or after changing the app's permissions",
+        (false, false) if sign_in.pkce.is_some() => "Allow RSnip in the browser, then paste the code Dropbox shows below",
+        (false, false) => "Not signed in yet",
+    };
+    ui.label("Dropbox");
+    ui.vertical(|ui| {
+        let ready = !app_key.trim().is_empty() && sign_in.exchanging.is_none();
+        clicks.sign_in = ui.add_enabled(ready, egui::Button::new("Sign in to Dropbox")).on_disabled_hover_text("Enter the app key first").clicked();
+        ui.label(RichText::new(status).small().color(muted));
+    });
+    ui.end_row();
+
+    if sign_in.pkce.is_some() {
+        let text = ui.label("Code from Dropbox");
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut sign_in.code).desired_width(220.0)).labelled_by(text.id);
+            let exchanging = sign_in.exchanging.is_some();
+            let ready = !sign_in.code.trim().is_empty() && !exchanging;
+            clicks.finish = ui.add_enabled(ready, egui::Button::new(if exchanging { "Signing in…" } else { "Finish signing in" })).clicked();
+        });
+        ui.end_row();
+    }
+    clicks
 }
 
 /// A label and a single-line text box for it, as a row of the form's grid.
