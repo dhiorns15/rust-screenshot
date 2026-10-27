@@ -458,6 +458,46 @@ fn desktop_records_sound_over_a_still_screen() {
     assert!((-30.0..0.0).contains(&sound_level(&recorded.path).expect("sound that plays")));
 }
 
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_a_trimmed_recording_keeps_its_sound_in_step() {
+    desktop();
+    let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
+    let dir = temp_dir("trim-sound");
+    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None };
+    let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
+    std::thread::sleep(Duration::from_secs(3));
+    let recorded = recording.stop().expect("recording finishes");
+    // When each track's samples are shown, by its edit list. mp4mux starts the sound a little
+    // after the picture (50 ms here), with an empty edit.
+    let shown = crate::mp4::Movie::open(&recorded.path).unwrap().shown();
+    assert_eq!(shown.len(), 2, "a picture and a sound track");
+    eprintln!("the picture starts at {} s, the sound at {} s", shown[0][0], shown[1][0]);
+    let close = |a: f64, b: f64| (a - b).abs() < 0.001;
+
+    // Trimmed with nothing cut, each starts when it did.
+    let all = dir.join("all.mp4");
+    let (from, _) = super::player::trim(&recorded.path, &all, Duration::ZERO, Duration::MAX).unwrap();
+    assert_eq!(from, Duration::ZERO);
+    let kept = crate::mp4::Movie::open(&all).unwrap().shown();
+    assert!(close(kept[0][0], shown[0][0]) && close(kept[1][0], shown[1][0]), "{:?} against {:?}", (kept[0][0], kept[1][0]), (shown[0][0], shown[1][0]));
+    // All of the picture, and the sound that starts before it ends (all but a last audio frame).
+    assert_eq!(kept[0].len(), shown[0].len());
+    assert!(shown[1].len() - kept[1].len() <= 1, "{} of {} audio frames", kept[1].len(), shown[1].len());
+
+    // Trimmed from a keyframe, each audio frame is shown as long after the start as it was.
+    let part = dir.join("part.mp4");
+    let (from, _) = super::player::trim(&recorded.path, &part, Duration::from_millis(1500), Duration::from_millis(2500)).unwrap();
+    let from = from.as_secs_f64();
+    let kept = crate::mp4::Movie::open(&part).unwrap().shown();
+    let first = shown[1].iter().position(|&t| t >= from - 1e-9).unwrap();
+    assert!(kept[1].len() > 10);
+    for (n, t) in kept[1].iter().enumerate() {
+        assert!(close(t + from, shown[1][first + n]), "audio frame {n} at {t} s, from {from} s; it was at {} s", shown[1][first + n]);
+    }
+    super::player::can_play(&part).unwrap();
+}
+
 /// How many programs are playing sound on the test sound server (the test tone is one).
 fn sound_players() -> usize {
     let out = Command::new("pactl").args(["list", "short", "sink-inputs"]).output().unwrap();

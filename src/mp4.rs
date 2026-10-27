@@ -2,6 +2,8 @@
 //! as GStreamer's mp4mux (Linux) and Media Foundation (Windows) write them. A cut copies the frames
 //! it keeps into a new file without re-encoding them, so it's instant and loses nothing, but it
 //! starts on a keyframe: a frame the ones after it are drawn from. Recordings have one every second.
+//! Times are when things are shown, by the tracks' edit lists: mp4mux's sound often starts a little
+//! after the picture, and a cut keeps it that much later.
 
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -29,6 +31,14 @@ pub struct Movie {
 struct Track {
     /// The track's time units per second.
     timescale: u32,
+    /// How much later than its media time each sample is shown, in track units, from the edit
+    /// list: an empty edit delays a track that started later than the others (as mp4mux writes
+    /// for sound that starts after the picture), and a media time skips the start of its media
+    /// (as B-frames need).
+    shift: i64,
+    /// When the edit list stops showing it, in track units, if it says: a cut's video can have
+    /// frames after the end that B-frames are drawn from.
+    until: Option<i64>,
     /// Each sample, in the order it's decoded.
     samples: Vec<Sample>,
     /// The boxes copied as they are: the track's headers and sample description.
@@ -98,7 +108,8 @@ impl Movie {
         let movie_timescale = be32(full(mvhd), if mvhd[8] == 1 { 16 } else { 8 });
         let traks: Vec<&[u8]> = children(moov).filter(|(k, _)| k == b"trak").map(|(_, b)| b).collect();
         let video = traks.iter().find(|t| handler(t) == Some(&b"vide"[..]));
-        let video = Track::parse(video.ok_or_else(|| bad("no video"))?)?;
+        let movie_timescale = movie_timescale.max(1);
+        let video = Track::parse(video.ok_or_else(|| bad("no video"))?, movie_timescale)?;
         // The size is in tkhd's last 8 bytes, as 16.16 fixed point.
         let t = full(&video.tkhd);
         let (width, height) = (be32(t, t.len() - 8) >> 16, be32(t, t.len() - 4) >> 16);
@@ -108,19 +119,21 @@ impl Movie {
         let mut ids = vec![video.id()];
         let mut sound = Vec::new();
         for trak in traks.iter().filter(|t| handler(t) == Some(&b"soun"[..])) {
-            if let Ok(track) = Track::parse(trak) {
+            if let Ok(track) = Track::parse(trak, movie_timescale) {
                 if track.id() != 0 && !ids.contains(&track.id()) {
                     ids.push(track.id());
                     sound.push(track);
                 }
             }
         }
-        Ok(Movie { width, height, movie_timescale: movie_timescale.max(1), ftyp, mvhd: mvhd.to_vec(), video, sound })
+        Ok(Movie { width, height, movie_timescale, ftyp, mvhd: mvhd.to_vec(), video, sound })
     }
 
+    /// How long the picture lasts: until its last frame is shown and over.
     pub fn duration(&self) -> Duration {
-        let end = self.video.samples.last().map_or(0, |s| s.dts + s.duration as u64);
-        self.time(end)
+        let video = &self.video;
+        let end = video.samples.iter().map(|s| video.shown(s) + s.duration as i64).max().unwrap_or(0);
+        self.time(video.until.map_or(end, |until| end.min(until)))
     }
 
     /// Whether it has a sound track.
@@ -133,41 +146,59 @@ impl Movie {
         self.video.samples.len()
     }
 
-    fn time(&self, units: u64) -> Duration {
-        Duration::from_secs_f64(units as f64 / self.video.timescale as f64)
+    /// `units` of the video's time as a duration (none before the start).
+    fn time(&self, units: i64) -> Duration {
+        Duration::from_secs_f64(units.max(0) as f64 / self.video.timescale as f64)
     }
 
-    /// When each keyframe is, in order.
+    /// `t` in units of the video's time.
+    fn units(&self, t: Duration) -> i64 {
+        (t.as_secs_f64() * self.video.timescale as f64).round() as i64
+    }
+
+    /// When each keyframe is shown, in order.
     #[cfg(test)]
     pub fn keyframes(&self) -> Vec<Duration> {
-        self.video.samples.iter().filter(|s| s.keyframe).map(|s| self.time(s.dts)).collect()
+        self.video.samples.iter().filter(|s| s.keyframe).map(|s| self.time(self.video.shown(s))).collect()
     }
 
-    /// The frames to keep for `from`..`to`: from the last keyframe at or before `from`, to the
-    /// last frame before `to`.
+    /// When each sample of each track is shown, in seconds: the video's, then each sound track's.
+    #[cfg(test)]
+    pub fn shown(&self) -> Vec<Vec<f64>> {
+        std::iter::once(&self.video).chain(&self.sound).map(|t| t.samples.iter().map(|s| t.shown(s) as f64 / t.timescale as f64).collect()).collect()
+    }
+
+    /// The frames to keep for `from`..`to`: from the last keyframe shown at or before `from`, to
+    /// the last frame shown before `to`, in the order they're decoded.
     fn span(&self, from: Duration, to: Duration) -> Range<usize> {
-        let samples = &self.video.samples;
-        let at = |t: Duration| (t.as_secs_f64() * self.video.timescale as f64).round() as u64;
-        let (from, to) = (at(from), at(to));
-        let first = samples.iter().rposition(|s| s.keyframe && s.dts <= from).unwrap_or(0);
-        let end = samples.iter().position(|s| s.dts >= to).unwrap_or(samples.len()).max(first + 1);
+        let (video, samples) = (&self.video, &self.video.samples);
+        let (from, to) = (self.units(from), self.units(to));
+        let first = samples.iter().rposition(|s| s.keyframe && video.shown(s) <= from).unwrap_or(0);
+        // With B-frames, that keeps the frame after them they're drawn from, though it's shown
+        // from `to` on.
+        let end = samples[first..].iter().rposition(|s| video.shown(s) < to).map_or(first + 1, |n| first + n + 1);
         first..end
     }
 
     /// Copies `from`..`to` of `src` (this movie's file) to `dst`; returns the times it actually
     /// starts and ends at, the start moved back to a keyframe. The sound tracks keep the audio
-    /// frames that start inside that, so they start with the video, to within an audio frame.
+    /// frames that start inside that, each shown as long after the start as it was before.
     pub fn cut(&self, src: &Path, dst: &Path, from: Duration, to: Duration) -> Result<(Duration, Duration), String> {
         let span = self.span(from, to);
         let video = &self.video.samples[span];
-        let start = video[0].dts;
-        let end = video.last().map_or(start, |s| s.dts + s.duration as u64);
+        let start = self.video.shown(&video[0]);
+        // It ends when the last frame shown before `to` does: a frame kept only for B-frames to be
+        // drawn from isn't shown.
+        let over = |s: &Sample| self.video.shown(s) + s.duration as i64;
+        let before = video.iter().filter(|s| self.video.shown(s) < self.units(to)).map(over).max();
+        let end = before.unwrap_or_else(|| video.iter().map(over).max().unwrap_or(start));
+        let end = self.video.until.map_or(end, |until| end.min(until).max(start));
 
-        let mut parts = vec![Part::new(&self.video, video, true)];
+        let mut parts = vec![Part::new(&self.video, video, true, (start, Some(end)), self.video.timescale)];
         for track in &self.sound {
             let kept = track.within(start, end, self.video.timescale);
             if !kept.is_empty() {
-                parts.push(Part::new(track, kept, false));
+                parts.push(Part::new(track, kept, false, (start, None), self.video.timescale));
             }
         }
         // Each second's data of each track goes together, as players like to read it, the video's
@@ -219,7 +250,7 @@ impl Movie {
 
     /// The `moov` box for the `parts` kept, with their data where each part's `offsets` say.
     fn moov(&self, parts: &[Part]) -> Vec<u8> {
-        let length = |p: &Part| scale(p.length(), p.track.timescale, self.movie_timescale);
+        let length = |p: &Part| p.edits(self.movie_timescale).iter().map(|e| e.0).sum::<u64>();
         let movie_length = parts.iter().map(length).max().unwrap_or(0);
         let mut mvhd = with_duration(&self.mvhd, movie_length, 16, 24);
         // The next track number goes past the ones used. It's the last thing in the header, so
@@ -229,14 +260,15 @@ impl Movie {
         if mvhd.len() >= at + 4 && be32(&mvhd, at) < next {
             mvhd[at..at + 4].copy_from_slice(&next.to_be_bytes());
         }
-        let traks: Vec<u8> = parts.iter().flat_map(|p| p.trak(length(p))).collect();
+        let traks: Vec<u8> = parts.iter().flat_map(|p| p.trak(length(p), self.movie_timescale)).collect();
         plain_box(b"moov", &[mvhd, traks].concat())
     }
 }
 
 impl Track {
-    /// A `trak` box's samples and the boxes to write them out again.
-    fn parse(trak: &[u8]) -> Result<Track, String> {
+    /// A `trak` box's samples and the boxes to write them out again, in a movie of
+    /// `movie_timescale` units per second.
+    fn parse(trak: &[u8], movie_timescale: u32) -> Result<Track, String> {
         let trak = content(trak);
         let tkhd = header(find(trak, b"tkhd"), 80, 92).ok_or_else(|| bad("no track header"))?;
         let mdia = content(find(trak, b"mdia").ok_or_else(|| bad("no media"))?);
@@ -300,8 +332,12 @@ impl Track {
             return Err(bad("its frames don't add up"));
         }
         let minf_rest = children(minf).filter(|(k, _)| k != b"stbl").flat_map(|(_, b)| b.to_vec()).collect();
+        let elst = find(trak, b"edts").and_then(|e| find(content(e), b"elst"));
+        let (shift, until) = elst.map_or((0, None), |e| edit_list(e, movie_timescale, timescale.max(1)));
         Ok(Track {
             timescale: timescale.max(1),
+            shift,
+            until,
             samples,
             tkhd: tkhd.to_vec(),
             mdhd: mdhd.to_vec(),
@@ -317,11 +353,40 @@ impl Track {
         be32(full(&self.tkhd), if self.tkhd[8] == 1 { 16 } else { 8 })
     }
 
-    /// The samples that start from `from` up to `to`, which are in units of `1 / scale` seconds.
-    fn within(&self, from: u64, to: u64, scale: u32) -> &[Sample] {
-        let before = |t: u64| self.samples.partition_point(|s| (s.dts as u128 * scale as u128) < t as u128 * self.timescale as u128);
+    /// When `s` is shown, in track units from the start of the movie.
+    fn shown(&self, s: &Sample) -> i64 {
+        s.dts as i64 + s.cts as i64 + self.shift
+    }
+
+    /// The samples shown from `from` up to `to`, which are in units of `1 / scale` seconds.
+    fn within(&self, from: i64, to: i64, scale: u32) -> &[Sample] {
+        let before = |t: i64| self.samples.partition_point(|s| (self.shown(s) as i128 * scale as i128) < t as i128 * self.timescale as i128);
         &self.samples[before(from)..before(to)]
     }
+}
+
+/// What a track's edit list (`elst`, in a movie of `movie_timescale`) says, in its units
+/// (`timescale` a second): how much later than its media time its samples are shown (the empty
+/// edits before the first real one, less that one's media time), and when it stops being shown,
+/// if it says. Edits after the first real one (a track shown in pieces, or at another speed)
+/// aren't kept to, as RSnip's recordings have none.
+fn edit_list(elst: &[u8], movie_timescale: u32, timescale: u32) -> (i64, Option<i64>) {
+    let v1 = elst.get(8) == Some(&1);
+    // Far past any recording's length, but not so far that adding it to a sample's time overflows.
+    let units = |length: u64| scale(length, movie_timescale, timescale).min(1 << 40) as i64;
+    let (mut delay, mut until) = (0i64, None);
+    let mut media_time = 0;
+    for e in entries(full(elst), if v1 { 20 } else { 12 }) {
+        let (length, time) = if v1 { (be64(e, 0), be64(e, 8) as i64) } else { (be32(e, 0) as u64, be32(e, 4) as i32 as i64) };
+        if time != -1 {
+            media_time = time.clamp(0, 1 << 40);
+            // A length of 0 is "all of it".
+            until = (length > 0).then(|| delay + units(length));
+            break;
+        }
+        delay = (delay + units(length)).min(1 << 40);
+    }
+    (delay - media_time, until)
 }
 
 /// A track's samples that a cut keeps, and how they're laid out in the new file.
@@ -332,12 +397,19 @@ struct Part<'a> {
     chunks: Vec<(u64, Range<usize>)>,
     /// Where each chunk starts in the new file.
     offsets: Vec<u64>,
+    /// How much later than its new media time each sample is shown in the new file, in track
+    /// units: what its edit list says.
+    shift: i64,
+    /// How long after the start the cut ends, in track units, where it can end before the last
+    /// sample does: a video's, where the frames B-frames are drawn from are kept but not shown.
+    until: Option<i64>,
 }
 
 impl<'a> Part<'a> {
     /// `kept`, in a chunk for each sample if `each` (a video's frames are big), or else a chunk
-    /// for each second.
-    fn new(track: &'a Track, kept: &'a [Sample], each: bool) -> Part<'a> {
+    /// for each second, for a cut that starts at `start`, and is cut short at `end` if there's one
+    /// (in units of `1 / scale` seconds).
+    fn new(track: &'a Track, kept: &'a [Sample], each: bool, (start, end): (i64, Option<i64>), scale: u32) -> Part<'a> {
         let mut chunks: Vec<(u64, Range<usize>)> = Vec::new();
         for (i, s) in kept.iter().enumerate() {
             let second = (s.dts - kept[0].dts) / track.timescale as u64;
@@ -346,7 +418,45 @@ impl<'a> Part<'a> {
                 _ => chunks.push((second, i..i + 1)),
             }
         }
-        Part { track, kept, offsets: vec![0; chunks.len()], chunks }
+        // Each sample is shown as long after the start as it was before: its media time starts
+        // again from 0, so it's shown as much later as it was, less the start.
+        let units = |t: i64| (t as i128 * track.timescale as i128).div_euclid(scale.max(1) as i128) as i64;
+        let shift = kept[0].dts as i64 + track.shift - units(start);
+        Part { track, kept, offsets: vec![0; chunks.len()], chunks, shift, until: end.map(|end| units(end - start)) }
+    }
+
+    /// How long its samples last, in track units: until the last is over, from the media time
+    /// the first is shown at.
+    fn lasts(&self) -> i64 {
+        let end = self.kept.iter().map(|s| (s.dts - self.kept[0].dts) as i64 + s.cts as i64 + s.duration as i64).max().unwrap_or(0);
+        (end + self.shift.min(0)).max(0)
+    }
+
+    /// How long they're shown, in track units: as long as they last, or until the cut ends.
+    fn shown(&self) -> i64 {
+        self.until.map_or(self.lasts(), |until| self.lasts().min(until - self.shift.max(0)).max(0))
+    }
+
+    /// Whether it needs an edit list: unless it's shown from its start at the start, to its end.
+    fn edited(&self) -> bool {
+        self.shift != 0 || self.shown() < self.lasts()
+    }
+
+    /// The edit list's entries, as (how long, in units of `1 / movie_timescale` seconds; its media
+    /// time, -1 for an empty edit): an empty edit if the track starts later than the cut, then the
+    /// samples from the media time they're first shown at.
+    fn edits(&self, movie_timescale: u32) -> Vec<(u64, i64)> {
+        // Rounded up, so that read back it still shows all of the last sample.
+        let shown = (self.shown() as u128 * movie_timescale as u128).div_ceil(self.track.timescale as u128).min(u64::MAX as u128) as u64;
+        match self.shift {
+            0 => vec![(shown, 0)],
+            ..0 => vec![(shown, -self.shift)],
+            _ => match scale(self.shift as u64, self.track.timescale, movie_timescale) {
+                // Less than the movie's units can say.
+                0 => vec![(shown, 0)],
+                delay => vec![(delay, -1), (shown, 0)],
+            },
+        }
     }
 
     /// The samples in chunk `c`.
@@ -359,8 +469,8 @@ impl<'a> Part<'a> {
         self.kept.iter().map(|s| s.duration as u64).sum()
     }
 
-    /// The `trak` box, `movie_length` long (in the movie's units).
-    fn trak(&self, movie_length: u64) -> Vec<u8> {
+    /// The `trak` box, `movie_length` long (in the movie's units, `movie_timescale` a second).
+    fn trak(&self, movie_length: u64, movie_timescale: u32) -> Vec<u8> {
         let (track, kept) = (self.track, self.kept);
         let mut stts = Vec::new();
         for (count, duration) in run_lengths(kept.iter().map(|s| s.duration)) {
@@ -394,10 +504,16 @@ impl<'a> Part<'a> {
 
         let minf = [track.minf_rest.clone(), plain_box(b"stbl", &stbl)].concat();
         let mdia = [with_duration(&track.mdhd, self.length(), 16, 24), track.hdlr.clone(), plain_box(b"minf", &minf)].concat();
-        // The track starts at the start (any edit list would be for the old one). That includes the
-        // one an AAC track can have to skip its encoder's delay, a silence of about 21 ms that
-        // isn't worth the trouble of keeping.
-        plain_box(b"trak", &[with_duration(&track.tkhd, movie_length, 20, 28), plain_box(b"mdia", &mdia)].concat())
+        // An edit list, unless the track is shown from its start at the start, so that sound that
+        // started later than the picture still does.
+        let edts = if self.edited() {
+            let edits = self.edits(movie_timescale);
+            let entries: Vec<u8> = edits.iter().flat_map(|&(length, media_time)| [(length.min(u32::MAX as u64) as u32).to_be_bytes(), (media_time.clamp(-1, i32::MAX as i64) as i32).to_be_bytes(), 0x0001_0000u32.to_be_bytes()].concat()).collect();
+            plain_box(b"edts", &full_box(b"elst", 0, &[&(edits.len() as u32).to_be_bytes()[..], &entries].concat()))
+        } else {
+            Vec::new()
+        };
+        plain_box(b"trak", &[with_duration(&track.tkhd, movie_length, 20, 28), edts, plain_box(b"mdia", &mdia)].concat())
     }
 }
 
@@ -551,6 +667,8 @@ pub(crate) mod tests {
             ftyp: plain_box(b"ftyp", b"isom\0\0\0\0isom"),
             mvhd: full_box(b"mvhd", 0, &mvhd_content),
             video: Track {
+                shift: 0,
+                until: None,
                 timescale,
                 samples,
                 tkhd: with_id(tkhd, 1),
@@ -587,6 +705,8 @@ pub(crate) mod tests {
         mdhd_content[8..12].copy_from_slice(&48_000u32.to_be_bytes());
         let tkhd = full_box(b"tkhd", 0, &[&[0u8; 72][..], &[0u8; 8]].concat());
         movie.sound.push(Track {
+            shift: 0,
+            until: None,
             timescale: 48_000,
             samples,
             tkhd: with_id(tkhd, 2),
@@ -701,12 +821,14 @@ pub(crate) mod tests {
         let audio = &part.sound[0];
         assert_eq!(audio.samples.len(), 71);
         assert_eq!((audio.id(), audio.timescale), (2, 48_000));
-        assert_eq!(audio.samples[0].dts, 0, "starts with the video, which is where its first frame started");
+        assert_eq!(audio.samples[0].dts, 0);
+        // Shown 2.7 ms after the video starts, as it was; the edit list says so to the ms.
+        assert_eq!(audio.shift, 96, "2 ms, in audio units");
         assert!(audio.samples.iter().all(|s| s.keyframe));
 
         // About as long as the video: not before it ends, and no more than a frame after.
         let video_end = part.duration().as_secs_f64();
-        let audio_end = audio.samples.last().map(|s| (s.dts + s.duration as u64) as f64 / 48_000.0).unwrap();
+        let audio_end = audio.samples.last().map(|s| (audio.shown(s) + s.duration as i64) as f64 / 48_000.0).unwrap();
         assert!((video_end - 1.5).abs() < 1e-6);
         assert!(audio_end <= video_end + 1024.0 / 48_000.0 && audio_end > video_end - 1024.0 / 48_000.0, "{audio_end} against {video_end}");
 
@@ -718,10 +840,11 @@ pub(crate) mod tests {
         for (n, bytes) in (47u32..).zip(bytes_of(&file, audio)) {
             assert!(bytes.iter().all(|&b| b == audio_byte(n)) && bytes.len() == 20 + n as usize % 5, "audio frame {n}");
         }
-        // The headers: the movie is as long as the longer track, in ms; the audio's own in 48 kHz.
-        assert_eq!(be32(full(&part.mvhd), 12), 1514, "mvhd, in ms");
+        // The headers: the movie is as long as the longer track, in ms (the sound's 2 ms later
+        // start, then its 1514.7 ms, rounded up); the audio's own in 48 kHz.
+        assert_eq!(be32(full(&part.mvhd), 12), 1517, "mvhd, in ms");
         assert_eq!(be32(full(&audio.mdhd), 12), 71 * 1024, "mdhd, in audio units");
-        assert_eq!(be32(full(&audio.tkhd), 16), 1514, "tkhd, in ms");
+        assert_eq!(be32(full(&audio.tkhd), 16), 1517, "tkhd, in ms");
         assert_eq!(be32(full(&part.video.tkhd), 16), 1500);
         assert_eq!(be32(&part.mvhd, 104), 3);
         // The data of each second goes together: the first second's sound is before the second's
@@ -740,6 +863,150 @@ pub(crate) mod tests {
         let all = Movie::open(&whole_again).unwrap();
         assert_eq!((all.frames(), all.sound[0].samples.len()), (90, 141));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Each track's edit list in `file`, as its (length, media time) entries (version 0).
+    fn edit_lists(file: &[u8]) -> Vec<Vec<(u32, i32)>> {
+        let moov = children(file).find(|(k, _)| k == b"moov").map(|(_, b)| content(b)).unwrap();
+        let elst = |trak: &[u8]| find(content(trak), b"edts").and_then(|e| find(content(e), b"elst")).map(|e| entries(full(e), 12).map(|e| (be32(e, 0), be32(e, 4) as i32)).collect());
+        children(moov).filter(|(k, _)| k == b"trak").map(|(_, t)| elst(t).unwrap_or_default()).collect()
+    }
+
+    #[test]
+    fn sound_that_starts_after_the_picture_still_does_when_cut() {
+        let dir = temp_dir("late");
+        // As mp4mux writes it: the sound shown 50 ms after the picture, by an empty edit.
+        let (mut movie, data) = movie_with_sound(90, 141, 30);
+        movie.sound[0].shift = 2400;
+        let whole = dir.join("whole.mp4");
+        write(&mut movie, &data, &whole);
+        // With nothing cut it's as it was: 50 ms of nothing, then the sound, as far as the picture
+        // goes (the 139 audio frames that start in its 3 s, 2.965 s of them).
+        assert_eq!(edit_lists(&std::fs::read(&whole).unwrap()), [vec![], vec![(50, -1), (2966, 0)]]);
+        let read = Movie::open(&whole).unwrap();
+        assert_eq!((read.video.shift, read.sound[0].shift, read.sound[0].samples.len()), (0, 2400, 139));
+        assert_eq!(read.shown()[1][0], 0.05);
+        assert_eq!(be32(full(&read.mvhd), 12), 3016, "the movie lasts until the sound ends, in ms");
+        assert!((read.duration().as_secs_f64() - 3.0).abs() < 1e-6, "the picture's length");
+
+        // 1.5 s to 2.5 s, from the keyframe at 1 s. The first audio frame shown from then is the
+        // 45th, at 1.010 s (its media time is 0.960 s), so it's shown 10 ms in; the last is the
+        // 114th.
+        let cut = dir.join("cut.mp4");
+        let (from, to) = read.cut(&whole, &cut, Duration::from_secs_f64(1.5), Duration::from_secs_f64(2.5)).unwrap();
+        assert_eq!((from, to), (Duration::from_secs(1), Duration::from_secs_f64(2.5)));
+        let file = std::fs::read(&cut).unwrap();
+        assert_eq!(edit_lists(&file), [vec![], vec![(10, -1), (1494, 0)]]);
+        let part = Movie::open(&cut).unwrap();
+        let audio = &part.sound[0];
+        assert_eq!((audio.shift, audio.samples.len()), (480, 70));
+        for (n, bytes) in (45u32..).zip(bytes_of(&file, audio)) {
+            assert!(bytes.iter().all(|&b| b == audio_byte(n)), "audio frame {n}");
+        }
+        // Each is shown as long after the cut's start as it was after the keyframe.
+        let (before, after) = (read.shown(), part.shown());
+        for (n, t) in (45..).zip(&after[1]) {
+            assert!((t + 1.0 - before[1][n]).abs() < 1e-9, "audio frame {n} at {t}");
+        }
+        assert_eq!(after[0][0], 0.0, "the picture at the start");
+
+        // A cut of the cut, with nothing cut, keeps it too.
+        let again = dir.join("again.mp4");
+        part.cut(&cut, &again, Duration::ZERO, Duration::MAX).unwrap();
+        assert_eq!(Movie::open(&again).unwrap().shown(), after);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_picture_shown_later_than_its_decoded_is_cut_by_when_its_shown() {
+        let dir = temp_dir("reordered");
+        // Each frame shown two frames after it's decoded (as with B-frames), and the edit list
+        // starting where the first is shown, at media time 6000.
+        let (mut movie, data) = movie_with_sound(90, 141, 30);
+        movie.video.ctts_version = Some(0);
+        for s in &mut movie.video.samples {
+            s.cts = 6000;
+        }
+        movie.video.shift = -6000;
+        let whole = dir.join("whole.mp4");
+        write(&mut movie, &data, &whole);
+        assert_eq!(edit_lists(&std::fs::read(&whole).unwrap()), [vec![(3000, 6000)], vec![]], "all 3 s, from media time 6000");
+        let read = Movie::open(&whole).unwrap();
+        assert_eq!(read.video.shift, -6000);
+        assert_eq!(read.keyframes(), [0.0, 1.0, 2.0].map(Duration::from_secs_f64));
+        assert!((read.duration().as_secs_f64() - 3.0).abs() < 1e-6);
+
+        // From the keyframe shown at 1 s, which is shown first, with the sound of then.
+        let cut = dir.join("cut.mp4");
+        let (from, to) = read.cut(&whole, &cut, Duration::from_secs_f64(1.5), Duration::from_secs_f64(2.5)).unwrap();
+        assert_eq!((from, to), (Duration::from_secs(1), Duration::from_secs_f64(2.5)));
+        assert_eq!(edit_lists(&std::fs::read(&cut).unwrap()), [vec![(1500, 6000)], vec![(2, -1), (1515, 0)]]);
+        let part = Movie::open(&cut).unwrap();
+        assert_eq!((part.frames(), part.video.shift), (45, -6000));
+        assert_eq!(part.keyframes(), [0.0, 1.0].map(Duration::from_secs_f64));
+        assert!((part.duration().as_secs_f64() - 1.5).abs() < 1e-6);
+        assert_eq!(part.sound[0].samples.len(), 71, "the 47th to the 117th, as without B-frames");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cut_keeps_the_frames_b_frames_are_drawn_from() {
+        // Decoded in the order 0 3 1 2 6 4 5 (in frames shown): the B-frames come after the frame
+        // after them, which is shown a frame late so that none is shown before it's decoded.
+        let (mut movie, data) = movie(7, 30);
+        movie.video.ctts_version = Some(0);
+        for (s, shown) in movie.video.samples.iter_mut().zip([0u64, 3, 1, 2, 6, 4, 5]) {
+            s.cts = ((shown + 1) * 3000) as i32 - s.dts as i32;
+        }
+        movie.video.shift = -3000;
+        assert_eq!(movie.shown()[0], [0, 3, 1, 2, 6, 4, 5].map(|n| n as f64 / 30.0));
+        // Up to the 4th frame shown: the 3rd needs the 4th, decoded before it.
+        let to = |frames: u64| Duration::from_secs(frames) / 30;
+        assert_eq!(movie.span(Duration::ZERO, to(3)), 0..4);
+        assert_eq!(movie.span(Duration::ZERO, to(4)), 0..4);
+        assert_eq!(movie.span(Duration::ZERO, to(5)), 0..6);
+        assert_eq!(movie.span(Duration::ZERO, to(1)), 0..1);
+        assert!((movie.duration().as_secs_f64() - 7.0 / 30.0).abs() < 1e-9);
+
+        // Cut there, the 4th is kept but not shown: the edit list ends before it.
+        let dir = temp_dir("b-frames");
+        let whole = dir.join("whole.mp4");
+        write(&mut movie, &data, &whole);
+        let cut = dir.join("cut.mp4");
+        let (_, end) = Movie::open(&whole).unwrap().cut(&whole, &cut, Duration::ZERO, to(3)).unwrap();
+        assert_eq!(end, to(3));
+        assert_eq!(edit_lists(&std::fs::read(&cut).unwrap()), [vec![(100, 3000)]], "100 ms, from media time 3000");
+        let part = Movie::open(&cut).unwrap();
+        assert_eq!((part.frames(), part.duration()), (4, to(3)));
+        // And cut again with nothing cut, it still isn't.
+        let again = dir.join("again.mp4");
+        assert_eq!(part.cut(&cut, &again, Duration::ZERO, Duration::MAX).unwrap().1, to(3));
+        assert_eq!(edit_lists(&std::fs::read(&again).unwrap()), [vec![(100, 3000)]]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_lists_say_how_much_later_a_track_is_shown() {
+        let v0 = |edits: &[(u32, i32)]| {
+            let entries: Vec<u8> = edits.iter().flat_map(|&(d, m)| [d.to_be_bytes(), m.to_be_bytes(), 0x0001_0000u32.to_be_bytes()].concat()).collect();
+            full_box(b"elst", 0, &[&(edits.len() as u32).to_be_bytes()[..], &entries].concat())
+        };
+        // mp4mux's, for sound: 150 of 3000 a second of nothing (50 ms), then 9904 of it.
+        assert_eq!(edit_list(&v0(&[(150, -1), (9904, 0)]), 3000, 48_000), (2400, Some(160_864)));
+        assert_eq!(edit_list(&v0(&[(10_000, 0)]), 3000, 3000), (0, Some(10_000)), "and for the picture");
+        assert_eq!(edit_list(&v0(&[(10_000, 200)]), 3000, 3000), (-200, Some(10_000)), "from media time 200");
+        assert_eq!(edit_list(&v0(&[(30, -1), (30, -1), (10_000, 200)]), 3000, 3000), (-140, Some(10_060)));
+        assert_eq!(edit_list(&v0(&[(100, 50), (100, 500)]), 1000, 1000), (-50, Some(100)), "only the first real edit counts");
+        assert_eq!(edit_list(&v0(&[(0, 50)]), 1000, 1000), (-50, None), "0 is all of it");
+        assert_eq!(edit_list(&v0(&[]), 1000, 1000), (0, None));
+        assert_eq!(edit_list(&v0(&[(u32::MAX, -1)]), 1, 1 << 30), (1 << 40, None), "within bounds");
+        // Version 1, with 64-bit times.
+        let entry = |d: u64, m: i64| [&d.to_be_bytes()[..], &m.to_be_bytes(), &0x0001_0000u32.to_be_bytes()].concat();
+        let v1 = full_box(b"elst", 1, &[&2u32.to_be_bytes()[..], &entry(150, -1), &entry(9904, 0)].concat());
+        assert_eq!(edit_list(&v1, 3000, 48_000), (2400, Some(160_864)));
+        // Cut short, it reads what's there.
+        assert_eq!(edit_list(&v1[..v1.len() - 20], 3000, 48_000), (2400, None));
+        assert_eq!(edit_list(&v1[..10], 3000, 48_000), (0, None));
     }
 
     #[test]
