@@ -332,6 +332,24 @@ fn the_microphone_is_picked_from_those_connected() {
 }
 
 #[test]
+fn a_microphone_plugged_in_later_shows_when_the_list_opens() {
+    let mut h = panel("panel-mic-later", |env| {
+        env.set_setting(options::CAPTURE_PANEL_TAB.name, 1);
+        env.set_setting(options::RECORD_MICROPHONE.name, 1);
+        env.sandboxed().microphones = vec![mic("usb-1", "USB Microphone")];
+    });
+    open_list(&mut h, "Default microphone");
+    assert!(h.query_by_label("USB Microphone").is_some() && h.query_by_label("Headset").is_none());
+    open_list(&mut h, "Default microphone");
+    assert!(h.query_by_label("USB Microphone").is_none(), "closed");
+    h.state().env.sandboxed().microphones.push(mic("headset-2", "Headset"));
+    open_list(&mut h, "Default microphone");
+    assert_eq!(h.state().env.sandboxed().sound_device_lookups.len(), 3, "when it showed, and each time it opened");
+    click(&mut h, "Headset");
+    assert_eq!(h.state().env.text_setting(options::RECORD_MICROPHONE_DEVICE).as_deref(), Some("headset-2"));
+}
+
+#[test]
 fn a_microphone_that_is_gone_is_said_to_be_not_connected() {
     let h = panel("panel-mic-gone", |env| {
         env.set_setting(options::CAPTURE_PANEL_TAB.name, 1);

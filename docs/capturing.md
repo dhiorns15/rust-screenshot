@@ -35,7 +35,8 @@ The computer's sound comes from the default output unless you pick another under
 sound*. Pick one if recordings come out silent or quiet: with a mixer such as SteelSeries Sonar,
 Voicemeeter or Elgato Wave Link, apps play to the mixer's own channels (Sonar's Media, Game and
 Chat, say), and only the headphones or speakers it plays to have them all. If the output you
-picked isn't connected, RSnip records the default one and says so.
+picked isn't connected, RSnip records the default one and says so. The outputs and microphones
+are listed again each time you open one of the lists, so one plugged in meanwhile is there.
 
 On Windows the sound is AAC, 48 kHz stereo. Quiet stretches are recorded as silence, so the sound
 stays in step with the picture however long nothing plays. On Linux it's AAC in MP4s and Opus in

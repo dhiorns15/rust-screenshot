@@ -61,7 +61,10 @@ would be made, then says what it came out as.
 MP4 and WebM recordings include what the computer plays, which is on by default, and the
 microphone, which is off. They're mixed into one track: AAC in MP4s, Opus in WebMs. GIFs have no
 sound. Turn either on or off, and pick the output and the microphone (the default ones unless you choose: with more than one output, pick the one you hear), in
-Settings → Recording, or on the Video tab of *Capture panel…* in the icon's menu.
+Settings → Recording, or on the Video tab of *Capture panel…* in the icon's menu. The lists are
+read again each time one is opened, so a microphone plugged in meanwhile is there. If the sound
+server's default source is an output's monitor (as when it has no microphone to default to), the
+default microphone is the first real one, so the computer's sound isn't recorded twice.
 
 Sound comes from the desktop's PulseAudio server, which PipeWire provides as `pipewire-pulse` on
 current desktops. GStreamer's PulseAudio plugin reads it, `pactl` lists the outputs and microphones, and MP4s
@@ -71,7 +74,7 @@ need an AAC encoder: `fdkaacenc`, `avenc_aac` (in `gstreamer1.0-libav`) or `voaa
 `fdkaacenc`, but the other two are there.
 
 Sound doesn't stop a recording from starting: if there's no AAC encoder, the sound server can't be
-reached, the microphone isn't connected, or the sound fails as the recording starts, RSnip records
+reached (or doesn't answer `pactl` within five seconds), the microphone isn't connected, or the sound fails as the recording starts, RSnip records
 without that part and says so in the "Recording saved" notification. Quiet stretches, a still
 screen and a microphone that sends nothing are recorded as silence, so the sound stays in step with
 the picture. `rsnip --check-recording` also records a test tone and says whether sound works, and

@@ -130,12 +130,37 @@ struct Source {
     description: String,
     /// What an output plays, rather than a microphone.
     monitor: bool,
+    /// The server's default source, which plain `pulsesrc` records.
+    default: bool,
 }
 
-/// `pactl`'s output, if it ran and the sound server answered.
+/// How long `pactl` has to answer: a sound server that's stuck shouldn't hold up a recording, or
+/// Settings' lists, for longer.
+const PACTL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `pactl`'s output, if it ran and the sound server answered in time.
 fn pactl(args: &[&str]) -> Option<String> {
-    let out = Command::new("pactl").args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    let mut child = Command::new("pactl").args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    // Read as it comes, so a long list can't fill the pipe and stop it finishing.
+    let mut stdout = child.stdout.take()?;
+    let reading = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        stdout.read_to_end(&mut out).map(|_| out)
+    });
+    let deadline = Instant::now() + PACTL_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let out = reading.join().ok()?.ok()?;
+    status.success().then(|| String::from_utf8_lossy(&out).into_owned())
 }
 
 /// The sound server's sources, or None if `pactl` isn't installed or it can't be reached. Older
@@ -153,7 +178,7 @@ fn parse_sources(json: &str) -> Option<Vec<Source>> {
             .filter_map(|s| {
                 let name = text(s, "name")?;
                 let monitor = name.ends_with(".monitor") || text(s, "monitor_source").is_some();
-                Some(Source { description: text(s, "description").unwrap_or_else(|| name.clone()), name, monitor })
+                Some(Source { description: text(s, "description").unwrap_or_else(|| name.clone()), name, monitor, default: false })
             })
             .collect(),
     )
@@ -162,7 +187,28 @@ fn parse_sources(json: &str) -> Option<Vec<Source>> {
 /// `pactl list short sources`: tab-separated, the name second.
 fn parse_short_sources(list: &str) -> Vec<Source> {
     let names = list.lines().filter_map(|line| line.split('\t').nth(1)).filter(|n| !n.is_empty());
-    names.map(|name| Source { name: name.into(), description: name.into(), monitor: name.ends_with(".monitor") }).collect()
+    names.map(|name| Source { name: name.into(), description: name.into(), monitor: name.ends_with(".monitor"), default: false }).collect()
+}
+
+/// `sources`, with the server's default one marked, for a recording (`pactl get-default-source`;
+/// older `pactl`s don't say, so none is).
+fn sources_with_default() -> Option<Vec<Source>> {
+    let sources = sources()?;
+    Some(mark_default(sources, pactl(&["get-default-source"]).as_deref().map(str::trim)))
+}
+
+/// `sources`, with the one named `default` marked as the default.
+fn mark_default(sources: Vec<Source>, default: Option<&str>) -> Vec<Source> {
+    sources.into_iter().map(|s| Source { default: Some(s.name.as_str()) == default, ..s }).collect()
+}
+
+/// The source to record for "Default microphone": the server's default (plain `pulsesrc`, `None`),
+/// unless that's an output's monitor (as when there's no microphone to default to), which would
+/// record the computer's sound again, when it's the first microphone there is. None at all if
+/// there's no microphone.
+fn default_microphone(sources: &[Source]) -> Option<Option<&str>> {
+    let first = sources.iter().find(|s| !s.monitor)?;
+    Some(sources.iter().any(|s| s.default && s.monitor).then_some(first.name.as_str()))
 }
 
 /// A microphone to record from.
@@ -209,9 +255,12 @@ fn plan_sound(format: &Format, audio: Result<AudioEncoder, String>, has: &impl F
     }
     match &format.microphone {
         None => {}
-        Some(None) if sources.iter().any(|s| !s.monitor) => wanted.push("pulsesrc do-timestamp=true".into()),
+        Some(None) => match default_microphone(&sources) {
+            Some(None) => wanted.push("pulsesrc do-timestamp=true".into()),
+            Some(Some(id)) => wanted.push(format!("pulsesrc device={id} do-timestamp=true")),
+            None => notes.push("No microphone was found, so it was recorded without one."),
+        },
         Some(Some(id)) if sources.iter().any(|s| !s.monitor && s.name == *id) => wanted.push(format!("pulsesrc device={id} do-timestamp=true")),
-        Some(None) => notes.push("No microphone was found, so it was recorded without one."),
         Some(Some(_)) => notes.push("The chosen microphone isn't connected, so it was recorded without one."),
     }
     if !wanted.is_empty() && !(has("audiomixer") && has("audiotestsrc")) {
@@ -578,7 +627,7 @@ pub fn start(cast: &ScreenCast, frame: (u32, u32), area: Option<Area>, format: F
         return Ok(recording);
     }
     let (encoder, video_note) = encoder(format.hevc);
-    let (mut sound, sound_note) = plan_sound(&format, audio_encoder(encoder.extension == "mp4", &|e| installed(e)), &|e| installed(e), &sources);
+    let (mut sound, sound_note) = plan_sound(&format, audio_encoder(encoder.extension == "mp4", &|e| installed(e)), &|e| installed(e), &sources_with_default);
     let mut notes: Vec<String> = [video_note, sound_note].into_iter().flatten().collect();
     let path = name(encoder.extension);
     let working = super::working_path(&path)?;
@@ -751,7 +800,7 @@ mod tests {
 
     /// A sound server with a speaker's monitor and a headset's microphone.
     fn server() -> Option<Vec<Source>> {
-        let source = |name: &str, description: &str, monitor| Source { name: name.into(), description: description.into(), monitor };
+        let source = |name: &str, description: &str, monitor| Source { name: name.into(), description: description.into(), monitor, default: false };
         Some(vec![source("alsa_output.pci-0000_00_1f.3.analog-stereo.monitor", "Monitor of Built-in Audio", true), source("alsa_input.usb-Headset.mono", "Headset", false)])
     }
 
@@ -902,6 +951,37 @@ mod tests {
         let short = parse_short_sources(short);
         let names: Vec<(&str, bool)> = short.iter().map(|s| (s.name.as_str(), s.monitor)).collect();
         assert_eq!(names,[("alsa_output.pci.analog-stereo.monitor", true), ("alsa_input.usb-Headset.mono", false)]);
+    }
+
+    #[test]
+    fn the_default_microphone_is_never_a_monitor() {
+        // As PipeWire lists them: the monitor names its output, a microphone has none.
+        let json = r#"[
+            {"index":55,"name":"alsa_output.pci-0000_00_1f.3.analog-stereo.monitor","description":"Monitor of Built-in Audio Analog Stereo","monitor_source":"alsa_output.pci-0000_00_1f.3.analog-stereo","monitor_of_sink":null},
+            {"index":56,"name":"alsa_input.usb-Headset.mono","description":"Headset Mono","monitor_source":"","monitor_of_sink":null},
+            {"index":57,"name":"alsa_input.pci-0000_00_1f.3.analog-stereo","description":"Built-in Audio Analog Stereo","monitor_source":"","monitor_of_sink":null}
+        ]"#;
+        let with_default = |default: Option<&str>| mark_default(parse_sources(json).unwrap(), default);
+        let defaults = |sources: &[Source]| sources.iter().filter(|s| s.default).map(|s| s.name.clone()).collect::<Vec<_>>();
+        assert_eq!(defaults(&with_default(Some("alsa_input.usb-Headset.mono"))), ["alsa_input.usb-Headset.mono"]);
+        assert!(defaults(&with_default(None)).is_empty() && defaults(&with_default(Some("gone"))).is_empty());
+        // A microphone as the default is recorded as the server's default, which follows it.
+        assert_eq!(default_microphone(&with_default(Some("alsa_input.pci-0000_00_1f.3.analog-stereo"))), Some(None));
+        // So is it when the default isn't known (an older pactl).
+        assert_eq!(default_microphone(&with_default(None)), Some(None));
+        // A monitor as the default would record the computer's sound twice: the first microphone instead.
+        let monitor = with_default(Some("alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"));
+        assert_eq!(default_microphone(&monitor), Some(Some("alsa_input.usb-Headset.mono")));
+        let format = asked(true, Some(None));
+        let (sound, note) = plan_sound(&format, audio_encoder(true, &everything), &everything, &|| Some(monitor.clone()));
+        assert_eq!(note, None);
+        assert_eq!(sound.unwrap().sources, ["pulsesrc device=@DEFAULT_MONITOR@ do-timestamp=true", "pulsesrc device=alsa_input.usb-Headset.mono do-timestamp=true"]);
+        // With no microphone at all, there's none to record, whatever the default.
+        let monitors: Vec<Source> = monitor.into_iter().filter(|s| s.monitor).collect();
+        assert_eq!(default_microphone(&monitors), None);
+        let (sound, note) = plan_sound(&format, audio_encoder(true, &everything), &everything, &|| Some(monitors.clone()));
+        assert_eq!(sound.unwrap().sources.len(), 1);
+        assert_eq!(note.as_deref(), Some("No microphone was found, so it was recorded without one."));
     }
 
     #[test]

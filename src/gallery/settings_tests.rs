@@ -9,7 +9,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
 use super::describer::Event;
-use super::env::{Env, TrayRequest};
+use super::env::{Env, SoundDeviceLists, TrayRequest};
 use super::platform::SoundDevice;
 use super::settings_window::{Section, SettingsApp};
 use super::theme::Appearance;
@@ -243,6 +243,38 @@ fn the_microphone_list_has_those_connected_and_keeps_one_that_is_gone() {
     });
     open(&mut h, Section::Recording);
     assert!(h.query_by_value("unplugged (not connected)").is_some());
+}
+
+#[test]
+fn sound_devices_are_looked_for_in_the_background_and_again_when_a_list_opens() {
+    let mut h = settings("settings-devices-looking", |env| {
+        env.sandboxed().hold_sound_devices = true;
+        env.set_setting(options::RECORD_MICROPHONE.name, 1);
+    });
+    open(&mut h, Section::Recording);
+    // A slow sound server doesn't hold up the window, which says it's looking meanwhile.
+    for looking in ["Looking for outputs…", "Looking for microphones…"] {
+        assert!(h.get_by_value(looking).accesskit_node().is_disabled(), "{looking}");
+    }
+    assert_eq!(h.state().env.sandboxed().sound_device_lookups.len(), 1, "one look for both lists");
+    let device = |name: &str| SoundDevice { id: name.to_lowercase(), name: name.into() };
+    let answer = |h: &mut Harness<SettingsApp>, lookup: usize, microphones: Vec<SoundDevice>| {
+        let lists = SoundDeviceLists { outputs: vec![device("Speakers")], microphones };
+        h.state().env.sandboxed().sound_device_lookups[lookup].send(lists).unwrap();
+        settle(h);
+    };
+    answer(&mut h, 0, vec![device("USB Microphone")]);
+    assert!(h.query_by_value("Looking for microphones…").is_none() && h.query_by_value("Default microphone").is_some());
+    assert_eq!(h.state().env.sandboxed().sound_device_lookups.len(), 1, "found, so not looked for again");
+
+    // Opening a list looks again, and one plugged in since shows when that answers.
+    h.get_by_value("Default microphone").click();
+    settle(&mut h);
+    assert!(h.query_by_label("USB Microphone").is_some());
+    assert_eq!(h.state().env.sandboxed().sound_device_lookups.len(), 2);
+    answer(&mut h, 1, vec![device("USB Microphone"), device("Headset")]);
+    click(&mut h, "Headset");
+    assert_eq!(h.state().env.text_setting(options::RECORD_MICROPHONE_DEVICE).as_deref(), Some("headset"));
 }
 
 #[test]

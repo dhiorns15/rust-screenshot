@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Ui, Vec2};
 
-use super::env::{Env, MoveReport, PickedFolder, TrayRequest};
+use super::env::{Env, MoveReport, PickedFolder, RecordingSupport, TrayRequest};
 use super::system_info::{self, Gpu};
 use super::settings_rows;
 use super::theme::{self, icon, row, Appearance};
@@ -151,11 +151,12 @@ pub struct SettingsApp {
     report: Option<Vec<system_info::Section>>,
     /// The latest crash report, read with the System info report.
     crash: Option<Crash>,
-    /// Whether there's an H.265 encoder, found when the Recording section first opens.
-    hevc: Option<bool>,
-    /// What's missing for recording as H.264 and as H.265, found then too.
-    recording_problems: Option<[Option<String>; 2]>,
-    /// The outputs and microphones there are, found when the Recording section opens.
+    /// Looking for whether there's an H.265 encoder and what's missing for recording, in the
+    /// background, when the Recording section first opens.
+    checking_recording: Option<Receiver<RecordingSupport>>,
+    /// What it found.
+    recording_support: Option<RecordingSupport>,
+    /// The outputs and microphones there are, looked for when the Recording section opens.
     sound_devices: settings_rows::SoundDevices,
     /// The folder chooser, while it's open.
     picking: Option<PickedFolder>,
@@ -189,7 +190,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, sound_devices: Default::default(), picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, restart_tray: false, push: Default::default(), describe: Default::default() }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, checking_recording: None, recording_support: None, sound_devices: Default::default(), picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, restart_tray: false, push: Default::default(), describe: Default::default() }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -421,10 +422,14 @@ impl SettingsApp {
     }
 
     fn recording(&mut self, ui: &mut Ui) {
-        let hevc_available = *self.hevc.get_or_insert_with(|| self.env.hevc_available());
+        if self.recording_support.is_none() {
+            let checking = self.checking_recording.get_or_insert_with(|| self.env.recording_support(ui.ctx()));
+            self.recording_support = checking.try_recv().ok();
+        }
+        // Until it's known, H.265 is described as if it can be had, but can't be chosen.
+        let hevc_available = self.recording_support.as_ref().map(|s| s.hevc);
         let hevc = self.get(options::RECORD_HEVC);
-        let problems = self.recording_problems.get_or_insert_with(|| [false, true].map(|hevc| self.env.recording_problem(hevc)));
-        if let Some(problem) = problems[hevc as usize].clone() {
+        if let Some(problem) = self.recording_support.as_ref().and_then(|s| s.problems[hevc as usize].clone()) {
             warning(ui, &problem, |_| {});
         }
         let gif = self.get(options::RECORD_GIF);
@@ -437,14 +442,14 @@ impl SettingsApp {
                 settings_rows::frame_rate_row(ui, &self.env, mp4_only("Frames a second: 60 is smoothest for scrolling and animation, 30 suits most recordings"));
                 ui.separator();
                 let hevc = self.get(options::RECORD_HEVC);
-                let detail = if hevc_available {
+                let detail = if hevc_available != Some(false) {
                     "H.265 files are about a third smaller, but some older devices and websites can't play them"
                 } else {
                     platform::HEVC_MISSING
                 };
                 row(ui, "Video codec", mp4_only(detail), |ui| {
                     theme::group(ui, |ui| {
-                        let h265 = ui.add_enabled(hevc_available || hevc, egui::Button::selectable(hevc, "H.265"));
+                        let h265 = ui.add_enabled(hevc_available == Some(true) || hevc, egui::Button::selectable(hevc, "H.265"));
                         if h265.clicked() && !hevc {
                             self.set(options::RECORD_HEVC.name, 1);
                         }

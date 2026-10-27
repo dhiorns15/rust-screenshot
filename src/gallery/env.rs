@@ -80,6 +80,23 @@ pub enum TrayRequest {
     Quit,
 }
 
+/// The outputs whose sound can be recorded, and the microphones that are connected (see
+/// `Env::sound_devices`).
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct SoundDeviceLists {
+    pub outputs: Vec<platform::SoundDevice>,
+    pub microphones: Vec<platform::SoundDevice>,
+}
+
+/// What Settings → Recording says about recording here (see `Env::recording_support`).
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct RecordingSupport {
+    /// Recordings can be H.265.
+    pub hevc: bool,
+    /// What's missing for recording as H.264, then as H.265, if anything.
+    pub problems: [Option<String>; 2],
+}
+
 /// What moving the library to another folder did (see `Env::move_library`).
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct MoveReport {
@@ -113,6 +130,11 @@ pub struct Sandbox {
     pub microphones: Vec<platform::SoundDevice>,
     /// The outputs whose sound can be recorded.
     pub outputs: Vec<platform::SoundDevice>,
+    /// Looking for the outputs and microphones waits for the test to answer (on
+    /// `sound_device_lookups`), as a slow sound server would have it.
+    pub hold_sound_devices: bool,
+    /// Each time the outputs and microphones were looked for, with where to answer.
+    pub sound_device_lookups: Vec<Sender<SoundDeviceLists>>,
     pub latest: Option<Release>,
     /// The text "read" from each file name, for search.
     pub ocr_text: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
@@ -456,36 +478,49 @@ impl Env {
         }
     }
 
-    /// Recordings can be H.265 here (see `encode::hevc_available`).
-    pub fn hevc_available(&self) -> bool {
+    /// Whether recordings can be H.265 here, and what's missing for recording, if anything. It's
+    /// found on a thread, as GStreamer can take a while to say (Linux), and `ctx` repaints when it
+    /// has.
+    pub fn recording_support(&self, ctx: &eframe::egui::Context) -> Receiver<RecordingSupport> {
+        let (tx, rx) = channel();
         match &self.sandbox {
-            Some(s) => s.borrow().hevc,
-            None => platform::hevc_available(),
+            Some(s) => {
+                let s = s.borrow();
+                let _ = tx.send(RecordingSupport { hevc: s.hevc, problems: [s.recording_problem.clone(), s.recording_problem.clone()] });
+            }
+            None => {
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(RecordingSupport { hevc: platform::hevc_available(), problems: [false, true].map(platform::recording_problem) });
+                    ctx.request_repaint();
+                });
+            }
         }
+        rx
     }
 
-    /// The microphones that are connected.
-    pub fn microphones(&self) -> Vec<platform::SoundDevice> {
+    /// Looks for the outputs whose sound can be recorded and the microphones that are connected.
+    /// It's done on a thread, as a sound server can be slow to answer (or not answer, see
+    /// `recorder::pactl`), and `ctx` repaints when they're found.
+    pub fn sound_devices(&self, ctx: &eframe::egui::Context) -> Receiver<SoundDeviceLists> {
+        let (tx, rx) = channel();
         match &self.sandbox {
-            Some(s) => s.borrow().microphones.clone(),
-            None => platform::microphones(),
+            Some(s) => {
+                let mut s = s.borrow_mut();
+                if !s.hold_sound_devices {
+                    let _ = tx.send(SoundDeviceLists { outputs: s.outputs.clone(), microphones: s.microphones.clone() });
+                }
+                s.sound_device_lookups.push(tx);
+            }
+            None => {
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(SoundDeviceLists { outputs: platform::outputs(), microphones: platform::microphones() });
+                    ctx.request_repaint();
+                });
+            }
         }
-    }
-
-    /// The outputs whose sound can be recorded.
-    pub fn outputs(&self) -> Vec<platform::SoundDevice> {
-        match &self.sandbox {
-            Some(s) => s.borrow().outputs.clone(),
-            None => platform::outputs(),
-        }
-    }
-
-    /// What's missing for recording as `hevc` (H.265, else H.264) would have it, if anything.
-    pub fn recording_problem(&self, hevc: bool) -> Option<String> {
-        match &self.sandbox {
-            Some(s) => s.borrow().recording_problem.clone(),
-            None => platform::recording_problem(hevc),
-        }
+        rx
     }
 
     /// Asks for the latest release, if it's newer than this build (see `update::check`); the
