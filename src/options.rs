@@ -43,6 +43,11 @@ pub const RECORD_SOUND: Flag = Flag { name: "RecordSound", default: true };
 pub const RECORD_MICROPHONE: Flag = Flag { name: "RecordMicrophone", default: false };
 /// Which microphone, by the id its platform gives it (a text setting); empty means the default one.
 pub const RECORD_MICROPHONE_DEVICE: &str = "RecordMicrophoneDevice";
+/// What the capture panel (by the tray icon) shows and does, as the index of each choice (see
+/// `gallery::capture_panel`): its tab, and what the Capture button captures or records.
+pub const CAPTURE_PANEL_TAB: Choice = Choice { name: "CapturePanelTab", default: 0, values: &[0, 1] };
+pub const CAPTURE_PANEL_IMAGE: Choice = Choice { name: "CapturePanelImage", default: 0, values: &[0, 1, 2, 3, 4] };
+pub const CAPTURE_PANEL_VIDEO: Choice = Choice { name: "CapturePanelVideo", default: 0, values: &[0, 1] };
 /// The library's player is muted.
 pub const PLAYER_MUTED: Flag = Flag { name: "PlayerMuted", default: false };
 

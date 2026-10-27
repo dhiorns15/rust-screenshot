@@ -50,7 +50,7 @@ pub fn run() {
             .with_app_id(super::APP_ID),
         ..Default::default()
     };
-    // `--system-info`: opened to report a crash. `--recording`: from the quick-settings flyout.
+    // `--system-info`: opened to report a crash. `--recording`: from the capture panel.
     let system_info = std::env::args().any(|a| a == "--system-info");
     let recording = std::env::args().any(|a| a == "--recording");
     let _ = eframe::run_native(

@@ -93,6 +93,7 @@ pub struct Sandbox {
     pub settings_opened: usize,
     pub system_info_opened: usize,
     pub recording_settings_opened: usize,
+    pub library_opened: usize,
     pub trays_started: usize,
     /// Windows' own "Use the Print screen key to open screen capture".
     pub snipping_key: bool,
@@ -375,7 +376,15 @@ impl Env {
         }
     }
 
-    /// Opens Settings on Recording (from the quick-settings flyout).
+    /// Opens the library window.
+    pub fn open_library(&self) {
+        match &self.sandbox {
+            Some(s) => s.borrow_mut().library_opened += 1,
+            None => platform::open_library(),
+        }
+    }
+
+    /// Opens Settings on Recording (from the capture panel).
     pub fn open_recording_settings(&self) {
         match &self.sandbox {
             Some(s) => s.borrow_mut().recording_settings_opened += 1,

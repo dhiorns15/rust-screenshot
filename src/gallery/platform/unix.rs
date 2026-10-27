@@ -132,15 +132,26 @@ pub fn open_recording_settings() {
     }
 }
 
-/// Opens the quick-settings flyout.
-pub fn open_quick_settings() {
+/// Opens the library window.
+pub fn open_library() {
+    spawn_self(&[]);
+}
+
+/// Runs a capture or recording (`--region`, `--record`, ...), which the icon's process does if
+/// there is one.
+pub fn start_capture(flag: &str) {
+    spawn_self(&[flag]);
+}
+
+/// Opens the capture panel.
+pub fn open_capture_panel() {
     if let Ok(exe) = std::env::current_exe() {
-        reap(Command::new(exe).arg("--quick-settings").spawn());
+        reap(Command::new(exe).arg("--capture-panel").spawn());
     }
 }
 
-/// The desktop places the quick-settings flyout (there's no telling where the icon is).
-pub fn flyout_anchor(_at: Option<(i32, i32)>) -> Option<super::super::quick_settings::Anchor> {
+/// The desktop places the capture panel (there's no telling where the icon is).
+pub fn flyout_anchor(_at: Option<(i32, i32)>) -> Option<super::super::capture_panel::Anchor> {
     None
 }
 

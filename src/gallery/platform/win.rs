@@ -17,7 +17,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, Find
 use eframe::egui::{Pos2, Rect};
 
 use super::super::env::TrayRequest;
-use super::super::quick_settings::Anchor;
+use super::super::capture_panel::Anchor;
 use super::super::system_info::{self, Host};
 use crate::capture::Image;
 use crate::gallery::doc::flatten;
@@ -106,6 +106,17 @@ pub fn start_tray() {
     spawn_self(&[]);
 }
 
+/// Opens the library window.
+pub fn open_library() {
+    spawn_self(&["--gallery"]);
+}
+
+/// Runs a capture or recording (`--region`, `--record`, ...) in the tray app, starting it if it
+/// isn't running.
+pub fn start_capture(flag: &str) {
+    spawn_self(&[flag]);
+}
+
 /// Opens the Settings window, on System info if `system_info`.
 pub fn open_settings(system_info: bool) {
     spawn_self(if system_info { &["--settings", "--system-info"] } else { &["--settings"] });
@@ -116,7 +127,7 @@ pub fn open_recording_settings() {
     spawn_self(&["--settings", "--recording"]);
 }
 
-/// Where the quick-settings flyout goes: by `at` (where the tray icon was clicked), else by the
+/// Where the capture panel goes: by `at` (where the tray icon was clicked), else by the
 /// cursor, in the work area of the monitor it's on.
 pub fn flyout_anchor(at: Option<(i32, i32)>) -> Option<Anchor> {
     use windows_sys::Win32::Foundation::POINT;

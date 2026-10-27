@@ -14,7 +14,8 @@ command line or a desktop shortcut, with a few things Windows-only (see
 - **Capture** a region, a window, one screen or all screens, the same area as last time, a long
   page with a scrolling capture, after a delay, or just the text in an area (OCR). On Windows it
   takes over Print Screen (and optionally Win+Shift+S), freezes the screen to select from, and can
-  pin a capture to the screen. [More](docs/capturing.md)
+  pin a capture to the screen. Or click the tray icon for a capture panel with the options for an
+  image or a video, and a red button to start. [More](docs/capturing.md)
 - **Copied and saved** every time: each capture goes to the clipboard and to RSnip's folder, and
   every action can have its own shortcut. [Settings](docs/settings.md)
 - **Annotate** with arrows, lines, boxes, ellipses, steps, text, highlighter, spotlight and a pen,

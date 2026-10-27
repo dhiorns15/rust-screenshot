@@ -1,4 +1,4 @@
-//! The rows that Settings and the quick-settings flyout have in common, so a setting looks and
+//! The rows that Settings and the capture panel have in common, so a setting looks and
 //! works the same in both: each reads and writes through `Env`, and tells the running tray app.
 
 use eframe::egui::{self, Ui};
@@ -74,7 +74,7 @@ pub(super) fn sound_rows(ui: &mut Ui, env: &Env, microphones: &mut Option<Vec<Mi
 }
 
 /// "Default microphone" and each one that's connected, as a drop-down.
-fn microphone_picker(ui: &mut Ui, env: &Env, microphones: &mut Option<Vec<Microphone>>) {
+pub(super) fn microphone_picker(ui: &mut Ui, env: &Env, microphones: &mut Option<Vec<Microphone>>) {
     const DEFAULT: &str = "Default microphone";
     let list = microphones.get_or_insert_with(|| env.microphones());
     let chosen = env.text_setting(options::RECORD_MICROPHONE_DEVICE).unwrap_or_default();

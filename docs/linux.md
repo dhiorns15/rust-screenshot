@@ -61,7 +61,7 @@ would be made, then says what it came out as.
 MP4 and WebM recordings include what the computer plays, which is on by default, and the
 microphone, which is off. They're mixed into one track: AAC in MP4s, Opus in WebMs. GIFs have no
 sound. Turn either on or off, and pick the microphone (the default one unless you choose), in
-Settings → Recording or from *Quick settings…* in the icon's menu.
+Settings → Recording, or on the Video tab of *Capture panel…* in the icon's menu.
 
 Sound comes from the desktop's PulseAudio server, which PipeWire provides as `pipewire-pulse` on
 current desktops. GStreamer's PulseAudio plugin reads it, `pactl` lists the microphones, and MP4s
@@ -79,8 +79,8 @@ works, and which microphones it found.
 ## The icon in the top bar or panel
 
 Closing the library leaves RSnip's icon in the top bar or panel, for recording and opening the
-library, Settings or the screenshots folder again; *Quick settings…* in its menu opens a small window
-for the settings changed most (the format of recordings and whether they have sound, say); *Quit RSnip* in its menu stops it. Ubuntu, KDE and most panels show
+library, Settings or the screenshots folder again; *Capture panel…* in its menu opens a small window
+to take a screenshot or start a recording with the options that matter for it (the format and whether it has sound, say); *Quit RSnip* in its menu stops it. Ubuntu, KDE and most panels show
 it; on plain GNOME (e.g. Fedora) it needs the
 [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/). Settings →
 General turns it off, or starts it when you sign in.

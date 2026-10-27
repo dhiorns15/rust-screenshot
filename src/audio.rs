@@ -426,7 +426,7 @@ impl Drop for Speaker {
     }
 }
 
-/// The active microphones as (id, name), for the pickers in Settings and the quick settings.
+/// The active microphones as (id, name), for the pickers in Settings and the capture panel.
 pub fn microphones() -> Vec<(String, String)> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);

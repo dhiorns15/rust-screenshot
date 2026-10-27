@@ -12,7 +12,7 @@
 // `rsnip --pin <file>` shows an image pinned on top of other windows.
 // `rsnip --update`   checks for a newer version and installs it.
 // `rsnip --settings` opens the Settings window.
-// `rsnip --quick-settings` opens the quick-settings flyout (`--at X,Y`: by that point).
+// `rsnip --capture-panel` opens the capture panel (`--at X,Y`: by that point).
 
 mod audio;
 mod capture;
@@ -181,7 +181,7 @@ fn main() {
         Some("--gallery") => return gallery::run(args.get(1).map(PathBuf::from)),
         Some("--pin") => return args.get(1).map_or((), |file| pin::run(PathBuf::from(file))),
         Some("--settings") => return gallery::run_settings(),
-        Some("--quick-settings") => return gallery::run_quick_settings(),
+        Some("--capture-panel") => return gallery::run_capture_panel(),
         Some("--system-info") => {
             // A windowed program has no console of its own: write to the terminal it was run
             // from, unless the output already goes somewhere (`> file`).
@@ -372,11 +372,11 @@ fn open_settings() {
     let _ = std::process::Command::new(exe).arg("--settings").spawn();
 }
 
-/// Opens the quick-settings flyout by `at`, where the tray icon was clicked.
-fn open_quick_settings(at: POINT) {
+/// Opens the capture panel by `at`, where the tray icon was clicked.
+fn open_capture_panel(at: POINT) {
     let Ok(exe) = std::env::current_exe() else { return };
     unsafe { AllowSetForegroundWindow(ASFW_ANY) };
-    let _ = std::process::Command::new(exe).arg("--quick-settings").arg("--at").arg(format!("{},{}", at.x, at.y)).spawn();
+    let _ = std::process::Command::new(exe).arg("--capture-panel").arg("--at").arg(format!("{},{}", at.x, at.y)).spawn();
 }
 
 /// Opens the library window, optionally with `file` selected.
@@ -396,8 +396,11 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
     match msg {
         WM_APP_TRAY => {
             match (lparam & 0xFFFF) as u32 {
+                // A click opens the capture panel by the icon, where the cursor is now.
                 tray::NIN_SELECT | tray::NIN_KEYSELECT => {
-                    SetTimer(hwnd, TIMER_REGION, 150, None);
+                    let mut at: POINT = zeroed();
+                    GetCursorPos(&mut at);
+                    open_capture_panel(at);
                 }
                 WM_CONTEXTMENU => on_menu(hwnd),
                 tray::NIN_BALLOONUSERCLICK if UPDATE_BALLOON.get() => start_update(hwnd),
@@ -581,7 +584,7 @@ unsafe fn on_menu(hwnd: HWND) {
         tray::CMD_STOP_RECORD => stop_recording(hwnd),
         tray::CMD_GALLERY => open_gallery(None),
         tray::CMD_SETTINGS => open_settings(),
-        tray::CMD_QUICK_SETTINGS => open_quick_settings(clicked),
+        tray::CMD_CAPTURE_PANEL => open_capture_panel(clicked),
         tray::CMD_OPEN_FOLDER => shell_open(&output::screenshots_dir()),
         tray::CMD_UPDATE => start_update(hwnd),
         tray::CMD_EXIT => {
