@@ -1,17 +1,18 @@
 //! Decoding recordings with GStreamer (`gst-launch-1.0`), which sends raw frames on its standard
 //! output at a steady 30 per second, so each frame's time is known from how many came before.
 //! `gst-launch` can't seek, so playing from somewhere in an MP4 decodes a copy cut there (see mp4.rs),
-//! from the keyframe before it.
+//! from the keyframe before it. The sound is decoded and played by GStreamers of their own (`sound`).
 
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui::ColorImage;
 
-use super::{fit, Frame, Kind, Sink};
+use super::{fit, Frame, Kind, Sink, Sound};
 use crate::mp4::Movie;
 
 const FPS: u32 = 30;
@@ -89,4 +90,148 @@ pub fn decode(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> Resu
     }
     drop(temp);
     Ok(())
+}
+
+/// The sound as it passes from one GStreamer to the other: 48 kHz stereo, 16 bits.
+const PCM: &str = "audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=2";
+/// Bytes of it per second.
+const PCM_PER_SECOND: u64 = 48_000 * 4;
+
+/// Starts `path`'s sound playing from `from`. One GStreamer decodes it to raw sound and RSnip drops
+/// what comes before `from` (it can't seek, and a cut copy would start at a keyframe, up to a
+/// second early) on its way to a second, which plays it on the default output. Both are killed
+/// when the `Sound` is dropped.
+pub fn sound(path: &Path, from: Duration) -> Option<Sound> {
+    start(path, from).map(|(playing, ready)| Sound::new(ready, playing))
+}
+
+fn start(path: &Path, from: Duration) -> Option<(Playing, Arc<AtomicBool>)> {
+    let mut decoder = Command::new("gst-launch-1.0")
+        .args(["-q", "filesrc"])
+        .arg(format!("location={}", path.display()))
+        .args(["!", "decodebin", "!", "audioconvert", "!", "audioresample", "!", PCM, "!", "fdsink", "fd=1"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    // Not quiet, as it says "New clock" once it's playing.
+    let player = Command::new("gst-launch-1.0")
+        .args(["fdsrc", "fd=0", "!", PCM, "!", "audioconvert", "!", "audioresample", "!", "autoaudiosink"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut player) = player else {
+        let _ = decoder.kill();
+        let _ = decoder.wait();
+        return None;
+    };
+    let (mut raw, mut speaker, said) = (decoder.stdout.take().expect("piped"), player.stdin.take().expect("piped"), player.stdout.take().expect("piped"));
+    let skip = (from.as_secs_f64() * PCM_PER_SECOND as f64) as u64 / 4 * 4;
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut raw.by_ref().take(skip), &mut std::io::sink()).and_then(|_| std::io::copy(&mut raw, &mut speaker));
+    });
+    let ready = Arc::new(AtomicBool::new(false));
+    let waiting = ready.clone();
+    std::thread::spawn(move || {
+        let mut lines = std::io::BufReader::new(said).lines();
+        while let Some(Ok(line)) = lines.next() {
+            if line.starts_with("New clock") {
+                waiting.store(true, Ordering::Relaxed);
+            }
+        }
+        // It has ended, or failed (no sound device, say): nothing more to wait for.
+        waiting.store(true, Ordering::Relaxed);
+    });
+    Some((Playing([decoder, player]), ready))
+}
+
+/// The two processes making a recording's sound heard, killed when dropped.
+struct Playing([Child; 2]);
+
+impl Drop for Playing {
+    fn drop(&mut self) {
+        for child in &mut self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// A 3 s recording at `path` with a video and a sound track, made with GStreamer as `kind`
+    /// (an MP4 with AAC, or a WebM with Opus); false where it can't be (no GStreamer or encoder).
+    fn recording_with_sound(path: &Path, kind: Kind) -> bool {
+        let (video, audio, mux) = match kind {
+            Kind::WebM => ("vp8enc", "opusenc", "webmmux"),
+            _ => ("x264enc key-int-max=30 ! h264parse", "avenc_aac ! aacparse", "mp4mux"),
+        };
+        let pipeline = format!(
+            "videotestsrc num-buffers=90 ! video/x-raw,width=320,height=240,framerate=30/1 ! videoconvert ! {video} ! mux. \
+             audiotestsrc num-buffers=141 samplesperbuffer=1024 freq=440 ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! {audio} ! mux. \
+             {mux} name=mux ! filesink location={}",
+            path.display()
+        );
+        Command::new("gst-launch-1.0").arg("-q").args(pipeline.split_whitespace()).output().is_ok_and(|o| o.status.success())
+    }
+
+    fn dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rsnip-gst-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Recordings with sound still show their picture, and the sound can be played from anywhere
+    /// in them: its processes are stopped, and gone, when it's dropped.
+    #[test]
+    fn plays_the_sound_of_recordings_beside_their_picture() {
+        let dir = dir("sound");
+        for (kind, name) in [(Kind::Mp4, "Recording.mp4"), (Kind::WebM, "Recording.webm")] {
+            let path = dir.join(name);
+            if !recording_with_sound(&path, kind) {
+                eprintln!("skipped {name}: no GStreamer, or no encoders to make one with");
+                continue;
+            }
+            assert!(super::super::info(&path).sound, "{name} has sound");
+
+            let decoding = super::super::decode(&path, Duration::ZERO, (320, 240), None);
+            let frames = decoding.frames.iter().count();
+            assert!((88..=92).contains(&frames), "{name}: {frames} frames, {:?}", decoding.failed.lock().unwrap());
+
+            // Ready once it plays, or has given up: there may be no sound server here.
+            let begun = Instant::now();
+            let (playing, ready) = start(&path, Duration::from_millis(1500)).expect("GStreamer starts");
+            let pids = playing.0.each_ref().map(Child::id);
+            while !ready.load(Ordering::Relaxed) && begun.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(ready.load(Ordering::Relaxed), "{name}: it started or failed within 10 s");
+            drop(playing);
+            for pid in pids {
+                assert!(!Path::new(&format!("/proc/{pid}")).exists(), "{name}: process {pid} is gone");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_recording_without_sound_isnt_taken_for_one() {
+        let dir = dir("silent");
+        let path = dir.join("Recording.webm");
+        // Just a video track.
+        let made = Command::new("gst-launch-1.0")
+            .args(["-q", "videotestsrc", "num-buffers=10", "!", "vp8enc", "!", "webmmux", "!", "filesink"])
+            .arg(format!("location={}", path.display()))
+            .output();
+        if !made.is_ok_and(|o| o.status.success()) {
+            return eprintln!("skipped: no GStreamer, or no VP8 encoder");
+        }
+        assert!(!super::super::info(&path).sound);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -525,7 +525,7 @@ impl App {
     fn open(&mut self, path: &Path) {
         if is_video(path) {
             self.editor = None;
-            self.player = player::Player::open(path);
+            self.player = player::Player::open(path, &self.env);
             return;
         }
         match Doc::open(path) {
@@ -1335,8 +1335,10 @@ impl eframe::App for App {
             match (&mut self.editor, &mut self.player) {
                 (Some(editor), _) => editor.ui(ui, &mut self.tools, self.font.as_ref()),
                 (None, Some(player)) => {
-                    if let Some(player::Request::Trim(from, to)) = player.ui(ui) {
-                        self.trim(from, to);
+                    match player.ui(ui) {
+                        Some(player::Request::Trim(from, to)) => self.trim(from, to),
+                        Some(player::Request::Muted(muted)) => self.env.set_setting(crate::options::PLAYER_MUTED.name, muted as u32),
+                        None => {}
                     }
                 }
                 (None, None) => {

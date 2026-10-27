@@ -43,8 +43,7 @@ pub const RECORD_SOUND: Flag = Flag { name: "RecordSound", default: true };
 pub const RECORD_MICROPHONE: Flag = Flag { name: "RecordMicrophone", default: false };
 /// Which microphone, by the id its platform gives it (a text setting); empty means the default one.
 pub const RECORD_MICROPHONE_DEVICE: &str = "RecordMicrophoneDevice";
-/// The library's player is muted (until the player uses it).
-#[allow(dead_code)]
+/// The library's player is muted.
 pub const PLAYER_MUTED: Flag = Flag { name: "PlayerMuted", default: false };
 
 /// Move screenshots and recordings that haven't changed for `CLEAN_UP_DAYS` days to the Recycle

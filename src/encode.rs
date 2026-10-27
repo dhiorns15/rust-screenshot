@@ -315,7 +315,7 @@ pub fn read_stream(path: &Path, sound: bool) -> (Duration, i16) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn frames(n: usize, w: i32, h: i32) -> Vec<Image> {
@@ -370,28 +370,33 @@ mod tests {
         writes_a_playable_mp4(false, 60);
     }
 
-    /// Two seconds of video with a 440 Hz tone, sent in 10 ms pieces as a recording would.
-    #[test]
-    fn mp4_with_sound_has_a_video_and_a_sound_track_of_the_same_length() {
-        let path = std::env::temp_dir().join(format!("rsnip-test-sound-{}.mp4", std::process::id()));
-        let mut mp4: Box<dyn Encoder> = match Mp4::with_sound(&path, 64, 48, 30, false, true) {
-            Ok(mp4) => Box::new(mp4),
-            Err(e) => return eprintln!("skipped: {e}"),
-        };
+    /// Writes `seconds` of video with a 440 Hz tone to `path`, the tone sent in 10 ms pieces as a
+    /// recording would; the error says why not, where Media Foundation or its encoders are missing.
+    pub(crate) fn recording_with_tone(path: &Path, seconds: usize) -> Result<(), String> {
+        let mut mp4: Box<dyn Encoder> = Box::new(Mp4::with_sound(path, 64, 48, 30, false, true)?);
         let piece = AUDIO_RATE as usize / 100;
         let tone = |n: usize| (0.5 * (n as f32 * 440.0 * std::f32::consts::TAU / AUDIO_RATE as f32).sin() * i16::MAX as f32) as i16;
         let mut written = 0;
-        for (i, img) in frames(60, 64, 48).iter().enumerate() {
+        for (i, img) in frames(seconds * 30, 64, 48).iter().enumerate() {
             let at = Duration::from_millis(i as u64 * 1000 / 30);
-            mp4.frame(img, at).unwrap();
+            mp4.frame(img, at)?;
             // The sound up to this frame's time.
             while written < at.as_millis() as usize * AUDIO_RATE as usize / 1000 {
                 let pcm: Vec<i16> = (written..written + piece).flat_map(|n| [tone(n), tone(n)]).collect();
-                mp4.audio(&pcm, Duration::from_nanos(written as u64 * 1_000_000_000 / AUDIO_RATE as u64)).unwrap();
+                mp4.audio(&pcm, Duration::from_nanos(written as u64 * 1_000_000_000 / AUDIO_RATE as u64))?;
                 written += piece;
             }
         }
-        mp4.finish().unwrap();
+        mp4.finish()
+    }
+
+    /// Two seconds of video with a 440 Hz tone.
+    #[test]
+    fn mp4_with_sound_has_a_video_and_a_sound_track_of_the_same_length() {
+        let path = std::env::temp_dir().join(format!("rsnip-test-sound-{}.mp4", std::process::id()));
+        if let Err(e) = recording_with_tone(&path, 2) {
+            return eprintln!("skipped: {e}");
+        }
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(handlers(&bytes), ["vide", "soun"]);
         let (video, _) = read_stream(&path, false);

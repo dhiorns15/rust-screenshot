@@ -1,7 +1,8 @@
 //! Sound for screen recordings (see record.rs): what the computer is playing, via a WASAPI
 //! loopback on the default output, and/or the microphone. Each is read on a thread of its own as
 //! 48 kHz stereo floats, placed on the recording's timeline by the time WASAPI stamped each packet
-//! with, mixed, and sent on as 16-bit chunks for the encoder.
+//! with, mixed, and sent on as 16-bit chunks for the encoder. Also the way back: playing a
+//! recording's sound on the default output (`Speaker`).
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +29,8 @@ const POLL: Duration = Duration::from_millis(10);
 const TOLERANCE: i64 = RATE / 100;
 /// How long after its time a packet may still turn up before the mix moves past it (200 ms).
 const SLACK: i64 = RATE / 5;
-/// WAVEFORMATEX's tag for 32-bit floats.
+/// WAVEFORMATEX's tags for plain integers and for 32-bit floats.
+const WAVE_FORMAT_PCM: u16 = 1;
 const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
 /// "Element not found": there's no such device, or none at all.
 const NOT_FOUND: HRESULT = HRESULT(0x80070490_u32 as i32);
@@ -342,6 +344,86 @@ fn read_all(open: &mut Vec<Source>, mixer: &mut Mixer, clock: Clock, notes: &mut
             false
         }
     });
+}
+
+/// The default output, playing the 16-bit sound written to it: the library's player uses it for a
+/// recording's sound. Windows converts to whatever the device uses.
+pub struct Speaker {
+    client: IAudioClient,
+    render: IAudioRenderClient,
+    /// What the device's buffer holds, in frames.
+    size: u32,
+    channels: usize,
+    /// Frames written so far.
+    written: u64,
+}
+
+impl Speaker {
+    /// Opens the default output for 16-bit sound at `rate`, with `channels`. It doesn't play until
+    /// `start`, so the buffer can be filled first.
+    pub fn open(rate: u32, channels: u32) -> windows::core::Result<Speaker> {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+            let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
+            let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+            let block = channels * 2;
+            let format = WAVEFORMATEX {
+                wFormatTag: WAVE_FORMAT_PCM,
+                nChannels: channels as u16,
+                nSamplesPerSec: rate,
+                nAvgBytesPerSec: rate * block,
+                nBlockAlign: block as u16,
+                wBitsPerSample: 16,
+                cbSize: 0,
+            };
+            // A fifth of a second, so a busy moment doesn't make it stutter.
+            client.Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, 2_000_000, 0, &format, None)?;
+            let render: IAudioRenderClient = client.GetService()?;
+            let size = client.GetBufferSize()?;
+            Ok(Speaker { client, render, size, channels: channels as usize, written: 0 })
+        }
+    }
+
+    /// Starts playing what has been written.
+    pub fn start(&self) -> windows::core::Result<()> {
+        unsafe { self.client.Start() }
+    }
+
+    /// Frames written and not played yet.
+    pub fn queued(&self) -> windows::core::Result<u32> {
+        unsafe { self.client.GetCurrentPadding() }
+    }
+
+    /// How many frames can be written now.
+    pub fn room(&self) -> windows::core::Result<u32> {
+        Ok(self.size.saturating_sub(self.queued()?))
+    }
+
+    /// Writes interleaved `pcm`, which has to fit in `room`.
+    pub fn write(&mut self, pcm: &[i16]) -> windows::core::Result<()> {
+        let frames = (pcm.len() / self.channels) as u32;
+        unsafe {
+            let buffer = self.render.GetBuffer(frames)?;
+            std::ptr::copy_nonoverlapping(pcm.as_ptr() as *const u8, buffer, frames as usize * self.channels * 2);
+            self.render.ReleaseBuffer(frames, 0)?;
+        }
+        self.written += frames as u64;
+        Ok(())
+    }
+
+    /// Frames that have actually been played.
+    pub fn played(&self) -> u64 {
+        self.written.saturating_sub(self.queued().unwrap_or(0) as u64)
+    }
+}
+
+impl Drop for Speaker {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.client.Stop();
+        }
+    }
 }
 
 /// The active microphones as (id, name), for the pickers in Settings and the quick settings.

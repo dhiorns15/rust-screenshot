@@ -1166,6 +1166,42 @@ fn recordings_are_saved_elsewhere_copied_and_shown_in_their_folder() {
     assert_eq!(h.state().env.sandboxed().shown_in_folder, [gif]);
 }
 
+#[test]
+fn the_speaker_button_mutes_the_sound_and_is_remembered() {
+    let dir = fixtures("kittest-mute");
+    super::player::tests::gif(&dir.join("Recording g.gif"), 20);
+    crate::mp4::tests::recording(&dir.join("Recording s.mp4"), true);
+    crate::mp4::tests::recording(&dir.join("Recording q.mp4"), false);
+    let env = Env::sandbox(dir);
+    let mut h = Harness::builder().with_size(SIZE).with_step_dt(1.0 / 60.0).build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
+    settle(&mut h);
+    let speakers = |h: &Harness<App>| (shows(h, icon::SPEAKER_HIGH), shows(h, icon::SPEAKER_SLASH));
+    let muted = |h: &Harness<App>| h.state().env.setting("PlayerMuted");
+
+    // Only for a recording with sound.
+    for silent in ["Recording g", "Recording q"] {
+        click(&mut h, silent);
+        assert!(h.state().player.as_ref().is_some_and(|p| p.path.to_string_lossy().contains(silent)));
+        assert_eq!(speakers(&h), (false, false), "{silent} has no sound");
+    }
+    click(&mut h, "Recording s");
+    assert_eq!(speakers(&h), (true, false));
+    assert_eq!(muted(&h), None);
+
+    click(&mut h, icon::SPEAKER_HIGH);
+    assert_eq!(speakers(&h), (false, true));
+    assert!(h.state().player.as_ref().unwrap().muted);
+    assert_eq!(muted(&h), Some(1));
+
+    // The next recording with sound opens muted, until it's unmuted.
+    click(&mut h, "Recording q");
+    click(&mut h, "Recording s");
+    assert_eq!(speakers(&h), (false, true), "still muted");
+    click(&mut h, icon::SPEAKER_SLASH);
+    assert_eq!(speakers(&h), (true, false));
+    assert_eq!(muted(&h), Some(0));
+}
+
 /// Drags with the mouse on the open player's timeline, from one time to another (in seconds).
 fn drag_on_timeline(h: &mut Harness<App>, from: f32, to: f32) {
     let timeline = h.state().player.as_ref().unwrap().timeline;
@@ -1278,6 +1314,21 @@ mod snapshots {
         click(&mut h, &format!("{} Trim", icon::SCISSORS));
         h.state_mut().player.as_mut().unwrap().trim = Some((Duration::from_millis(500), Duration::from_millis(1500)));
         snapshot(&mut h, "player_trim");
+    }
+
+    #[test]
+    fn player_with_sound() {
+        let _gpu = super::super::tests::gpu();
+        let dir = fixtures("snap-player-sound");
+        super::super::player::tests::gif(&dir.join("Recording z.gif"), 20);
+        let mut h = window(dir, SIZE, |_| {});
+        click(&mut h, "Recording z");
+        wait_for_frame(&mut h);
+        // A GIF stands in for a recording with sound, which can't be drawn without a decoder.
+        h.state_mut().player.as_mut().unwrap().info.sound = true;
+        snapshot(&mut h, "player_sound");
+        click(&mut h, icon::SPEAKER_HIGH);
+        snapshot(&mut h, "player_muted");
     }
 
     #[test]

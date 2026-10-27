@@ -7,6 +7,7 @@ mod gst;
 #[cfg(windows)]
 mod mf;
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
@@ -15,7 +16,9 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 
+use super::env::Env;
 use crate::mp4::Movie;
+use crate::options::PLAYER_MUTED;
 
 /// Frames are decoded no bigger than this, which is plenty for the viewer.
 pub const MAX_SIZE: (u32, u32) = (1920, 1080);
@@ -56,7 +59,7 @@ impl Kind {
 pub struct Info {
     pub duration: Option<Duration>,
     pub size: Option<(u32, u32)>,
-    /// An MP4 with a sound track. (GIFs have none; WebMs aren't looked into.)
+    /// An MP4 or WebM with a sound track. (GIFs have none.)
     pub sound: bool,
 }
 
@@ -67,9 +70,52 @@ pub fn info(path: &Path) -> Info {
             Err(_) => Info::default(),
         },
         Some(Kind::Gif) => gif_info(path).unwrap_or_default(),
-        _ => Info::default(),
+        // Nothing else is known about a WebM without reading it all.
+        Some(Kind::WebM) => Info { sound: webm_has_sound(path), ..Info::default() },
+        None => Info::default(),
     }
 }
+
+/// Whether a WebM has a sound track: its codec (Opus, or Vorbis) is named in the track headers
+/// at the start of the file.
+fn webm_has_sound(path: &Path) -> bool {
+    let mut head = Vec::new();
+    let read = std::fs::File::open(path).and_then(|f| f.take(16 * 1024).read_to_end(&mut head));
+    read.is_ok() && [&b"A_OPUS"[..], b"A_VORBIS"].iter().any(|codec| head.windows(codec.len()).any(|w| w == *codec))
+}
+
+/// A recording's sound, playing through the speakers; it stops when dropped.
+pub struct Sound {
+    /// Set once the sound is audible, or given up on: there's nothing to wait for any more.
+    ready: Arc<AtomicBool>,
+    /// What stops it, when dropped.
+    _playing: Box<dyn Send>,
+}
+
+impl Sound {
+    pub fn new(ready: Arc<AtomicBool>, playing: impl Send + 'static) -> Sound {
+        Sound { ready, _playing: Box::new(playing) }
+    }
+
+    pub fn ready(&self) -> bool {
+        self.ready.load(Ordering::Relaxed)
+    }
+}
+
+/// Starts a recording's sound from a point in it.
+type StartSound = fn(&Path, Duration) -> Option<Sound>;
+
+/// Plays a recording's sound from `from` through the system's speakers, if it can.
+pub fn play_sound(path: &Path, from: Duration) -> Option<Sound> {
+    #[cfg(not(windows))]
+    return gst::sound(path, from);
+    #[cfg(windows)]
+    return mf::sound(path, from);
+}
+
+/// How long the clock waits for the sound to start playing, so a sound that never does (no device)
+/// doesn't hold up the picture.
+const SOUND_START: Duration = Duration::from_secs(1);
 
 /// `size` shrunk to fit `max`, keeping its shape, in even numbers (as video wants).
 pub fn fit(size: (u32, u32), max: (u32, u32)) -> (u32, u32) {
@@ -271,10 +317,12 @@ enum Grab {
 pub enum Request {
     /// Save `from`..`to` as a new recording.
     Trim(Duration, Duration),
+    /// The sound was muted (true) or unmuted, to be remembered.
+    Muted(bool),
 }
 
-/// A recording open in the library: its frames shown in time, play and pause, seeking, and
-/// choosing a part to trim.
+/// A recording open in the library: its frames shown in time with its sound, play and pause,
+/// seeking, and choosing a part to trim.
 pub struct Player {
     pub path: PathBuf,
     pub kind: Kind,
@@ -283,6 +331,15 @@ pub struct Player {
     position: Duration,
     /// When playing started, and from where.
     playing_since: Option<(Instant, Duration)>,
+    /// The sound is off (see `mute`).
+    pub muted: bool,
+    /// How to play the sound; none where there's nothing to play it through (the tests).
+    speakers: Option<StartSound>,
+    /// The sound, while it plays.
+    sound: Option<Sound>,
+    /// While the sound starts, the clock waits at where it begins, until the sound is playing or
+    /// this time, so the picture and the sound set off together.
+    sound_wait: Option<Instant>,
     decoding: Option<Decoding>,
     /// When the decoder was last started, so dragging the scrubber doesn't restart it every frame.
     decoding_since: Instant,
@@ -303,7 +360,7 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn open(path: &Path) -> Option<Player> {
+    pub fn open(path: &Path, env: &Env) -> Option<Player> {
         let kind = Kind::of(path)?;
         Some(Player {
             path: path.to_owned(),
@@ -311,6 +368,10 @@ impl Player {
             info: info(path),
             position: Duration::ZERO,
             playing_since: None,
+            muted: PLAYER_MUTED.read(|name| env.setting(name)),
+            speakers: env.play_sound.then_some(play_sound as StartSound),
+            sound: None,
+            sound_wait: None,
             decoding: None,
             decoding_since: Instant::now(),
             shown: None,
@@ -336,6 +397,8 @@ impl Player {
 
     pub fn position(&self) -> Duration {
         let at = match self.playing_since {
+            // Held at where it begins, while the sound starts.
+            Some((_, from)) if self.sound_wait.is_some() => from,
             Some((since, from)) => from + since.elapsed(),
             None => self.position,
         };
@@ -350,11 +413,37 @@ impl Player {
             self.seek(from);
         }
         self.playing_since = Some((Instant::now(), from));
+        self.start_sound(from);
     }
 
     pub fn pause(&mut self) {
         self.position = self.position();
         self.playing_since = None;
+        self.sound = None;
+        self.sound_wait = None;
+    }
+
+    /// Mutes or unmutes the sound, at once.
+    pub fn mute(&mut self, muted: bool) {
+        self.muted = muted;
+        if self.playing() {
+            let at = self.position();
+            self.playing_since = Some((Instant::now(), at));
+            self.start_sound(at);
+        }
+    }
+
+    /// (Re)starts the sound from `from` while playing, unless it's muted, there's none or nothing to
+    /// play it through. The clock waits for it to begin.
+    fn start_sound(&mut self, from: Duration) {
+        // The one before stops first.
+        self.sound = None;
+        self.sound_wait = None;
+        let audible = self.playing() && self.info.sound && !self.muted;
+        if let (true, Some(start)) = (audible, self.speakers) {
+            self.sound = start(&self.path, from);
+            self.sound_wait = self.sound.as_ref().map(|_| Instant::now() + SOUND_START);
+        }
     }
 
     pub fn toggle(&mut self) {
@@ -373,6 +462,7 @@ impl Player {
             self.playing_since = Some((Instant::now(), to));
         }
         self.restart(to);
+        self.start_sound(to);
     }
 
     fn restart(&mut self, from: Duration) {
@@ -390,6 +480,17 @@ impl Player {
     fn update(&mut self, ctx: &egui::Context) {
         if self.decoding.is_none() && !self.ended {
             self.restart(self.position);
+        }
+        if let Some(deadline) = self.sound_wait {
+            if self.sound.as_ref().is_none_or(Sound::ready) || Instant::now() >= deadline {
+                // The sound is playing: the clock starts, and the picture follows it.
+                self.sound_wait = None;
+                if let Some((_, from)) = self.playing_since {
+                    self.playing_since = Some((Instant::now(), from));
+                }
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(5));
+            }
         }
         let now = self.position();
         let mut newest = None;
@@ -490,6 +591,13 @@ impl Player {
             let label = if self.playing() { "Pause" } else { "Play" };
             if ui.add(egui::Button::new(egui::RichText::new(icon).size(18.0))).on_hover_text(format!("{label} (Space)")).clicked() {
                 self.toggle();
+            }
+            if self.info.sound {
+                let (icon, label) = if self.muted { (super::theme::icon::SPEAKER_SLASH, "Unmute") } else { (super::theme::icon::SPEAKER_HIGH, "Mute") };
+                if ui.add(egui::Button::new(egui::RichText::new(icon).size(18.0))).on_hover_text(label).clicked() {
+                    self.mute(!self.muted);
+                    request = Some(Request::Muted(self.muted));
+                }
             }
             let total = self.info.duration.map_or("–:––".into(), clock);
             ui.label(egui::RichText::new(format!("{} / {total}", clock(self.position()))).monospace());
@@ -608,6 +716,9 @@ impl Player {
         self.position = at;
         if self.playing() {
             self.playing_since = Some((Instant::now(), at));
+            // Silent while dragging; letting go seeks, which starts it again.
+            self.sound = None;
+            self.sound_wait = None;
         }
         if self.decoding_since.elapsed() > Duration::from_millis(250) {
             self.restart(at);
@@ -695,6 +806,130 @@ pub mod tests {
         let first = decoding.frames.recv_timeout(Duration::from_secs(10)).expect("a frame");
         assert!(first.at.abs_diff(Duration::from_millis(1500)) < Duration::from_millis(40), "starts where asked: {:?}", first.at);
         drop(decoding);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A recording's sound reaches the default output from where it's asked to, for as long as it's
+    /// let, and stops when told to or at its end.
+    #[cfg(windows)]
+    #[test]
+    fn plays_windows_recordings_sound() {
+        if let Err(e) = crate::audio::Speaker::open(48_000, 2) {
+            // CI's machines may have no sound device.
+            return eprintln!("skipped: {e}");
+        }
+        let dir = std::env::temp_dir().join(format!("rsnip-player-sound-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Recording.mp4");
+        if let Err(e) = crate::encode::tests::recording_with_tone(&path, 3) {
+            return eprintln!("skipped: {e}");
+        }
+        assert!(info(&path).sound);
+
+        // Plays from `from` until `stop` is set after `wait`, or the sound ends first; how much was
+        // played, and how long after it began playing that was.
+        let play = |from: Duration, wait: Duration| {
+            let (stop, ready) = (AtomicBool::new(false), AtomicBool::new(false));
+            std::thread::scope(|s| {
+                let thread = s.spawn(|| unsafe { mf::play(&path, from, &stop, &ready) });
+                let begun = Instant::now();
+                while !ready.load(Ordering::Relaxed) && begun.elapsed() < Duration::from_secs(10) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                let began = Instant::now();
+                while began.elapsed() < wait && !thread.is_finished() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                stop.store(true, Ordering::Relaxed);
+                let played = thread.join().unwrap().expect("plays");
+                (played, began.elapsed())
+            })
+        };
+        let (played, elapsed) = play(Duration::ZERO, Duration::from_millis(300));
+        assert!(played.abs_diff(elapsed) < Duration::from_millis(100) && played > Duration::from_millis(200), "{played:?} played in {elapsed:?}");
+        // 0.5 s from the end, it plays that and stops on its own.
+        let (played, elapsed) = play(Duration::from_millis(2500), Duration::from_secs(5));
+        assert!(played.abs_diff(Duration::from_millis(500)) < Duration::from_millis(100) && elapsed < Duration::from_secs(2), "{played:?} played in {elapsed:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The sound starts and stops along with the picture, muting and unmuting take effect at once,
+    /// and the clock waits for the sound to start.
+    #[test]
+    fn the_sound_follows_the_player() {
+        use std::sync::atomic::AtomicUsize;
+        static ALIVE: AtomicUsize = AtomicUsize::new(0);
+        static STARTS: Mutex<Vec<Duration>> = Mutex::new(Vec::new());
+        static READY: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+        struct Heard;
+        impl Drop for Heard {
+            fn drop(&mut self) {
+                ALIVE.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+        fn sound(_: &Path, from: Duration) -> Option<Sound> {
+            ALIVE.fetch_add(1, Ordering::Relaxed);
+            STARTS.lock().unwrap().push(from);
+            let ready = Arc::new(AtomicBool::new(false));
+            *READY.lock().unwrap() = Some(ready.clone());
+            Some(Sound::new(ready, Heard))
+        }
+        let heard = || ALIVE.load(Ordering::Relaxed);
+        let last_start = || *STARTS.lock().unwrap().last().unwrap();
+        let wait = |ms| std::thread::sleep(Duration::from_millis(ms));
+
+        let dir = std::env::temp_dir().join(format!("rsnip-player-follow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Recording.gif");
+        gif(&path, 20);
+        let env = Env::sandbox(dir.clone());
+        let mut player = Player::open(&path, &env).unwrap();
+        assert!(player.speakers.is_none(), "the sandbox plays no sound");
+        let ctx = egui::Context::default();
+
+        // A GIF has none, whatever there is to play it through.
+        player.speakers = Some(sound);
+        player.play();
+        assert_eq!(heard(), 0);
+        player.pause();
+        player.info.sound = true;
+
+        player.play();
+        assert_eq!(heard(), 1);
+        let start = last_start();
+        wait(60);
+        player.update(&ctx);
+        assert_eq!(player.position(), start, "the clock waits for the sound to start");
+        READY.lock().unwrap().as_ref().unwrap().store(true, Ordering::Relaxed);
+        player.update(&ctx);
+        wait(60);
+        assert!(player.position() >= Duration::from_millis(50), "and goes on once it has: {:?}", player.position());
+
+        // Muting stops the sound and the picture goes on; unmuting starts it from where it's got to.
+        player.mute(true);
+        assert!(player.playing() && player.muted && heard() == 0);
+        wait(60);
+        player.mute(false);
+        assert!(heard() == 1 && last_start() >= Duration::from_millis(100), "{:?}", last_start());
+        // Seeking starts it again from there, and pausing stops it.
+        player.seek(Duration::from_secs(1));
+        assert!(heard() == 1 && last_start() == Duration::from_secs(1));
+        player.pause();
+        assert_eq!(heard(), 0);
+
+        // Muted, it stays quiet.
+        player.mute(true);
+        player.play();
+        player.seek(Duration::from_millis(500));
+        assert_eq!(heard(), 0);
+        player.mute(false);
+        assert_eq!(heard(), 1);
+        drop(player);
+        assert_eq!(heard(), 0, "closing the recording stops the sound");
+
+        // It starts out muted if it was last time.
+        env.set_setting(PLAYER_MUTED.name, 1);
+        assert!(Player::open(&path, &env).unwrap().muted);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

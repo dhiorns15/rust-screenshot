@@ -35,6 +35,8 @@ pub struct Env {
     pub tray_app: bool,
     /// This build's version (a fixed one in the sandbox, so snapshots survive version bumps).
     pub version: Version,
+    /// The player plays recordings' sound through the speakers (not in the sandbox).
+    pub play_sound: bool,
     /// Text recognition for search, where the system has it (Windows, or Tesseract elsewhere).
     pub ocr: Option<Ocr>,
     /// The same, word by word, for copying text out of an image.
@@ -153,6 +155,7 @@ impl Env {
             check_updates: cfg!(not(windows)) && crate::options::CHECK_UPDATES.read(platform::setting),
             tray_app: cfg!(windows),
             version: Version::current(),
+            play_sound: true,
             ocr: platform::ocr(),
             read_words: platform::read_words(),
             crash_dir: crate::crash::dir(),
@@ -181,6 +184,7 @@ impl Env {
             check_updates: false,
             tray_app: cfg!(windows),
             version: Version::new(1, 2, 3),
+            play_sound: false,
             ocr: Some(ocr),
             read_words: Some(read_words),
             settings: Store::Memory(RefCell::default(), RefCell::default()),

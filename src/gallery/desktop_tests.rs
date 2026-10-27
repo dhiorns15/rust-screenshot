@@ -412,6 +412,39 @@ fn desktop_records_the_computers_sound() {
     assert!((-30.0..0.0).contains(&level), "the tone, at {level} dB");
 }
 
+/// How many programs are playing sound on the test sound server (the test tone is one).
+fn sound_players() -> usize {
+    let out = Command::new("pactl").args(["list", "short", "sink-inputs"]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()).count()
+}
+
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_plays_a_recordings_sound() {
+    desktop();
+    let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
+    let dir = temp_dir("play-sound");
+    let format = Format { gif: false, hevc: false, fps: 30, sound: true, microphone: None };
+    let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
+    std::thread::sleep(Duration::from_secs(4));
+    let recorded = recording.stop().expect("recording finishes");
+    assert!(super::player::info(&recorded.path).sound);
+
+    let before = sound_players();
+    let begun = Instant::now();
+    let sound = super::player::play_sound(&recorded.path, Duration::from_secs(1)).expect("the sound starts");
+    // How long the player's clock waits for the sound to begin.
+    while !sound.ready() && begun.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(sound.ready());
+    eprintln!("the sound began after {:?}", begun.elapsed());
+    wait_for(|| sound_players() == before + 1, "the sound server to hear the recording");
+    // Dropping it silences it at once.
+    drop(sound);
+    wait_for(|| sound_players() == before, "the sound server to hear no more of it");
+}
+
 #[test]
 #[ignore = "needs desktop services: run ci/desktop-test.sh"]
 fn desktop_a_missing_microphone_is_left_out() {
