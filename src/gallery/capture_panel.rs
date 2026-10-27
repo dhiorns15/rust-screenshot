@@ -251,6 +251,19 @@ pub fn launch_flag(env: &Env) -> &'static str {
     }
 }
 
+/// A move of the window, which the desktop does once it's started.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Moving {
+    No,
+    /// Started, at this time (egui's, in seconds).
+    Started(f64),
+    /// The desktop took the focus for it, and hasn't given it back yet.
+    LostFocus,
+}
+
+/// How soon after a move starts the desktop takes the focus for it, if it does.
+const MOVE_TAKES_FOCUS: f64 = 1.0;
+
 pub struct CapturePanel {
     pub env: Env,
     anchor: Option<Anchor>,
@@ -268,6 +281,8 @@ pub struct CapturePanel {
     pub launch: Launch,
     /// It's being (or has been) dragged: it stays where it's put, which is remembered.
     dragged: bool,
+    /// How far a move of the window has got.
+    pub moving: Moving,
     /// Where it was last remembered to be, in pixels.
     remembered: Option<Pos2>,
 }
@@ -278,7 +293,7 @@ impl CapturePanel {
         let mut fonts = egui::FontDefinitions::default();
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
-        CapturePanel { env, anchor, sound_devices: Default::default(), had_focus: false, height: HEIGHT, placed: None, closing: false, launch, dragged: false, remembered: None }
+        CapturePanel { env, anchor, sound_devices: Default::default(), had_focus: false, height: HEIGHT, placed: None, closing: false, launch, dragged: false, moving: Moving::No, remembered: None }
     }
 
     /// It stays open when another window is clicked.
@@ -313,10 +328,14 @@ impl CapturePanel {
     /// Lets the window be dragged by any part of it that isn't a control, and remembers where it's
     /// left (in pixels, so a scaled screen gets it back in the same place).
     fn movable(&mut self, ui: &mut Ui) {
-        let behind = ui.interact(ui.max_rect(), ui.id().with("move"), Sense::drag());
+        // Clicks too, so a press waits to be a drag: one that's only dragged is taken as dragged as
+        // soon as it's pressed, even on a button drawn over it, and on X11 moving the window takes
+        // the focus away, which would close the panel at every click.
+        let behind = ui.interact(ui.max_rect(), ui.id().with("move"), Sense::click_and_drag());
         if behind.drag_started() {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
             self.dragged = true;
+            self.moving = Moving::Started(ui.input(|i| i.time));
             // It's where it's put from now on.
             self.anchor = None;
         }
@@ -621,10 +640,22 @@ impl eframe::App for CapturePanel {
         theme::set_appearance(&ctx, Appearance::from_setting(self.env.setting(Appearance::SETTING)));
 
         // Closes on losing the focus, once it's had it (it may not have arrived yet), unless it's
-        // pinned open.
-        match ctx.input(|i| i.viewport().focused) {
+        // pinned open, or being moved: on X11 the desktop has the focus while it moves the window,
+        // and gives it back after, without the button's release.
+        let (focused, now) = ctx.input(|i| (i.viewport().focused, i.time));
+        self.moving = match (self.moving, focused) {
+            (Moving::Started(at), Some(false)) if now - at < MOVE_TAKES_FOCUS => Moving::LostFocus,
+            (Moving::LostFocus, Some(true)) => Moving::No,
+            // Windows keeps the focus, and may not say when the button's let go.
+            (Moving::Started(at), _) if now - at >= MOVE_TAKES_FOCUS => Moving::No,
+            (moving, _) => moving,
+        };
+        if self.moving != Moving::No {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+        match focused {
             Some(true) => self.had_focus = true,
-            Some(false) if self.had_focus && !self.keep_open() => self.close(&ctx),
+            Some(false) if self.had_focus && self.moving == Moving::No && !self.keep_open() => self.close(&ctx),
             _ if !self.had_focus => {
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
                 ctx.request_repaint_after(Duration::from_millis(100));

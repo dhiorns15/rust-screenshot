@@ -4,11 +4,11 @@
 use std::time::Duration;
 
 use eframe::egui::accesskit::{Role, Toggled};
-use eframe::egui::{Key, Vec2, ViewportId};
+use eframe::egui::{Key, Pos2, Vec2, ViewportId};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
-use super::capture_panel::{CapturePanel, WIDTH};
+use super::capture_panel::{CapturePanel, Moving, WIDTH};
 use super::env::{Env, TrayRequest};
 use super::platform::SoundDevice;
 use super::tests;
@@ -418,6 +418,84 @@ fn pinned_it_stays_open_when_another_window_is_clicked() {
     click(&mut h, "Keep open");
     assert!(!h.state().keep_open());
     focus(&mut h, true);
+    focus(&mut h, false);
+    assert!(h.state().closing);
+}
+
+/// Somewhere on the panel with nothing on it: in the footer, between the library's link and the
+/// buttons on the right (the window is as high as its content).
+fn empty(h: &Harness<CapturePanel>) -> Pos2 {
+    let link = h.get_by_label_contains("Open library").rect();
+    Pos2::new(WIDTH / 2.0, link.center().y)
+}
+
+/// Tells the window it has the focus, or hasn't, for one frame.
+fn focus_once(h: &mut Harness<CapturePanel>, focused: bool) {
+    h.input_mut().viewports.entry(ViewportId::ROOT).or_default().focused = Some(focused);
+    h.step();
+}
+
+/// Clicks at `at` as a hand does, pressing and letting go in different frames (checked straight
+/// after, as a move would be given up on a second later).
+fn press_and_release(h: &mut Harness<CapturePanel>, at: Pos2) {
+    h.hover_at(at);
+    h.drag_at(at);
+    h.step();
+    h.drop_at(at);
+    h.step();
+}
+
+/// Presses on an empty part of the panel and moves the mouse, still pressed.
+fn start_moving(h: &mut Harness<CapturePanel>) {
+    let empty = empty(h);
+    h.hover_at(empty);
+    h.drag_at(empty);
+    h.step();
+    h.hover_at(empty + Vec2::new(30.0, 0.0));
+    h.step();
+}
+
+#[test]
+fn clicking_it_does_not_move_it() {
+    // A move takes the focus away on X11, which closed the panel at every click, even the pin's.
+    let mut h = linux_panel("panel-click", |_| {});
+    focus(&mut h, true);
+    let pin = h.get_by_label("Keep open").rect().center();
+    press_and_release(&mut h, pin);
+    assert!(h.state().keep_open());
+    assert_eq!(h.state().moving, Moving::No);
+    let empty = empty(&h);
+    press_and_release(&mut h, empty);
+    assert_eq!(h.state().moving, Moving::No, "nor a click on an empty part of it");
+}
+
+#[test]
+fn moving_it_does_not_close_it_while_the_desktop_has_the_focus() {
+    let mut h = linux_panel("panel-move", |_| {});
+    focus(&mut h, true);
+    start_moving(&mut h);
+    assert!(matches!(h.state().moving, Moving::Started(_)));
+    // On X11 the desktop takes the focus while it moves the window, and the button's release
+    // never comes.
+    focus_once(&mut h, false);
+    assert_eq!(h.state().moving, Moving::LostFocus);
+    settle(&mut h);
+    assert!(!h.state().closing);
+    focus_once(&mut h, true);
+    assert_eq!(h.state().moving, Moving::No);
+    focus(&mut h, false);
+    assert!(h.state().closing, "clicking elsewhere after still closes it");
+}
+
+#[test]
+fn moved_on_windows_it_still_closes_when_another_window_is_clicked() {
+    // Windows keeps the focus while it moves the window, and may not say when the button's let go.
+    let mut h = panel("panel-move-windows", |_| {});
+    focus(&mut h, true);
+    start_moving(&mut h);
+    assert!(matches!(h.state().moving, Moving::Started(_)));
+    settle(&mut h);
+    assert_eq!(h.state().moving, Moving::No);
     focus(&mut h, false);
     assert!(h.state().closing);
 }
