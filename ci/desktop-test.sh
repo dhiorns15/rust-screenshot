@@ -10,7 +10,8 @@ set -eu
 cd "$(dirname "$0")/.."
 home=$(mktemp -d)
 trap 'rm -rf "$home"' EXIT
-# Screenshots, settings and lock files go here, not in the real home folder. A test's name as the
-# argument runs just that one.
-HOME=$home XDG_CONFIG_HOME=$home/.config TMPDIR=$home USER=rsnip-test \
+# Screenshots, settings, and lock and request files (in the runtime folder) go here, not in the
+# real home folder or session. A test's name as the argument runs just that one.
+mkdir -m 700 "$home/run"
+HOME=$home XDG_CONFIG_HOME=$home/.config XDG_CACHE_HOME=$home/.cache XDG_RUNTIME_DIR=$home/run TMPDIR=$home USER=rsnip-test \
     dbus-run-session -- cargo test --bin rsnip "${1:-desktop_}" -- --ignored --test-threads=1

@@ -74,16 +74,28 @@ impl Command {
     }
 }
 
-/// The file other RSnip processes (and installer/linux/install.sh) write a request to, checked
-/// twice a second.
+/// The file other RSnip processes (and installer/linux/install.sh and the package's prerm) write a
+/// request to, checked twice a second. It's in this user's own folder (see `runtime_dir`).
 pub fn request_file() -> PathBuf {
+    platform::runtime_dir().join("tray.request")
+}
+
+/// Asks the icon of an older RSnip, which kept its request and lock files in the shared temp
+/// folder, to quit if it's running, so there aren't two icons after an update. The request is
+/// only made new: one that's there already, maybe another user's, isn't followed.
+fn quit_older_icon() {
     let user = std::env::var("USER").unwrap_or_default();
-    std::env::temp_dir().join(format!("rsnip-tray-{user}.request"))
+    let older = |ext| std::env::temp_dir().join(format!("rsnip-tray-{user}.{ext}"));
+    let running = std::fs::File::options().write(true).open(older("lock")).is_ok_and(|f| f.try_lock().is_err());
+    if running {
+        let _ = std::fs::File::options().write(true).create_new(true).open(older("request")).and_then(|mut f| std::io::Write::write_all(&mut f, b"quit"));
+    }
 }
 
 /// Asks the running icon, if any, to go.
 pub fn quit() {
     let _ = std::fs::write(request_file(), Command::Quit.name());
+    quit_older_icon();
 }
 
 /// Asks RSnip in the background to record, starting it if it isn't running. Recording again
@@ -123,6 +135,7 @@ pub fn run(first: Option<Command>) {
     if (first.is_none() && !wanted) || !platform::claim_single_instance("Tray", "") {
         return;
     }
+    quit_older_icon();
     let requests = request_file();
     let _ = std::fs::remove_file(&requests);
     let (tx, rx) = channel();
@@ -235,7 +248,7 @@ fn begin(area: bool) -> Result<Option<(Recording, ScreenCast)>, String> {
     let frame = recorder::snapshot(&cast)?;
     let size = (frame.width(), frame.height());
     let crop = if area {
-        let file = std::env::temp_dir().join(format!("rsnip-area-{}.png", std::process::id()));
+        let file = platform::runtime_dir().join(format!("area-{}.png", std::process::id()));
         frame.save(&file).map_err(|e| e.to_string())?;
         let picked = pick_area(&file, Purpose::Record);
         let _ = std::fs::remove_file(&file);

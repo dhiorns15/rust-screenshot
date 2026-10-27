@@ -140,10 +140,17 @@ editor, bind a key to a command such as `grim -g "$(slurp)" ~/RSnip/shot-$(date 
 
 ## Settings and updates on Linux
 
-Settings live in `~/.config/rsnip/settings.json`, or open *Settings* from the library. When a new
-version is out, the library's status bar links to it. It checks once each time the library opens,
-using `curl` or, if that isn't installed (as on Ubuntu), `wget`; turn it off in *Settings → Updates*.
+Settings live in `~/.config/rsnip/settings.json`, or open *Settings* from the library. Only you can
+read it. If it's ever damaged, RSnip keeps it as `settings.json.bak` and starts new settings. RSnip's
+windows and its background icon leave each other requests, and hold their lock files, in
+`$XDG_RUNTIME_DIR/rsnip` (`/run/user/<your user id>/rsnip`), a folder that is yours alone.
+
+When a new version is out, the library's status bar links to it. It checks once each time the
+library opens, using `curl` or, if that isn't installed (as on Ubuntu), `wget`; turn it off in *Settings → Updates*.
 If RSnip came from its `.deb` or `.rpm`, the link opens *Settings → Updates*, where *Install* downloads the new package,
 checks it against GitHub's SHA-256, installs it with your package manager (asking for your
-password) and offers to restart RSnip. Otherwise, download the new version and run `./install.sh`
-again.
+password) and offers to restart RSnip. If it can't ask for your password (no authentication agent is
+running, as can happen over remote desktop), or the package manager fails (another update running,
+say), the downloaded package is kept, and Settings shows the command that installs it in a terminal,
+such as `sudo apt install /tmp/rsnip-update-…/rsnip-X.Y.Z.deb`. Other copies can't update
+themselves: download the new version and run `./install.sh` again.

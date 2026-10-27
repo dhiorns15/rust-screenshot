@@ -18,9 +18,20 @@ icon="$data/icons/hicolor/256x256/apps/rsnip.png"
 autostart="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/rsnip.desktop"
 
 # Asks RSnip's background icon to quit, if it's running (it checks for this file; a stale one is
-# cleared when it next starts). Not `rsnip --tray-quit`, which older versions don't know.
+# cleared when it next starts). Not `rsnip --tray-quit`, which older versions don't know. It's in
+# a folder of this user's own (see `runtime_dir` in src/gallery/platform/unix.rs); older versions
+# look in the temp folder, where the request is only made new (`set -C`), never written through a
+# file or link someone else left there.
 quit_background() {
-    echo quit >"${TMPDIR:-/tmp}/rsnip-tray-${USER:-}.request" 2>/dev/null || true
+    for dir in "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/rsnip" "${TMPDIR:-/tmp}/rsnip-$(id -u)" "${XDG_CACHE_HOME:-$HOME/.cache}/rsnip-run"; do
+        if [ -d "$dir" ] && [ -O "$dir" ] && [ ! -h "$dir" ]; then
+            echo quit >"$dir/tray.request" 2>/dev/null || true
+        fi
+    done
+    older="${TMPDIR:-/tmp}/rsnip-tray-${USER:-}"
+    if [ -O "$older.lock" ]; then
+        (set -C && echo quit >"$older.request") 2>/dev/null || true
+    fi
 }
 
 # The package manager, from /etc/os-release: apt, dnf, pacman, zypper, or "" if unknown.

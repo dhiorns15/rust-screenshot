@@ -94,8 +94,48 @@ pub fn instance_running(name: &str) -> bool {
 }
 
 fn lock_path(name: &str) -> PathBuf {
-    let user = std::env::var("USER").unwrap_or_default();
-    std::env::temp_dir().join(format!("rsnip-{}-{user}.lock", name.to_lowercase()))
+    runtime_dir().join(format!("{}.lock", name.to_lowercase()))
+}
+
+/// The folder for RSnip's lock files, the requests its processes leave each other, and passing
+/// files: `rsnip` in the session's runtime folder (`$XDG_RUNTIME_DIR`, else `/run/user/<uid>`),
+/// which is this user's alone. In a shared folder like /tmp, another user could leave a request
+/// (to quit, say) that this one can't remove. Without a runtime folder, a folder of its own in
+/// the temp folder, or in `~/.cache` if another user has that name.
+pub fn runtime_dir() -> PathBuf {
+    let uid = unsafe { libc::getuid() };
+    let absolute = |var| std::env::var_os(var).map(PathBuf::from).filter(|p| p.is_absolute());
+    let runtime = absolute("XDG_RUNTIME_DIR").unwrap_or_else(|| PathBuf::from(format!("/run/user/{uid}")));
+    first_private(&[runtime.join("rsnip"), std::env::temp_dir().join(format!("rsnip-{uid}"))]).unwrap_or_else(|| {
+        let cache = absolute("XDG_CACHE_HOME").unwrap_or_else(|| home().join(".cache"));
+        let _ = std::fs::create_dir_all(&cache);
+        let dir = cache.join("rsnip-run");
+        let _ = private_dir(&dir);
+        dir
+    })
+}
+
+/// The first of `dirs` that is, or can be made, a private folder (see `private_dir`).
+fn first_private(dirs: &[PathBuf]) -> Option<PathBuf> {
+    dirs.iter().find(|dir| private_dir(dir).is_ok()).cloned()
+}
+
+/// Makes `dir` (its parent must be there) a folder only this user can get into, unless it's
+/// something else already: a link, a file, or another user's folder.
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
+        _ => {}
+    }
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } {
+        return Err(std::io::Error::other(format!("{} isn't a folder of this user's", dir.display())));
+    }
+    if meta.mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 pub fn tell_tray(request: super::super::env::TrayRequest) {
@@ -252,24 +292,91 @@ fn settings_path() -> PathBuf {
     config.join("rsnip").join("settings.json")
 }
 
+/// The settings, for reading one; anything unreadable means defaults.
 fn settings() -> Settings {
-    std::fs::read(settings_path()).map(|b| parse_settings(&b)).unwrap_or_default()
+    read_settings(&settings_path(), 1).unwrap_or_default()
 }
 
-fn save_settings(all: &Settings) {
-    let path = settings_path();
-    if let (Some(dir), Ok(json)) = (path.parent(), serde_json::to_vec_pretty(all)) {
-        let _ = std::fs::create_dir_all(dir);
-        let _ = std::fs::write(path, json);
+/// Changes the settings: they're read, changed and written back whole. The tray, the library,
+/// Settings and the capture panel all do this, so a damaged file is never written over as if it
+/// were empty (see `change_settings_in`).
+fn change_settings(change: impl FnOnce(&mut Settings)) {
+    if let Err(e) = change_settings_in(&settings_path(), change) {
+        eprintln!("RSnip couldn't save its settings: {e}");
     }
+}
+
+/// How many times a writer reads the settings before taking them for damaged.
+const READ_TRIES: u32 = 5;
+
+/// Changes the settings in `path`. If they still can't be read after a few tries, the file is
+/// kept as `settings.json.bak` before new settings are started; if it can't be kept, nothing is
+/// written.
+fn change_settings_in(path: &Path, change: impl FnOnce(&mut Settings)) -> Result<(), String> {
+    let mut all = match read_settings(path, READ_TRIES) {
+        Ok(all) => all,
+        Err(why) => {
+            let backup = path.with_extension("json.bak");
+            std::fs::copy(path, &backup).map_err(|e| format!("{} can't be read ({why}), nor kept aside ({e})", path.display()))?;
+            eprintln!("RSnip's settings couldn't be read ({why}): they're kept in {}, and new ones started", backup.display());
+            Settings::new()
+        }
+    };
+    change(&mut all);
+    save_settings(path, &all).map_err(|e| e.to_string())
+}
+
+/// The settings in `path`, none if there's no file yet, else why they can't be read after `tries`
+/// tries: an older RSnip, which wrote the file in place, may be caught half way through.
+fn read_settings(path: &Path, tries: u32) -> Result<Settings, String> {
+    let mut tried = 0;
+    loop {
+        let why = match std::fs::read(path) {
+            Ok(bytes) => match parse_settings(&bytes) {
+                Some(all) => return Ok(all),
+                None => "it isn't settings".to_owned(),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::new()),
+            Err(e) => e.to_string(),
+        };
+        tried += 1;
+        if tried >= tries {
+            return Err(why);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Writes `all` to a new file beside `path`, then renames it over `path`, so another process never
+/// reads it half-written. Only this user can read it, as it has the destinations' details.
+fn save_settings(path: &Path, all: &Settings) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return Err(std::io::ErrorKind::InvalidInput.into()) };
+    std::fs::create_dir_all(dir)?;
+    let json = serde_json::to_vec_pretty(all)?;
+    let temp = dir.join(format!(".{}.{}-{}", name.to_string_lossy(), std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    // One left by a process that crashed with this one's number.
+    let _ = std::fs::remove_file(&temp);
+    let written = File::options().write(true).create_new(true).mode(0o600).open(&temp).and_then(|mut file| {
+        file.write_all(&json)?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)
+    });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 /// Settings: numbers, and some text (a folder, say).
 type Settings = serde_json::Map<String, serde_json::Value>;
 
-/// The settings in a `settings.json`; anything unreadable means defaults.
-fn parse_settings(bytes: &[u8]) -> Settings {
-    serde_json::from_slice(bytes).unwrap_or_default()
+/// The settings in a `settings.json`; None if it isn't settings (damaged, or empty).
+fn parse_settings(bytes: &[u8]) -> Option<Settings> {
+    serde_json::from_slice(bytes).ok()
 }
 
 /// A number setting, if it's set to one.
@@ -296,15 +403,111 @@ mod tests {
 
     #[test]
     fn damaged_settings_mean_defaults() {
-        let all = parse_settings(br#"{"LibraryDock": 1, "CheckUpdates": 0, "SaveFolder": "/home/a/RSnip"}"#);
+        let all = parse_settings(br#"{"LibraryDock": 1, "CheckUpdates": 0, "SaveFolder": "/home/a/RSnip"}"#).unwrap();
         assert_eq!((number(&all, "LibraryDock"), number(&all, "CheckUpdates")), (Some(1), Some(0)));
         assert_eq!(all["SaveFolder"].as_str(), Some("/home/a/RSnip"), "text settings sit beside them");
         for junk in [&b""[..], b"{", b"null", b"[1,2]", b"\xff\xfe"] {
-            assert!(parse_settings(junk).is_empty(), "{junk:?}");
+            assert!(parse_settings(junk).is_none(), "{junk:?}");
         }
         // A value of the wrong kind is unset, without losing the rest.
-        let all = parse_settings(br#"{"LibraryDock": -1, "Notify": "bottom", "Theme": 4294967296, "CheckUpdates": 0}"#);
+        let all = parse_settings(br#"{"LibraryDock": -1, "Notify": "bottom", "Theme": 4294967296, "CheckUpdates": 0}"#).unwrap();
         assert_eq!(["LibraryDock", "Notify", "Theme", "CheckUpdates"].map(|n| number(&all, n)), [None, None, None, Some(0)]);
+    }
+
+    /// A change that sets `name` to `value`.
+    fn set(name: &str, value: impl Into<serde_json::Value>) -> impl FnOnce(&mut Settings) {
+        let (name, value) = (name.to_owned(), value.into());
+        move |all| {
+            all.insert(name, value);
+        }
+    }
+
+    #[test]
+    fn settings_are_replaced_whole_and_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::gallery::tests::sandbox_dir("settings-write");
+        let path = dir.join("rsnip").join("settings.json");
+        assert_eq!(read_settings(&path, 1), Ok(Settings::new()), "none yet");
+        change_settings_in(&path, set("LibraryDock", 1)).unwrap();
+        change_settings_in(&path, set("SaveFolder", "/home/a/RSnip")).unwrap();
+        let all = read_settings(&path, 1).unwrap();
+        assert_eq!((number(&all, "LibraryDock"), all["SaveFolder"].as_str()), (Some(1), Some("/home/a/RSnip")));
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let left: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, ["settings.json"], "no new files left beside it");
+
+        // Another process reading while this one writes always finds the settings whole.
+        let big: Settings = (0..2000).map(|n| (format!("Setting{n}"), n.into())).collect();
+        save_settings(&path, &big).unwrap();
+        let reader = {
+            let path = path.clone();
+            std::thread::spawn(move || (0..300).all(|_| read_settings(&path, 1).is_ok_and(|all| all.len() == 2000)))
+        };
+        for _ in 0..300 {
+            save_settings(&path, &big).unwrap();
+        }
+        assert!(reader.join().unwrap(), "a reader caught the file half-written");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unreadable_settings_are_kept_not_written_over() {
+        let dir = crate::gallery::tests::sandbox_dir("settings-damaged");
+        let (path, backup) = (dir.join("settings.json"), dir.join("settings.json.bak"));
+        // Half of one, as an older RSnip writing in place could leave it.
+        let damaged = br#"{"LibraryDock": 1, "Destinations": [{"id": "a""#;
+        std::fs::write(&path, damaged).unwrap();
+        assert!(read_settings(&path, READ_TRIES).is_err(), "tried again, and still damaged");
+        assert_eq!(read_settings(&path, 1).unwrap_or_default(), Settings::new(), "readers get defaults");
+        change_settings_in(&path, set("CheckUpdates", 0)).unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), damaged, "kept aside");
+        assert_eq!(number(&read_settings(&path, 1).unwrap(), "CheckUpdates"), Some(0));
+
+        // A writer that finds them half-written waits for the rest, rather than starting afresh.
+        std::fs::remove_file(&backup).unwrap();
+        std::fs::write(&path, &damaged[..10]).unwrap();
+        let finish = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                std::fs::write(path, br#"{"LibraryDock": 1, "Theme": 2}"#).unwrap();
+            })
+        };
+        change_settings_in(&path, set("CheckUpdates", 0)).unwrap();
+        finish.join().unwrap();
+        let all = read_settings(&path, 1).unwrap();
+        assert_eq!(["LibraryDock", "Theme", "CheckUpdates"].map(|n| number(&all, n)), [Some(1), Some(2), Some(0)]);
+        assert!(!backup.exists());
+
+        // Nothing is written if the damaged file can't be kept.
+        let unreadable = dir.join("folder.json");
+        std::fs::create_dir(&unreadable).unwrap();
+        assert!(change_settings_in(&unreadable, set("CheckUpdates", 0)).is_err());
+        assert!(unreadable.is_dir() && !dir.join("folder.json.bak").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn makes_private_folders() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::gallery::tests::sandbox_dir("private-dir");
+        let mode = |p: &Path| std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+        let new = dir.join("new");
+        private_dir(&new).unwrap();
+        assert_eq!(mode(&new), 0o700);
+        let open = dir.join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        private_dir(&open).unwrap();
+        assert_eq!(mode(&open), 0o700, "made private");
+        let (file, link) = (dir.join("file"), dir.join("link"));
+        std::fs::write(&file, "").unwrap();
+        std::os::unix::fs::symlink(&new, &link).unwrap();
+        assert!(private_dir(&file).is_err() && private_dir(&link).is_err() && private_dir(&dir.join("no/such")).is_err());
+        // The first one that will do.
+        assert_eq!(first_private(&[dir.join("no/such"), link.clone(), file.clone(), open.clone(), new.clone()]), Some(open));
+        assert_eq!(first_private(&[link, file]), None);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 
@@ -313,9 +516,9 @@ pub fn setting(name: &str) -> Option<u32> {
 }
 
 pub fn set_setting(name: &str, value: u32) {
-    let mut all = settings();
-    all.insert(name.to_owned(), value.into());
-    save_settings(&all);
+    change_settings(|all| {
+        all.insert(name.to_owned(), value.into());
+    });
 }
 
 /// A text setting, like the folder screenshots are saved to; None if it's missing or empty.
@@ -324,9 +527,9 @@ pub fn text_setting(name: &str) -> Option<String> {
 }
 
 pub fn set_text_setting(name: &str, value: &str) {
-    let mut all = settings();
-    all.insert(name.to_owned(), value.into());
-    save_settings(&all);
+    change_settings(|all| {
+        all.insert(name.to_owned(), value.into());
+    });
 }
 
 thread_local! {

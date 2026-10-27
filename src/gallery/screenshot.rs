@@ -219,7 +219,7 @@ fn load(file: &Path) -> Result<RgbaImage, String> {
 
 /// Shows `screen` to pick an area on; `None` if that was cancelled.
 fn pick(screen: &RgbaImage, purpose: Purpose) -> Result<Option<Area>, String> {
-    let file = std::env::temp_dir().join(format!("rsnip-area-{}.png", std::process::id()));
+    let file = platform::runtime_dir().join(format!("area-{}.png", std::process::id()));
     write_png(screen, &file)?;
     let area = pick_area(&file, purpose);
     let _ = std::fs::remove_file(&file);

@@ -865,9 +865,13 @@ fn saved_service(provider: Provider) -> Result<Service, String> {
     }
 }
 
-/// Where a second `--gallery` launch leaves its request for the running library.
+/// Where a second `--gallery` launch leaves its request for the running library: on Linux in this
+/// user's own folder (see `runtime_dir`), as /tmp is shared.
 pub fn request_file() -> PathBuf {
-    std::env::temp_dir().join("rsnip-gallery-request.txt")
+    #[cfg(not(windows))]
+    return platform::runtime_dir().join("gallery-request.txt");
+    #[cfg(windows)]
+    return std::env::temp_dir().join("rsnip-gallery-request.txt");
 }
 
 #[cfg(test)]

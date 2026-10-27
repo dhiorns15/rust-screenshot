@@ -1,11 +1,14 @@
 #!/bin/sh
 # Before RSnip is removed or upgraded: ask each user's RSnip in the background to quit, so nothing
-# runs the old program (the library starts the new one). It checks for this request file (see
-# src/gallery/background.rs), which must be the user's own so it can remove it. Shared by the .deb
-# (prerm) and the .rpm (%preun).
-for lock in /tmp/rsnip-tray-*.lock; do
-    [ -e "$lock" ] || continue
-    request="${lock%.lock}.request"
-    echo quit >"$request" && chown --reference="$lock" "$request"
+# runs the old program (the library starts the new one). It checks for a request file beside its
+# lock, in a folder of the user's own: the session's runtime folder, or one in /tmp (see
+# `runtime_dir` in src/gallery/platform/unix.rs). The request is written as the folder's owner,
+# never as root, which would follow any link left there. Shared by the .deb (prerm) and the .rpm
+# (%preun).
+for lock in /run/user/*/rsnip/tray.lock /tmp/rsnip-*/tray.lock; do
+    [ -f "$lock" ] || continue
+    dir=$(dirname "$lock")
+    user=$(stat -c %U "$dir") || continue
+    runuser -u "$user" -- sh -c 'echo quit >"$1/tray.request"' sh "$dir"
 done 2>/dev/null
 exit 0

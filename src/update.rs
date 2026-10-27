@@ -330,7 +330,7 @@ mod install {
 #[cfg(not(windows))]
 pub mod package {
     use std::ffi::OsString;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     use super::{fetch, Release};
@@ -349,21 +349,97 @@ pub mod package {
         };
         let download = download.ok_or_else(|| format!("RSnip {} has no .{ext} package", release.version))?;
         let bytes = fetch(download, "package")?;
-        let path = std::env::temp_dir().join(format!("rsnip-{}.{ext}", release.version));
-        std::fs::write(&path, bytes).map_err(|e| format!("Couldn't save the package: {e}"))?;
-        // Readable by the package manager's own user (apt's _apt fetches even local packages).
-        let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o644));
+        let expected = download.sha256.as_deref().unwrap_or_default();
+        let dir = download_dir(&std::env::temp_dir()).map_err(|e| format!("Couldn't save the package: {e}"))?;
+        let path = dir.join(format!("rsnip-{}.{ext}", release.version));
+        if let Err(e) = save(&path, &bytes, expected) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(format!("Couldn't save the package: {e}"));
+        }
         let status = Command::new("pkexec").args(command(package, &path, &on_path)).status();
-        let _ = std::fs::remove_file(&path);
-        let status = status.map_err(|e| format!("Couldn't ask for permission to install it (pkexec): {e}"))?;
-        match status.code() {
-            Some(0) if replaced() => Ok(()),
+        let result = match status.as_ref().map(|s| s.code()) {
+            Ok(Some(0)) if replaced() => Ok(()),
             // apt and dnf skip a package with the version that's installed, and still succeed.
-            Some(0) => Err(format!("The package manager says the package of RSnip {} is installed already", release.version)),
-            // pkexec's: the password prompt was dismissed, or the user isn't allowed.
-            Some(126) => Err("Cancelled".into()),
-            Some(127) => Err("This account isn't allowed to install software".into()),
-            _ => Err(format!("The package manager couldn't install it ({status})")),
+            Ok(Some(0)) => Err(format!("The package manager says the package of RSnip {} is installed already", release.version)),
+            Ok(code) => Err(failure(code, package, &path, &on_path)),
+            Err(e) => Err(format!("Couldn't ask for permission to install it (pkexec): {e}. {}", by_hand(package, &path, &on_path))),
+        };
+        // Kept if it wasn't installed, to install by hand.
+        if status.is_ok_and(|s| s.success()) {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        result
+    }
+
+    /// A new folder in `parent` for a download, with a name no one can guess: only this user can
+    /// change what's in it, so the package can't be swapped once checked. Others may go through
+    /// it but not list it, so the package manager's own user (apt's _apt) can read the package.
+    fn download_dir(parent: &Path) -> std::io::Result<PathBuf> {
+        use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::fs::PermissionsExt;
+        let mut template = parent.join("rsnip-update-XXXXXX").into_os_string().into_vec();
+        template.push(0);
+        // SAFETY: a NUL-terminated template, which mkdtemp fills in.
+        if unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) }.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        template.pop();
+        let dir = PathBuf::from(OsString::from_vec(template));
+        // It's made 0700.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o711)).inspect_err(|_| {
+            let _ = std::fs::remove_dir(&dir);
+        })?;
+        Ok(dir)
+    }
+
+    /// Writes the package to `path`, which mustn't be there yet, readable by the package manager's
+    /// own user, then checks that what's there is what GitHub published: that file is what's
+    /// installed, as root.
+    fn save(path: &Path, bytes: &[u8], sha256: &str) -> Result<(), String> {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let mut file = std::fs::File::options().write(true).create_new(true).open(path).map_err(|e| e.to_string())?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o644)).map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        drop(file);
+        let written = std::fs::read(path).map_err(|e| e.to_string())?;
+        if super::sha256_hex(&written) != sha256 {
+            return Err("what was saved doesn't match its checksum".into());
+        }
+        Ok(())
+    }
+
+    /// Why the package at `path` wasn't installed, from the exit code of pkexec running the package
+    /// manager, and how to install it by hand. pkexec gives 126 when its password prompt is
+    /// dismissed, and 127 when it couldn't ask (no authentication agent is running, as can be over
+    /// remote desktop) or the account isn't allowed; apt-get gives 100 for any error of its own.
+    fn failure(code: Option<i32>, package: Package, path: &Path, has: &dyn Fn(&str) -> bool) -> String {
+        let hint = by_hand(package, path, has);
+        match (code, package) {
+            (Some(126), _) => format!("Cancelled: the password prompt was closed. {hint}"),
+            (Some(127), _) => format!("Couldn't ask for permission to install it (no authentication agent is running, or this account isn't allowed to install software). {hint}"),
+            (Some(100), Package::Deb) => format!("apt couldn't install it: another program may be installing software (try again once it's done), or something RSnip needs can't be installed. {hint}"),
+            (Some(code), _) => format!("The package manager couldn't install it (exit code {code}). {hint}"),
+            (None, _) => format!("The package manager was stopped before it was done. {hint}"),
+        }
+    }
+
+    /// How to install the package at `path` from a terminal, which says what goes wrong.
+    fn by_hand(package: Package, path: &Path, has: &dyn Fn(&str) -> bool) -> String {
+        let words = match package {
+            Package::Deb => vec!["apt".into(), "install".into(), path.as_os_str().to_owned()],
+            Package::Rpm => command(package, path, has),
+        };
+        let words: Vec<String> = words.iter().map(|w| shell_word(&w.to_string_lossy())).collect();
+        format!("To install it yourself, run: sudo {}", words.join(" "))
+    }
+
+    /// `word` for a shell command line, quoted if it needs to be.
+    fn shell_word(word: &str) -> String {
+        if !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || "/._+-=".contains(c)) {
+            word.to_owned()
+        } else {
+            format!("'{}'", word.replace('\'', r"'\''"))
         }
     }
 
@@ -403,6 +479,52 @@ pub mod package {
             assert_eq!(words(Package::Rpm, &|p| p == "dnf"), "dnf install -y /tmp/rsnip-0.5.3.deb");
             assert_eq!(words(Package::Rpm, &|p| p == "zypper"), "zypper --non-interactive install --allow-unsigned-rpm /tmp/rsnip-0.5.3.deb");
             assert_eq!(words(Package::Rpm, &|_| false), "rpm -U /tmp/rsnip-0.5.3.deb");
+        }
+
+        #[test]
+        fn says_why_it_did_not_install_and_how_to_by_hand() {
+            let path = Path::new("/tmp/rsnip-update-a1B2c3/rsnip-0.9.0.deb");
+            let deb = |code| failure(code, Package::Deb, path, &|_| true);
+            let hint = "To install it yourself, run: sudo apt install /tmp/rsnip-update-a1B2c3/rsnip-0.9.0.deb";
+            assert_eq!(deb(Some(126)), format!("Cancelled: the password prompt was closed. {hint}"));
+            assert!(deb(Some(127)).starts_with("Couldn't ask for permission to install it (no authentication agent is running") && deb(Some(127)).ends_with(hint));
+            assert!(deb(Some(100)).starts_with("apt couldn't install it: another program may be installing software") && deb(Some(100)).ends_with(hint));
+            assert_eq!(deb(Some(1)), format!("The package manager couldn't install it (exit code 1). {hint}"));
+            assert_eq!(deb(None), format!("The package manager was stopped before it was done. {hint}"));
+            // 100 is only apt's.
+            let rpm = failure(Some(100), Package::Rpm, Path::new("/tmp/x/rsnip-0.9.0.rpm"), &|p| p == "dnf");
+            assert_eq!(rpm, "The package manager couldn't install it (exit code 100). To install it yourself, run: sudo dnf install -y /tmp/x/rsnip-0.9.0.rpm");
+            assert_eq!(by_hand(Package::Deb, Path::new("/tmp/a b/it's.deb"), &|_| true), r"To install it yourself, run: sudo apt install '/tmp/a b/it'\''s.deb'");
+        }
+
+        #[test]
+        fn downloads_into_a_folder_of_its_own() {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let parent = std::env::temp_dir().join(format!("rsnip-update-download-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&parent);
+            std::fs::create_dir_all(&parent).unwrap();
+            let (a, b) = (download_dir(&parent).unwrap(), download_dir(&parent).unwrap());
+            assert_ne!(a, b, "a new name each time");
+            assert!(a.file_name().unwrap().to_string_lossy().starts_with("rsnip-update-"));
+            let meta = std::fs::symlink_metadata(&a).unwrap();
+            assert!(meta.is_dir() && meta.uid() == unsafe { libc::getuid() });
+            assert_eq!(meta.permissions().mode() & 0o777, 0o711, "only this user can change what's in it");
+
+            let package = a.join("rsnip-0.9.0.deb");
+            let sha256 = super::super::sha256_hex(b"package");
+            save(&package, b"package", &sha256).unwrap();
+            assert_eq!(std::fs::metadata(&package).unwrap().permissions().mode() & 0o777, 0o644);
+            assert_eq!(std::fs::read(&package).unwrap(), b"package");
+            assert!(save(&package, b"package", &sha256).is_err(), "never one that's there already");
+            // Nor through a link someone left.
+            let (target, link) = (b.join("target"), b.join("rsnip-0.9.0.deb"));
+            std::fs::write(&target, "mine").unwrap();
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(save(&link, b"package", &sha256).is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"mine");
+            assert_eq!(save(&b.join("other.deb"), b"package", "00").unwrap_err(), "what was saved doesn't match its checksum");
+            assert!(download_dir(&parent.join("no-such")).is_err());
+            std::fs::remove_dir_all(parent).unwrap();
         }
     }
 }
