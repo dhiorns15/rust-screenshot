@@ -755,6 +755,43 @@ fn desktop_icon_records_and_takes_screenshots() {
     }
 }
 
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_icon_waits_for_a_panel_that_comes_later() {
+    // A runtime folder of its own: an icon that ran earlier in this process keeps its lock.
+    let runtime = temp_dir("late-panel");
+    std::fs::set_permissions(&runtime, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let old_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+    std::env::set_var("XDG_RUNTIME_DIR", &runtime);
+    let panel_on_bus = |panel: &Panel| connection::Builder::session().unwrap().name("org.kde.StatusNotifierWatcher").unwrap().serve_at("/StatusNotifierWatcher", panel.clone()).unwrap().build().unwrap();
+
+    // As at sign-in, when RSnip may start before GNOME's AppIndicator extension.
+    let icon = std::thread::spawn(|| super::background::run(None));
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(!icon.is_finished(), "the icon gave up without a panel");
+    let panel = Panel::default();
+    let shell = panel_on_bus(&panel);
+    wait_for(|| !panel.items.lock().unwrap().is_empty(), "the icon to register with the panel that came later");
+
+    // The panel restarts (GNOME Shell on X11 does, say), and the icon goes in the new one.
+    drop(shell);
+    let panel = Panel::default();
+    let _shell = panel_on_bus(&panel);
+    wait_for(|| !panel.items.lock().unwrap().is_empty(), "the icon to register with the restarted panel");
+    let item = panel.items.lock().unwrap()[0].clone();
+    let conn = Connection::session().unwrap();
+    click(&conn, &item, "Quit RSnip");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !icon.is_finished() {
+        assert!(Instant::now() < deadline, "the icon didn't quit");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    match old_runtime {
+        Some(dir) => std::env::set_var("XDG_RUNTIME_DIR", dir),
+        None => std::env::remove_var("XDG_RUNTIME_DIR"),
+    }
+}
+
 /// An X server for the clipboard to live in, until dropped; DISPLAY points at it meanwhile.
 pub(super) struct XServer(Child);
 

@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ksni::blocking::TrayMethods;
@@ -127,6 +129,9 @@ struct Active {
     hid_library: bool,
 }
 
+/// How long the icon waits for a tray to show it in, when there's none as it starts.
+const TRAY_WAIT: Duration = Duration::from_secs(60);
+
 /// Shows the icon until it's told to quit, doing `first` first. Without `first`, returns at once if
 /// it's already running, or if this desktop has nowhere to show it. With it, it carries on (without
 /// the icon, if need be) until that's done, and stays only where it would have anyway.
@@ -139,7 +144,10 @@ pub fn run(first: Option<Command>) {
     let requests = request_file();
     let _ = std::fs::remove_file(&requests);
     let (tx, rx) = channel();
-    let icon = match (Icon { tx: tx.clone(), recording: false }).spawn() {
+    let shown = Arc::new(AtomicBool::new(true));
+    // The panel's tray may come after RSnip when you sign in (GNOME's AppIndicator extension, say),
+    // or go and come back: the icon goes in it whenever it's there.
+    let mut icon = match (Icon { tx: tx.clone(), recording: false, shown: shown.clone() }).assume_sni_available(true).spawn() {
         Ok(handle) => Some(handle),
         Err(e) if first.is_none() => {
             eprintln!("RSnip can't show an icon on this desktop ({e}). On GNOME, the AppIndicator extension adds them.");
@@ -151,17 +159,33 @@ pub fn run(first: Option<Command>) {
         let _ = tx.send(first);
     }
     // Otherwise it's here for `first` only, and goes once that's done.
-    let stay = wanted && icon.is_some();
-    if stay {
-        // Pushing new screenshots and recordings by themselves (see `auto_push`).
-        super::auto_push::start(notify);
-    }
+    let mut stay = wanted && icon.is_some();
+    // Until the icon is first in a tray, or there's been none for `TRAY_WAIT`.
+    let mut waiting = icon.is_some();
+    let started = Instant::now();
     let mut active: Option<Active> = None;
     // A screenshot was copied here, so the process stays for the clipboard even without an icon.
     let mut holding = false;
     let mut shown_recording = false;
     let mut brought_in = Instant::now();
     loop {
+        if waiting && shown.load(Ordering::Relaxed) {
+            waiting = false;
+            if stay {
+                // Pushing new screenshots and recordings by themselves (see `auto_push`).
+                super::auto_push::start(notify);
+            }
+        } else if waiting && started.elapsed() >= TRAY_WAIT {
+            // This desktop has nowhere to show it after all.
+            waiting = false;
+            stay = false;
+            if let Some(icon) = icon.take() {
+                icon.shutdown().wait();
+            }
+            if first.is_none() {
+                eprintln!("RSnip can't show an icon on this desktop: no tray took it in {} s. On GNOME, the AppIndicator extension adds them.", TRAY_WAIT.as_secs());
+            }
+        }
         // New screenshots from the desktop's screenshot tool, into RSnip's folder (see `bring_in`).
         if brought_in.elapsed() >= Duration::from_secs(2) {
             brought_in = Instant::now();
@@ -325,6 +349,8 @@ pub(super) fn notify(summary: &str, body: &str) {
 struct Icon {
     tx: Sender<Command>,
     recording: bool,
+    /// It's in the panel's tray: the tray (its StatusNotifierWatcher) is there and took it.
+    shown: Arc<AtomicBool>,
 }
 
 impl Icon {
@@ -387,6 +413,16 @@ impl ksni::Tray for Icon {
                 Icon::item("Quit RSnip", Command::Quit),
             ])
             .collect()
+    }
+
+    // ksni puts the icon in the tray again when it comes back.
+    fn watcher_online(&self) {
+        self.shown.store(true, Ordering::Relaxed);
+    }
+
+    fn watcher_offline(&self, _reason: ksni::OfflineReason) -> bool {
+        self.shown.store(false, Ordering::Relaxed);
+        true
     }
 }
 
