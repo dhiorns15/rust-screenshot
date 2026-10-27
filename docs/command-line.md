@@ -17,6 +17,7 @@ rsnip --gallery [file] open the library, optionally with a file selected
 rsnip --pin <file>      pin an image on top of other windows
 rsnip --update         check for a newer version and install it
 rsnip --settings       open the Settings window
+rsnip --quick-settings open the quick settings, as the tray menu does
 rsnip --system-info    print what Settings → System info shows, for a bug report
 ```
 
@@ -32,6 +33,7 @@ rsnip --last           capture the same area as last time
 rsnip --gallery [file] open the library, optionally with a file selected
 rsnip --update         check for a newer version and install it (.deb and .rpm installs)
 rsnip --settings       open the Settings window
+rsnip --quick-settings open the quick settings, as the icon's menu does
 rsnip --record         pick an area and record it (run again to stop)
 rsnip --record-screen  pick a screen or window and record it (run again to stop)
 rsnip --tray           put RSnip's icon in the top bar or panel (the library does this itself)

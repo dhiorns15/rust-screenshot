@@ -58,7 +58,8 @@ would be made, then says what it came out as.
 ## The icon in the top bar or panel
 
 Closing the library leaves RSnip's icon in the top bar or panel, for recording and opening the
-library, Settings or the screenshots folder again; *Quit RSnip* in its menu stops it. Ubuntu, KDE and most panels show
+library, Settings or the screenshots folder again; *Quick settings…* in its menu opens a small window
+for the settings changed most (the format of recordings and whether they have sound, say); *Quit RSnip* in its menu stops it. Ubuntu, KDE and most panels show
 it; on plain GNOME (e.g. Fedora) it needs the
 [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/). Settings →
 General turns it off, or starts it when you sign in.

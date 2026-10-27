@@ -12,7 +12,8 @@ use eframe::egui::{self, Align, Color32, Layout, RichText, Ui, Vec2};
 
 use super::env::{Env, MoveReport, PickedFolder, TrayRequest};
 use super::system_info::{self, Gpu};
-use super::theme::{self, icon, Appearance};
+use super::settings_rows;
+use super::theme::{self, icon, row, Appearance};
 use super::{platform, Dock};
 use crate::crash::{self, Crash};
 use crate::options::{self, Flag};
@@ -49,8 +50,9 @@ pub fn run() {
             .with_app_id(super::APP_ID),
         ..Default::default()
     };
-    // `--system-info`: opened to report a crash.
+    // `--system-info`: opened to report a crash. `--recording`: from the quick-settings flyout.
     let system_info = std::env::args().any(|a| a == "--system-info");
+    let recording = std::env::args().any(|a| a == "--recording");
     let _ = eframe::run_native(
         TITLE,
         options,
@@ -58,6 +60,8 @@ pub fn run() {
             let mut app = SettingsApp::new(&cc.egui_ctx, Env::real());
             if system_info {
                 app.section = Section::SystemInfo;
+            } else if recording {
+                app.section = Section::Recording;
             }
             Ok(Box::new(app))
         }),
@@ -146,6 +150,8 @@ pub struct SettingsApp {
     hevc: Option<bool>,
     /// What's missing for recording as H.264 and as H.265, found then too.
     recording_problems: Option<[Option<String>; 2]>,
+    /// The microphones that are connected, found when the Recording section opens.
+    microphones: Option<Vec<platform::Microphone>>,
     /// The folder chooser, while it's open.
     picking: Option<PickedFolder>,
     /// The previous save folder and how many screenshots and recordings are still there.
@@ -174,7 +180,7 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, push: Default::default() }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, hevc: None, recording_problems: None, microphones: None, picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, push: Default::default() }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -186,16 +192,12 @@ impl SettingsApp {
     }
 
     fn set(&self, name: &str, value: u32) {
-        self.env.set_setting(name, value);
-        self.env.tell_tray(TrayRequest::SettingsChanged);
+        settings_rows::set(&self.env, name, value);
     }
 
     /// A switch row for one of the shared options.
     fn flag_row(&mut self, ui: &mut Ui, flag: Flag, title: &str, detail: &str) {
-        let mut on = self.get(flag);
-        if row(ui, title, detail, |ui| theme::switch(ui, &mut on, title)).changed() {
-            self.set(flag.name, on as u32);
-        }
+        settings_rows::flag_row(ui, &self.env, flag, title, detail);
     }
 
     fn nav(&mut self, ui: &mut Ui) {
@@ -208,6 +210,7 @@ impl SettingsApp {
                 self.section = section;
                 self.note = None;
                 self.report = None;
+                self.microphones = None;
             }
         }
     }
@@ -386,29 +389,12 @@ impl SettingsApp {
         }
         let gif = self.get(options::RECORD_GIF);
         theme::card(ui, |ui| {
-            row(ui, "Format", "MP4 files are small and smooth; GIFs play almost anywhere, even where videos can't go", |ui| {
-                theme::group(ui, |ui| {
-                    for (label, value) in [("GIF", true), ("MP4", false)] {
-                        if ui.add(egui::Button::selectable(gif == value, label)).clicked() && gif != value {
-                            self.set(options::RECORD_GIF.name, value as u32);
-                        }
-                    }
-                })
-            });
+            settings_rows::format_row(ui, &self.env, "MP4 files are small and smooth; GIFs play almost anywhere, even where videos can't go");
         });
         let mp4_only = |detail: &'static str| if gif { "For MP4s; GIFs are 12 frames a second" } else { detail };
         theme::card(ui, |ui| {
             ui.add_enabled_ui(!gif, |ui| {
-                let fps = options::RECORD_FPS.read(|name| self.env.setting(name));
-                row(ui, "Frame rate", mp4_only("Frames a second: 60 is smoothest for scrolling and animation, 30 suits most recordings"), |ui| {
-                    theme::group(ui, |ui| {
-                        for &value in options::RECORD_FPS.values.iter().rev() {
-                            if ui.add(egui::Button::selectable(fps == value, value.to_string())).clicked() && fps != value {
-                                self.set(options::RECORD_FPS.name, value);
-                            }
-                        }
-                    })
-                });
+                settings_rows::frame_rate_row(ui, &self.env, mp4_only("Frames a second: 60 is smoothest for scrolling and animation, 30 suits most recordings"));
                 ui.separator();
                 let hevc = self.get(options::RECORD_HEVC);
                 let detail = if hevc_available {
@@ -428,6 +414,9 @@ impl SettingsApp {
                     })
                 });
             });
+        });
+        theme::card(ui, |ui| {
+            settings_rows::sound_rows(ui, &self.env, &mut self.microphones, true);
         });
         if !self.env.tray_app {
             theme::card(ui, |ui| {
@@ -797,29 +786,9 @@ impl eframe::App for SettingsApp {
     }
 }
 
-/// A setting: its title and a line of detail on the left, its control on the right.
 /// "1 screenshot or recording", "42 screenshots and recordings".
 fn items(n: usize) -> String {
     if n == 1 { "1 screenshot or recording".into() } else { format!("{n} screenshots and recordings") }
-}
-
-fn row<R>(ui: &mut Ui, title: &str, detail: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
-    ui.horizontal(|ui| {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let inner = control(ui);
-            if detail.is_empty() {
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| ui.label(title));
-            } else {
-                ui.with_layout(Layout::top_down(Align::Min), |ui| {
-                    ui.label(title);
-                    ui.label(RichText::new(detail).small().color(theme::palette(ui).muted));
-                });
-            }
-            inner
-        })
-        .inner
-    })
-    .inner
 }
 
 /// A shortcut as a key cap, or "None".

@@ -1,7 +1,7 @@
 //! The look of RSnip's windows: neutral surfaces in a dark or light palette, a blue accent, rounded
 //! controls, and Phosphor icons (https://phosphoricons.com, MIT).
 
-use eframe::egui::{self, Color32, CornerRadius, Margin, Response, RichText, Sense, Stroke, Theme, Ui, Vec2, Widget};
+use eframe::egui::{self, Align, Color32, CornerRadius, Layout, Margin, Response, RichText, Sense, Stroke, Theme, Ui, Vec2, Widget};
 pub use egui_phosphor::regular as icon;
 
 use super::editor::Tool;
@@ -364,6 +364,26 @@ pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
             add(ui)
         })
         .inner
+}
+
+/// A setting: its title and a line of detail on the left, its control on the right.
+pub fn row<R>(ui: &mut Ui, title: &str, detail: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let inner = control(ui);
+            if detail.is_empty() {
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| ui.label(title));
+            } else {
+                ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                    ui.label(title);
+                    ui.label(RichText::new(detail).small().color(palette(ui).muted));
+                });
+            }
+            inner
+        })
+        .inner
+    })
+    .inner
 }
 
 #[cfg(test)]

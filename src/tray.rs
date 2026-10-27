@@ -34,6 +34,7 @@ pub const CMD_RECORD: u32 = 17;
 pub const CMD_STOP_RECORD: u32 = 18;
 pub const CMD_UPDATE: u32 = 20;
 pub const CMD_SETTINGS: u32 = 24;
+pub const CMD_QUICK_SETTINGS: u32 = 25;
 /// `CMD_DELAY + n` starts a capture in `n` seconds.
 pub const CMD_DELAY: u32 = 100;
 pub const DELAYS: [u32; 3] = [3, 5, 10];
@@ -128,6 +129,7 @@ pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, state: &MenuState) -> u
         let text = wide("Delayed capture");
         AppendMenuW(menu, MF_POPUP, delays as usize, text.as_ptr());
     }
+    item(CMD_QUICK_SETTINGS, "Quick settings…");
     separator();
     item(CMD_GALLERY, "Open library && editor");
     item(CMD_OPEN_FOLDER, "Open screenshots folder");

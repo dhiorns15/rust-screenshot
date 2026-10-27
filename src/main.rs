@@ -25,6 +25,7 @@ include!("win_main.rs");
 #[derive(Debug, PartialEq, Eq)]
 enum Action {
     Settings,
+    QuickSettings,
     Tray,
     Record,
     RecordScreen,
@@ -49,6 +50,7 @@ fn action(args: &[String]) -> Action {
     let after = |flag: &str, n: usize| args.iter().skip_while(|a| *a != flag).nth(n).cloned();
     for (flag, action) in [
         ("--settings", Action::Settings),
+        ("--quick-settings", Action::QuickSettings),
         ("--tray", Action::Tray),
         ("--record", Action::Record),
         ("--record-screen", Action::RecordScreen),
@@ -94,6 +96,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match action(&args) {
         Action::Settings => gallery::run_settings(),
+        Action::QuickSettings => gallery::run_quick_settings(),
         Action::Tray => gallery::run_background(None),
         Action::Record => gallery::record(true),
         Action::RecordScreen => gallery::record(false),
@@ -162,6 +165,8 @@ mod tests {
     fn keeps_to_what_it_did_before() {
         assert_eq!(action("--settings"), Action::Settings);
         assert_eq!(action("--settings --system-info"), Action::Settings, "Settings, on System info");
+        assert_eq!(action("--settings --recording"), Action::Settings, "Settings, on Recording");
+        assert_eq!(action("--quick-settings"), Action::QuickSettings);
         assert_eq!(action("--tray"), Action::Tray);
         assert_eq!(action("--record"), Action::Record);
         assert_eq!(action("--record-screen"), Action::RecordScreen);

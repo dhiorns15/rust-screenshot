@@ -14,7 +14,10 @@ use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpeci
 use windows_sys::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW};
 use windows_sys::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, FindWindowW, PostMessageW, SetForegroundWindow, ShowWindow, ASFW_ANY, SW_RESTORE};
 
+use eframe::egui::{Pos2, Rect};
+
 use super::super::env::TrayRequest;
+use super::super::quick_settings::Anchor;
 use super::super::system_info::{self, Host};
 use crate::capture::Image;
 use crate::gallery::doc::flatten;
@@ -106,6 +109,42 @@ pub fn start_tray() {
 /// Opens the Settings window, on System info if `system_info`.
 pub fn open_settings(system_info: bool) {
     spawn_self(if system_info { &["--settings", "--system-info"] } else { &["--settings"] });
+}
+
+/// Opens the Settings window on Recording.
+pub fn open_recording_settings() {
+    spawn_self(&["--settings", "--recording"]);
+}
+
+/// Where the quick-settings flyout goes: by `at` (where the tray icon was clicked), else by the
+/// cursor, in the work area of the monitor it's on.
+pub fn flyout_anchor(at: Option<(i32, i32)>) -> Option<Anchor> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    unsafe {
+        let mut cursor = POINT { x: 0, y: 0 };
+        if let Some((x, y)) = at {
+            cursor = POINT { x, y };
+        } else if GetCursorPos(&mut cursor) == 0 {
+            return None;
+        }
+        let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return None;
+        }
+        let (mut dpi_x, mut dpi_y) = (96, 96);
+        GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
+        let work = info.rcWork;
+        Some(Anchor {
+            cursor: Pos2::new(cursor.x as f32, cursor.y as f32),
+            work: Rect::from_min_max(Pos2::new(work.left as f32, work.top as f32), Pos2::new(work.right as f32, work.bottom as f32)),
+            scale: dpi_x as f32 / 96.0,
+        })
+    }
 }
 
 /// Windows' own "Use the Print screen key to open screen capture" (Settings → Accessibility →
@@ -337,6 +376,18 @@ pub fn recording_problem(_hevc: bool) -> Option<String> {
 /// Whether recordings can be H.265 (see `encode::hevc_available`).
 pub fn hevc_available() -> bool {
     crate::encode::hevc_available()
+}
+
+/// A microphone to record from: the id the platform knows it by, and the name to show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Microphone {
+    pub id: String,
+    pub name: String,
+}
+
+/// The microphones that are connected. Nothing yet: recording sound fills this in.
+pub fn microphones() -> Vec<Microphone> {
+    Vec::new()
 }
 
 /// What reads the text in screenshots, for Settings.

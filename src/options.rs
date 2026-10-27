@@ -37,6 +37,15 @@ pub const RECORD_GIF: Flag = Flag { name: "RecordGif", default: false };
 pub const RECORD_HEVC: Flag = Flag { name: "RecordHevc", default: false };
 /// Frames per second for MP4 recordings.
 pub const RECORD_FPS: Choice = Choice { name: "RecordFps", default: 30, values: &[15, 24, 30, 60] };
+/// Record what the computer plays (MP4s; GIFs have no sound).
+pub const RECORD_SOUND: Flag = Flag { name: "RecordSound", default: true };
+/// Record the microphone too, mixed in with the computer's sound.
+pub const RECORD_MICROPHONE: Flag = Flag { name: "RecordMicrophone", default: false };
+/// Which microphone, by the id its platform gives it (a text setting); empty means the default one.
+pub const RECORD_MICROPHONE_DEVICE: &str = "RecordMicrophoneDevice";
+/// The library's player is muted (until the player uses it).
+#[allow(dead_code)]
+pub const PLAYER_MUTED: Flag = Flag { name: "PlayerMuted", default: false };
 
 /// Move screenshots and recordings that haven't changed for `CLEAN_UP_DAYS` days to the Recycle
 /// Bin (the Trash on Linux), unless an automatic push still has to get them (see

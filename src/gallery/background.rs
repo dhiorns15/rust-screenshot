@@ -26,6 +26,8 @@ pub enum Command {
     OpenLibrary,
     OpenFolder,
     Settings,
+    /// The small window of the settings changed most, by the icon.
+    QuickSettings,
     /// Record a screen or window, picked in the desktop's dialog.
     RecordScreen,
     /// Record part of a screen, picked in RSnip's own.
@@ -37,8 +39,16 @@ pub enum Command {
 }
 
 /// The commands without anything more to say.
-const COMMANDS: [Command; 7] =
-    [Command::OpenLibrary, Command::OpenFolder, Command::Settings, Command::RecordScreen, Command::RecordArea, Command::StopRecording, Command::Quit];
+const COMMANDS: [Command; 8] = [
+    Command::OpenLibrary,
+    Command::OpenFolder,
+    Command::Settings,
+    Command::QuickSettings,
+    Command::RecordScreen,
+    Command::RecordArea,
+    Command::StopRecording,
+    Command::Quit,
+];
 
 impl Command {
     /// As written to the request file.
@@ -47,6 +57,7 @@ impl Command {
             Command::OpenLibrary => "open".into(),
             Command::OpenFolder => "folder".into(),
             Command::Settings => "settings".into(),
+            Command::QuickSettings => "quick-settings".into(),
             Command::RecordScreen => "record-screen".into(),
             Command::RecordArea => "record-area".into(),
             Command::StopRecording => "stop".into(),
@@ -162,6 +173,7 @@ pub fn run(first: Option<Command>) {
             Some(Command::OpenLibrary) => platform::spawn_self(&[]),
             Some(Command::OpenFolder) => platform::open(&platform::screenshots_dir()),
             Some(Command::Settings) => platform::open_settings(false),
+            Some(Command::QuickSettings) => platform::open_quick_settings(),
             Some(Command::RecordScreen) => active = start_recording(false),
             Some(Command::RecordArea) => active = start_recording(true),
             Some(Command::StopRecording) => finish(active.take()),
@@ -348,6 +360,7 @@ impl ksni::Tray for Icon {
                 MenuItem::Separator,
                 Icon::item("Open library", Command::OpenLibrary),
                 Icon::item("Open screenshots folder", Command::OpenFolder),
+                Icon::item("Quick settings…", Command::QuickSettings),
                 Icon::item("Settings", Command::Settings),
                 MenuItem::Separator,
                 Icon::item("Quit RSnip", Command::Quit),

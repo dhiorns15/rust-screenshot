@@ -90,6 +90,7 @@ pub struct Sandbox {
     pub start_with_windows: bool,
     pub settings_opened: usize,
     pub system_info_opened: usize,
+    pub recording_settings_opened: usize,
     pub trays_started: usize,
     /// Windows' own "Use the Print screen key to open screen capture".
     pub snipping_key: bool,
@@ -97,6 +98,8 @@ pub struct Sandbox {
     pub hevc: bool,
     /// What's missing for recording (Linux's GStreamer, say).
     pub recording_problem: Option<String>,
+    /// The microphones that are connected.
+    pub microphones: Vec<platform::Microphone>,
     pub latest: Option<Release>,
     /// The text "read" from each file name, for search.
     pub ocr_text: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
@@ -368,6 +371,14 @@ impl Env {
         }
     }
 
+    /// Opens Settings on Recording (from the quick-settings flyout).
+    pub fn open_recording_settings(&self) {
+        match &self.sandbox {
+            Some(s) => s.borrow_mut().recording_settings_opened += 1,
+            None => platform::open_recording_settings(),
+        }
+    }
+
     pub fn open_system_info(&self) {
         match &self.sandbox {
             Some(s) => s.borrow_mut().system_info_opened += 1,
@@ -388,6 +399,14 @@ impl Env {
         match &self.sandbox {
             Some(s) => s.borrow().hevc,
             None => platform::hevc_available(),
+        }
+    }
+
+    /// The microphones that are connected.
+    pub fn microphones(&self) -> Vec<platform::Microphone> {
+        match &self.sandbox {
+            Some(s) => s.borrow().microphones.clone(),
+            None => platform::microphones(),
         }
     }
 

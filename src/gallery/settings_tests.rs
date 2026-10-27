@@ -9,6 +9,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 
 use super::env::{Env, TrayRequest};
+use super::platform::Microphone;
 use super::settings_window::{Section, SettingsApp};
 use super::theme::Appearance;
 use super::{tests, Dock};
@@ -200,6 +201,60 @@ fn frame_rate_and_codec_are_for_mp4s_and_h265_needs_an_encoder() {
     assert_eq!(h.state().env.setting(options::RECORD_HEVC.name), Some(1));
     click(&mut h, "GIF");
     assert!(h.get_by_label("60").accesskit_node().is_disabled(), "GIFs have their own frame rate");
+}
+
+#[test]
+fn recording_has_a_sound_card_with_the_computer_and_a_microphone() {
+    let mut h = settings("settings-sound", |_| {});
+    open(&mut h, Section::Recording);
+    assert!(is_on(&h, "Computer sound"), "on by default");
+    assert!(h.query_by_label_contains("What the computer plays").is_some());
+    assert!(!is_on(&h, "Microphone"), "off by default");
+    assert!(h.query_by_value("Default microphone").is_none(), "no list until the microphone is on");
+
+    toggle(&mut h, "Computer sound");
+    assert_eq!(h.state().env.setting(options::RECORD_SOUND.name), Some(0));
+    toggle(&mut h, "Microphone");
+    assert_eq!(h.state().env.setting(options::RECORD_MICROPHONE.name), Some(1));
+    assert!(h.query_by_value("Default microphone").is_some());
+    assert_eq!(requests(&h), [TrayRequest::SettingsChanged; 2]);
+}
+
+#[test]
+fn the_microphone_list_has_those_connected_and_keeps_one_that_is_gone() {
+    let mics = ["USB Microphone", "Laptop array"].map(|name| Microphone { id: name.to_lowercase(), name: name.into() });
+    let mut h = settings("settings-microphones", |env| {
+        env.sandboxed().microphones = mics.to_vec();
+        env.set_setting(options::RECORD_MICROPHONE.name, 1);
+    });
+    open(&mut h, Section::Recording);
+    h.get_by_value("Default microphone").click();
+    settle(&mut h);
+    assert!(h.query_by_label("USB Microphone").is_some() && h.query_by_label("Laptop array").is_some());
+    click(&mut h, "USB Microphone");
+    assert_eq!(h.state().env.text_setting(options::RECORD_MICROPHONE_DEVICE).as_deref(), Some("usb microphone"));
+    assert_eq!(requests(&h), [TrayRequest::SettingsChanged]);
+
+    let mut h = settings("settings-microphone-gone", |env| {
+        env.set_setting(options::RECORD_MICROPHONE.name, 1);
+        env.set_text_setting(options::RECORD_MICROPHONE_DEVICE, "unplugged");
+    });
+    open(&mut h, Section::Recording);
+    assert!(h.query_by_value("unplugged (not connected)").is_some());
+}
+
+#[test]
+fn gifs_have_no_sound() {
+    let mut h = settings("settings-sound-gif", |env| env.set_setting(options::RECORD_MICROPHONE.name, 1));
+    open(&mut h, Section::Recording);
+    assert!(h.query_by_label("GIFs have no sound").is_none());
+    click(&mut h, "GIF");
+    assert!(h.query_by_label("GIFs have no sound").is_some());
+    for label in ["Computer sound", "Microphone"] {
+        assert!(h.get_by_role_and_label(eframe::egui::accesskit::Role::CheckBox, label).accesskit_node().is_disabled(), "{label}");
+    }
+    click(&mut h, "MP4");
+    assert!(!h.get_by_role_and_label(eframe::egui::accesskit::Role::CheckBox, "Microphone").accesskit_node().is_disabled());
 }
 
 #[test]

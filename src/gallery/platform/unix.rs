@@ -125,6 +125,25 @@ pub fn open_settings(system_info: bool) {
     }
 }
 
+/// Opens the Settings window on Recording.
+pub fn open_recording_settings() {
+    if let Ok(exe) = std::env::current_exe() {
+        reap(Command::new(exe).args(["--settings", "--recording"]).spawn());
+    }
+}
+
+/// Opens the quick-settings flyout.
+pub fn open_quick_settings() {
+    if let Ok(exe) = std::env::current_exe() {
+        reap(Command::new(exe).arg("--quick-settings").spawn());
+    }
+}
+
+/// The desktop places the quick-settings flyout (there's no telling where the icon is).
+pub fn flyout_anchor(_at: Option<(i32, i32)>) -> Option<super::super::quick_settings::Anchor> {
+    None
+}
+
 /// Waits for a process RSnip started, in the background, so it doesn't stay a zombie after it ends
 /// while RSnip runs on (which `relaunch_when_closed` would take for still running).
 fn reap(child: std::io::Result<std::process::Child>) {
@@ -496,6 +515,18 @@ pub fn recording_problem(hevc: bool) -> Option<String> {
 /// Whether recordings can be H.265 (an encoder for it is installed in GStreamer).
 pub fn hevc_available() -> bool {
     super::super::recorder::hevc_available()
+}
+
+/// A microphone to record from: the id the platform knows it by, and the name to show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Microphone {
+    pub id: String,
+    pub name: String,
+}
+
+/// The microphones that are connected. Nothing yet: recording sound fills this in.
+pub fn microphones() -> Vec<Microphone> {
+    Vec::new()
 }
 
 /// What reads the text in screenshots, for Settings.

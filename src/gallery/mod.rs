@@ -21,6 +21,8 @@ mod recorder;
 #[cfg(not(windows))]
 mod screenshot;
 #[cfg(test)]
+mod quick_settings_tests;
+#[cfg(test)]
 mod settings_tests;
 mod color;
 mod doc;
@@ -36,6 +38,8 @@ mod pushing;
 mod editor;
 pub mod env;
 mod search;
+mod quick_settings;
+mod settings_rows;
 mod settings_window;
 mod system_info;
 mod theme;
@@ -43,6 +47,7 @@ pub(crate) mod words;
 
 #[cfg(windows)]
 pub use auto_push::start as start_auto_push;
+pub use quick_settings::run as run_quick_settings;
 pub use settings_window::run as run_settings;
 #[cfg(not(windows))]
 pub use background::{capture, quit as quit_background, record, run as run_background};
