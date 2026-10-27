@@ -321,7 +321,7 @@ const FOCUS_WAIT: f64 = 2.0;
 pub struct CapturePanel {
     pub env: Env,
     anchor: Option<Anchor>,
-    /// The outputs and microphones there are, found when a drop-down first shows.
+    /// The outputs and microphones there are, looked for in the background, and again when a drop-down opens.
     sound_devices: settings_rows::SoundDevices,
     /// It has had the focus; from then on, losing it closes the panel.
     had_focus: bool,
