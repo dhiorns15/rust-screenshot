@@ -303,8 +303,8 @@ fn settings() -> Settings {
 }
 
 /// Changes the settings: they're read, changed and written back whole. The tray, the library,
-/// Settings and the capture panel all do this, so a damaged file is never written over as if it
-/// were empty (see `change_settings_in`).
+/// Settings, the capture panel and the describer all do this, so a damaged file is never written
+/// over as if it were empty, and one change never undoes another (see `change_settings_in`).
 fn change_settings(change: impl FnOnce(&mut Settings)) {
     if let Err(e) = change_settings_in(&settings_path(), change) {
         eprintln!("RSnip couldn't save its settings: {e}");
@@ -314,10 +314,16 @@ fn change_settings(change: impl FnOnce(&mut Settings)) {
 /// How many times a writer reads the settings before taking them for damaged.
 const READ_TRIES: u32 = 5;
 
-/// Changes the settings in `path`. If they still can't be read after a few tries, the file is
-/// kept as `settings.json.bak` before new settings are started; if it can't be kept, nothing is
-/// written.
+/// How long a writer waits for another to finish changing the settings before going ahead anyway:
+/// a lock left stuck shouldn't freeze a window.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Changes the settings in `path`, holding `lock_settings` while they're read, changed and written,
+/// so two processes changing different settings at once keep both. If they still can't be read
+/// after a few tries, the file is kept as `settings.json.bak` before new settings are started; if
+/// it can't be kept, nothing is written.
 fn change_settings_in(path: &Path, change: impl FnOnce(&mut Settings)) -> Result<(), String> {
+    let _lock = lock_settings(path, LOCK_WAIT);
     let mut all = match read_settings(path, READ_TRIES) {
         Ok(all) => all,
         Err(why) => {
@@ -329,6 +335,44 @@ fn change_settings_in(path: &Path, change: impl FnOnce(&mut Settings)) -> Result
     };
     change(&mut all);
     save_settings(path, &all).map_err(|e| e.to_string())
+}
+
+/// The lock writers of the settings in `path` take turns with: `settings.json.lock` beside it (not
+/// the settings file, which each write replaces), held until the file returned is dropped. None if
+/// it can't be had within `wait`, and the change goes ahead without it. Readers needn't take it, as
+/// they only ever see a whole file (see `save_settings`).
+///
+/// It's waited for on a thread of its own, so the system hands it on the moment it's let go (trying
+/// now and then, a busy writer could take it back each time). If the wait runs out, that thread lets
+/// it go as soon as it has it.
+fn lock_settings(path: &Path, wait: std::time::Duration) -> Option<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let (dir, name) = (path.parent()?, path.file_name()?);
+    let lock = dir.join(format!("{}.lock", name.to_string_lossy()));
+    let _ = std::fs::create_dir_all(dir);
+    let file = match File::options().create(true).truncate(false).write(true).mode(0o600).open(&lock) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!("RSnip couldn't open {} ({e}): changing its settings without it", lock.display());
+            return None;
+        }
+    };
+    if file.try_lock().is_ok() {
+        return Some(file);
+    }
+    let (send, locked) = std::sync::mpsc::channel();
+    std::thread::spawn(move || send.send(file.lock().map(|()| file)));
+    match locked.recv_timeout(wait) {
+        Ok(Ok(file)) => Some(file),
+        Ok(Err(e)) => {
+            eprintln!("RSnip couldn't lock {} ({e}): changing its settings without it", lock.display());
+            None
+        }
+        Err(_) => {
+            eprintln!("RSnip's settings were still being changed elsewhere after {wait:?} ({} is held): changing them anyway", lock.display());
+            None
+        }
+    }
 }
 
 /// The settings in `path`, none if there's no file yet, else why they can't be read after `tries`
@@ -455,8 +499,10 @@ mod tests {
         let all = read_settings(&path, 1).unwrap();
         assert_eq!((number(&all, "LibraryDock"), all["SaveFolder"].as_str()), (Some(1), Some("/home/a/RSnip")));
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
-        let left: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
-        assert_eq!(left, ["settings.json"], "no new files left beside it");
+        let mut left: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        left.sort();
+        assert_eq!(left, ["settings.json", "settings.json.lock"], "no new files left beside it but the lock");
+        assert_eq!(std::fs::metadata(path.with_extension("json.lock")).unwrap().permissions().mode() & 0o777, 0o600);
 
         // Another process reading while this one writes always finds the settings whole.
         let big: Settings = (0..2000).map(|n| (format!("Setting{n}"), n.into())).collect();
@@ -506,6 +552,84 @@ mod tests {
         std::fs::create_dir(&unreadable).unwrap();
         assert!(change_settings_in(&unreadable, set("CheckUpdates", 0)).is_err());
         assert!(unreadable.is_dir() && !dir.join("folder.json.bak").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// How many times each writer in `changes_at_once_are_all_kept` changes its setting.
+    const ROUNDS: u32 = 50;
+
+    /// Starts `threads` writers in this process, each setting its own `{who}{n}` to 0, 1, ... up to
+    /// `ROUNDS - 1`.
+    fn writers(path: &Path, who: &str, threads: u32) -> Vec<std::thread::JoinHandle<()>> {
+        let writer = |n| {
+            let (path, name) = (path.to_owned(), format!("{who}{n}"));
+            std::thread::spawn(move || (0..ROUNDS).for_each(|value| change_settings_in(&path, set(&name, value)).unwrap()))
+        };
+        (0..threads).map(writer).collect()
+    }
+
+    /// Run by `changes_at_once_are_all_kept` in child processes: other RSnip windows, changing
+    /// settings of their own.
+    #[test]
+    fn settings_writer_child() {
+        let (Some(path), Ok(who)) = (std::env::var_os("RSNIP_SETTINGS_PATH"), std::env::var("RSNIP_SETTINGS_WRITER")) else { return };
+        writers(Path::new(&path), &who, 3).into_iter().for_each(|writer| writer.join().unwrap());
+    }
+
+    #[test]
+    fn changes_at_once_are_all_kept() {
+        let dir = crate::gallery::tests::sandbox_dir("settings-at-once");
+        let path = dir.join("settings.json");
+        change_settings_in(&path, set("Theme", 2)).unwrap();
+        let children = ["ChildA", "ChildB"].map(|who| {
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "gallery::platform::unix::tests::settings_writer_child", "--test-threads=1"])
+                .env("RSNIP_SETTINGS_PATH", &path)
+                .env("RSNIP_SETTINGS_WRITER", who)
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        });
+        writers(&path, "Thread", 6).into_iter().for_each(|writer| writer.join().unwrap());
+        for mut child in children {
+            assert!(child.wait().unwrap().success());
+        }
+        let all = read_settings(&path, 1).unwrap();
+        let mut names: Vec<_> = (0..6).map(|n| format!("Thread{n}")).collect();
+        names.extend(["ChildA", "ChildB"].iter().flat_map(|who| (0..3).map(move |n| format!("{who}{n}"))));
+        for name in &names {
+            assert_eq!(number(&all, name), Some(ROUNDS - 1), "{name} lost a change");
+        }
+        assert_eq!((number(&all, "Theme"), all.len()), (Some(2), names.len() + 1), "and nothing else lost");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_held_settings_lock_is_waited_for_then_gone_past() {
+        use std::time::{Duration, Instant};
+        let dir = crate::gallery::tests::sandbox_dir("settings-lock");
+        let path = dir.join("rsnip").join("settings.json");
+        let held = lock_settings(&path, LOCK_WAIT).expect("made, with its folder");
+        let started = Instant::now();
+        assert!(lock_settings(&path, Duration::from_millis(100)).is_none(), "held elsewhere");
+        assert!(started.elapsed() >= Duration::from_millis(100), "waited for first");
+
+        // A writer waiting has it as soon as it's let go.
+        let waiter = {
+            let path = path.clone();
+            std::thread::spawn(move || lock_settings(&path, LOCK_WAIT).is_some())
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        drop(held);
+        assert!(waiter.join().unwrap());
+
+        // Held for good (by a stuck RSnip, say), a change goes ahead without it after a while.
+        let held = lock_settings(&path, LOCK_WAIT).unwrap();
+        let started = Instant::now();
+        change_settings_in(&path, set("CheckUpdates", 0)).unwrap();
+        assert!(started.elapsed() >= LOCK_WAIT);
+        assert_eq!(number(&read_settings(&path, 1).unwrap(), "CheckUpdates"), Some(0));
+        drop(held);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -149,7 +149,9 @@ editor, bind a key to a command such as `grim -g "$(slurp)" ~/RSnip/shot-$(date 
 ## Settings and updates on Linux
 
 Settings live in `~/.config/rsnip/settings.json`, or open *Settings* from the library. Only you can
-read it. If it's ever damaged, RSnip keeps it as `settings.json.bak` and starts new settings. RSnip's
+read it. If it's ever damaged, RSnip keeps it as `settings.json.bak` and starts new settings. Changes
+take turns, holding `settings.json.lock` beside it, so two made at once (from Settings and the
+background icon, say) both stick; one kept waiting over two seconds goes ahead anyway. RSnip's
 windows and its background icon leave each other requests, and hold their lock files, in
 `$XDG_RUNTIME_DIR/rsnip` (`/run/user/<your user id>/rsnip`), a folder that is yours alone.
 
