@@ -258,7 +258,9 @@ mod tests {
             assert!(super::super::info(&path).sound, "{name} has sound");
 
             let decoding = super::super::decode(&path, Duration::ZERO, (320, 240), None);
-            let frames = decoding.frames.iter().count();
+            // Each frame within a minute, so a GStreamer that hangs fails the test rather than
+            // holding it up for ever.
+            let frames = std::iter::from_fn(|| decoding.frames.recv_timeout(Duration::from_secs(60)).ok()).count();
             assert!((88..=92).contains(&frames), "{name}: {frames} frames, {:?}", decoding.failed.lock().unwrap());
             // Its sound track decodes to raw sound, all 3 s of it.
             let pcm = decoder(&path).unwrap().output().unwrap();
