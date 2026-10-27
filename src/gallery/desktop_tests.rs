@@ -481,9 +481,12 @@ fn desktop_a_trimmed_recording_keeps_its_sound_in_step() {
     assert_eq!(from, Duration::ZERO);
     let kept = crate::mp4::Movie::open(&all).unwrap().shown();
     assert!(close(kept[0][0], shown[0][0]) && close(kept[1][0], shown[1][0]), "{:?} against {:?}", (kept[0][0], kept[1][0]), (shown[0][0], shown[1][0]));
-    // All of the picture, and the sound that starts before it ends (all but a last audio frame).
+    // All of the picture, and the sound that starts before it ends: the sound can run on a few
+    // audio frames past the last picture frame, more so on a busy machine.
     assert_eq!(kept[0].len(), shown[0].len());
-    assert!(shown[1].len() - kept[1].len() <= 1, "{} of {} audio frames", kept[1].len(), shown[1].len());
+    let ends = crate::mp4::Movie::open(&recorded.path).unwrap().duration().as_secs_f64();
+    let before = |end: f64| shown[1].iter().filter(|&&t| t < end).count();
+    assert!((before(ends - 1e-6)..=before(ends + 1e-6)).contains(&kept[1].len()), "{} of {} audio frames, {} before the picture ends at {ends} s", kept[1].len(), shown[1].len(), before(ends));
 
     // Trimmed from a keyframe, each audio frame is shown as long after the start as it was.
     let part = dir.join("part.mp4");
