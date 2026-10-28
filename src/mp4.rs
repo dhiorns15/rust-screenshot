@@ -141,6 +141,14 @@ impl Movie {
         !self.sound.is_empty()
     }
 
+    /// Whether some frames are shown in another order than they're decoded (B-frames): a decoder
+    /// then has to hold frames back to put them in order. (Windows' player asks; GStreamer works it
+    /// out itself.)
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn reorders(&self) -> bool {
+        self.video.samples.windows(2).any(|w| w[0].dts as i64 + w[0].cts as i64 >= w[1].dts as i64 + w[1].cts as i64)
+    }
+
     #[cfg(test)]
     pub fn frames(&self) -> usize {
         self.video.samples.len()
@@ -934,6 +942,10 @@ pub(crate) mod tests {
             s.cts = 6000;
         }
         movie.video.shift = -6000;
+        assert!(!movie.reorders(), "all two frames later: still in order");
+        movie.video.samples[2].cts = 0;
+        assert!(movie.reorders(), "one shown before the one decoded before it");
+        movie.video.samples[2].cts = 6000;
         let whole = dir.join("whole.mp4");
         write(&mut movie, &data, &whole);
         assert_eq!(edit_lists(&std::fs::read(&whole).unwrap()), [vec![(3000, 6000)], vec![]], "all 3 s, from media time 6000");

@@ -1,5 +1,7 @@
 //! Decoding recordings with Media Foundation's source reader, which seeks, and converts frames to
-//! 32-bit RGB itself. Their sound is decoded the same way and played on the default output (see
+//! 32-bit RGB at the size they're shown at itself: its video processor does that many times faster
+//! than converting and shrinking them here, which a 1440p recording at 60 frames a second didn't
+//! keep up with. Their sound is decoded the same way and played on the default output (see
 //! `audio::Speaker`).
 
 use std::collections::VecDeque;
@@ -8,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use eframe::egui::ColorImage;
+use eframe::egui::{Color32, ColorImage};
 use windows::core::{GUID, HSTRING};
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
@@ -25,15 +27,24 @@ unsafe fn read(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> win
     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     MFStartup(MF_VERSION, MFSTARTUP_FULL)?;
     let mut attrs = None;
-    MFCreateAttributes(&mut attrs, 1)?;
+    MFCreateAttributes(&mut attrs, 2)?;
     let attrs = attrs.unwrap();
-    // Converts whatever the file holds to the RGB asked for below.
-    attrs.SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1)?;
+    // Converts whatever the file holds to the RGB, and the size, asked for below.
+    attrs.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)?;
+    // Each frame out as soon as it's decoded: otherwise the decoder keeps many in hand (about
+    // 450 MB of them for a 1440p recording, against 170 MB). Not for one with B-frames, which have
+    // to wait for frames decoded after them (RSnip's own have none).
+    if crate::mp4::Movie::open(path).is_ok_and(|movie| !movie.reorders()) {
+        attrs.SetUINT32(&MF_LOW_LATENCY, 1)?;
+    }
     let reader = MFCreateSourceReaderFromURL(&HSTRING::from(path.as_os_str()), &attrs)?;
     let stream = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+    let native = reader.GetNativeMediaType(stream, 0)?.GetUINT64(&MF_MT_FRAME_SIZE)?;
+    let (out_w, out_h) = fit(((native >> 32) as u32, (native & 0xFFFF_FFFF) as u32), max);
     let wanted = MFCreateMediaType()?;
     wanted.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
     wanted.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32)?;
+    wanted.SetUINT64(&MF_MT_FRAME_SIZE, (out_w as u64) << 32 | out_h as u64)?;
     reader.SetCurrentMediaType(stream, None, &wanted)?;
     let current = reader.GetCurrentMediaType(stream)?;
     let size = current.GetUINT64(&MF_MT_FRAME_SIZE)?;
@@ -45,8 +56,6 @@ unsafe fn read(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> win
         let at = PROPVARIANT::from(from.as_nanos() as i64 / 100);
         reader.SetCurrentPosition(&GUID::zeroed(), &at)?;
     }
-    let (out_w, out_h) = fit((width as u32, height as u32), max);
-    let mut rgba = vec![0u8; width * height * 4];
     loop {
         if sink.stopped() {
             return Ok(());
@@ -67,28 +76,36 @@ unsafe fn read(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> win
         let mut data = std::ptr::null_mut();
         let mut len = 0u32;
         buffer.Lock(&mut data, None, Some(&mut len))?;
-        let bytes = std::slice::from_raw_parts(data, len as usize);
-        let row = width * 4;
-        for y in 0..height {
-            let src_row = if stride < 0 { height - 1 - y } else { y };
-            let Some(src) = bytes.get(src_row * stride.unsigned_abs() as usize..).and_then(|b| b.get(..row)) else { break };
-            for (d, s) in rgba[y * row..(y + 1) * row].chunks_exact_mut(4).zip(src.chunks_exact(4)) {
-                // BGRX to RGBA.
-                d.copy_from_slice(&[s[2], s[1], s[0], 255]);
-            }
-        }
+        let image = picture(std::slice::from_raw_parts(data, len as usize), width, height, stride);
         let _ = buffer.Unlock();
-        let image = if (out_w as usize, out_h as usize) == (width, height) {
-            ColorImage::from_rgba_unmultiplied([width, height], &rgba)
-        } else {
-            let full = image::RgbaImage::from_raw(width as u32, height as u32, rgba.clone()).expect("the frame's size");
-            let small = image::imageops::thumbnail(&full, out_w, out_h);
-            ColorImage::from_rgba_unmultiplied([out_w as usize, out_h as usize], small.as_raw())
-        };
+        // In case the reader couldn't make it the size asked for.
+        let image = if width as u32 > out_w || height as u32 > out_h { shrink(&image, out_w, out_h) } else { image };
         if !sink.send(Frame { at, image }) {
             return Ok(());
         }
     }
+}
+
+/// A `width` × `height` BGRX picture (rows `stride` bytes apart, bottom-up if it's negative), as
+/// egui's. Rows the buffer is too short for are black.
+fn picture(bytes: &[u8], width: usize, height: usize, stride: i32) -> ColorImage {
+    let mut pixels = vec![Color32::BLACK; width * height];
+    let pitch = stride.unsigned_abs() as usize;
+    for (y, row) in pixels.chunks_exact_mut(width).enumerate() {
+        let from = if stride < 0 { height - 1 - y } else { y } * pitch;
+        let Some(src) = bytes.get(from..from + width * 4) else { break };
+        for (pixel, bgrx) in row.iter_mut().zip(src.chunks_exact(4)) {
+            *pixel = Color32::from_rgb(bgrx[2], bgrx[1], bgrx[0]);
+        }
+    }
+    ColorImage::new([width, height], pixels)
+}
+
+/// `image` made `width` × `height`.
+fn shrink(image: &ColorImage, width: u32, height: u32) -> ColorImage {
+    let full = image::RgbaImage::from_raw(image.size[0] as u32, image.size[1] as u32, image.as_raw().to_vec()).expect("the frame's size");
+    let small = image::imageops::thumbnail(&full, width, height);
+    ColorImage::from_rgba_premultiplied([width as usize, height as usize], small.as_raw())
 }
 
 /// Starts `path`'s sound playing from `from`, in step with a clock that's there at `due` (see
@@ -183,4 +200,24 @@ pub(super) unsafe fn play(path: &Path, from: Duration, due: Instant, stop: &Atom
         std::thread::sleep(POLL);
     }
     Ok(Duration::from_nanos(speaker.played() * 1_000_000_000 / rate as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_come_out_as_egui_pictures_either_way_up() {
+        // 2 × 2 BGRX, each pixel blue x, green y, red 200; rows padded to 12 bytes.
+        let bytes: Vec<u8> = (0..2u8).flat_map(|y| (0..2u8).flat_map(move |x| [x, y, 200, 0]).chain([9; 4])).collect();
+        let top_down = picture(&bytes, 2, 2, 12);
+        assert_eq!(top_down.size, [2, 2]);
+        assert_eq!(top_down.pixels[1], Color32::from_rgb(200, 0, 1), "red from the R, its x in blue");
+        assert_eq!(top_down.pixels[2], Color32::from_rgb(200, 1, 0), "the next row past the padding");
+        let bottom_up = picture(&bytes, 2, 2, -12);
+        assert_eq!(bottom_up.pixels[0], Color32::from_rgb(200, 1, 0), "the last row in memory first");
+        // A short buffer leaves black rather than reading past its end.
+        assert_eq!(picture(&bytes[..12], 2, 2, 12).pixels[3], Color32::BLACK);
+        assert_eq!(shrink(&top_down, 1, 1).size, [1, 1]);
+    }
 }
