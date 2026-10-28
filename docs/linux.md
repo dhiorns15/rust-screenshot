@@ -89,8 +89,8 @@ be missing.
 ## The icon in the top bar or panel
 
 Closing the library leaves RSnip's icon in the top bar or panel, for recording and opening the
-library, Settings or the screenshots folder again; *Capture panel…* in its menu opens a small window
-to take a screenshot or start a recording with the options that matter for it (the format and whether it has sound, say), which its pin keeps open when you click elsewhere (Capture still closes it, so it is not in the picture). Your desktop places it each time it opens; drag it by any empty part to move it. On X11 it stays above other windows and out of the dock and Alt+Tab. Clicking the icon itself opens the library; *Quit RSnip* in its menu stops it. Ubuntu, KDE and most panels show
+library, Settings or the screenshots folder again. Clicking it (or *Capture panel…* in its menu) opens a small window
+to take a screenshot or start a recording with the options that matter for it (the format and whether it has sound, say), which its pin keeps open when you click elsewhere (Capture still closes it, so it is not in the picture). Your desktop places it each time it opens; drag it by any empty part to move it. On X11 it stays above other windows and out of the dock and Alt+Tab. While recording, clicking it stops the recording; *Open library* and *Quit RSnip* in its menu open the library and stop RSnip. Ubuntu, KDE and most panels show
 it; on plain GNOME (e.g. Fedora) it needs the
 [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/). If the
 panel isn't ready yet when RSnip starts at sign-in, the icon waits up to a minute for it, and it

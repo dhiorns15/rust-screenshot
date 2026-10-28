@@ -387,12 +387,12 @@ impl ksni::Tray for Icon {
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
-        let description = if self.recording { "Recording. Click to stop" } else { "Click to open the library" };
+        let description = if self.recording { "Recording. Click to stop" } else { "Click to take a screenshot or record" };
         ksni::ToolTip { title: "RSnip".into(), description: description.into(), ..Default::default() }
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.tx.send(if self.recording { Command::StopRecording } else { Command::OpenLibrary });
+        let _ = self.tx.send(if self.recording { Command::StopRecording } else { Command::CapturePanel });
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
