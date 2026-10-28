@@ -26,6 +26,22 @@ pub fn delete(id: &str) -> Result<(), String> {
     imp::delete(id)
 }
 
+/// `secret` in pieces of at most `size` bytes (at least 4), split between characters; one piece,
+/// maybe empty, if it fits.
+#[cfg(any(windows, test))]
+fn split(secret: &str, size: usize) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut rest = secret;
+    while rest.len() > size {
+        let at = (1..=size).rev().find(|&i| rest.is_char_boundary(i)).unwrap_or(size);
+        let (part, after) = rest.split_at(at);
+        parts.push(part);
+        rest = after;
+    }
+    parts.push(rest);
+    parts
+}
+
 #[cfg(windows)]
 mod imp {
     use std::ptr::null_mut;
@@ -40,9 +56,14 @@ mod imp {
     /// The most a credential can hold (CRED_MAX_CREDENTIAL_BLOB_SIZE), and its comment (characters).
     const MAX_SECRET: usize = 5 * 512;
     const MAX_COMMENT: usize = 255;
+    /// The most credentials one secret is kept in, for one longer than a credential holds (as a
+    /// Microsoft refresh token can be).
+    const MAX_PARTS: usize = 8;
 
-    fn target(id: &str) -> Vec<u16> {
-        wide(&format!("RSnip/destination/{id}"))
+    /// Where the `n`th part of destination `id`'s secret is kept: the first where a whole one always
+    /// was, the others beside it.
+    fn target(id: &str, n: usize) -> Vec<u16> {
+        wide(&if n == 0 { format!("RSnip/destination/{id}") } else { format!("RSnip/destination/{id}/part{}", n + 1) })
     }
 
     fn failed(what: &str) -> String {
@@ -60,7 +81,18 @@ mod imp {
 
     /// Credential Manager never asks anything, so `_ask` makes no difference.
     pub fn get(id: &str, _ask: bool) -> Result<Option<String>, String> {
-        let name = target(id);
+        let Some(mut bytes) = read(&target(id, 0))? else { return Ok(None) };
+        for n in 1..MAX_PARTS {
+            match read(&target(id, n))? {
+                Some(part) => bytes.extend(part),
+                None => break,
+            }
+        }
+        String::from_utf8(bytes).map(Some).map_err(|_| "The saved password isn't text".to_owned())
+    }
+
+    /// What the credential `name` holds, if there is one.
+    fn read(name: &[u16]) -> Result<Option<Vec<u8>>, String> {
         let mut found: *mut CREDENTIALW = null_mut();
         if unsafe { CredReadW(name.as_ptr(), CRED_TYPE_GENERIC, 0, &mut found) } == 0 {
             return if unsafe { GetLastError() } == ERROR_NOT_FOUND { Ok(None) } else { Err(failed("read the saved password")) };
@@ -68,14 +100,24 @@ mod imp {
         let credential = Credential(found);
         let (blob, size) = unsafe { ((*credential.0).CredentialBlob, (*credential.0).CredentialBlobSize as usize) };
         let bytes: &[u8] = if blob.is_null() { &[] } else { unsafe { std::slice::from_raw_parts(blob, size) } };
-        String::from_utf8(bytes.to_vec()).map(Some).map_err(|_| "The saved password isn't text".to_owned())
+        Ok(Some(bytes.to_vec()))
     }
 
+    /// Saves `secret` in as many credentials as it needs, and removes the parts a longer one before
+    /// it left.
     pub fn set(id: &str, label: &str, secret: &str) -> Result<(), String> {
-        if secret.len() > MAX_SECRET {
-            return Err(format!("That's too long to save in Windows' Credential Manager (the limit is {MAX_SECRET} bytes)"));
+        let parts = super::split(secret, MAX_SECRET);
+        if parts.len() > MAX_PARTS {
+            return Err(format!("That's too long to save in Windows' Credential Manager (the limit is {} bytes)", MAX_SECRET * MAX_PARTS));
         }
-        let name = target(id);
+        for (n, part) in parts.iter().enumerate() {
+            write(&target(id, n), label, part)?;
+        }
+        (parts.len()..MAX_PARTS).try_for_each(|n| remove(&target(id, n)))
+    }
+
+    /// Saves `secret` as the credential `name`, replacing any.
+    fn write(name: &[u16], label: &str, secret: &str) -> Result<(), String> {
         let comment = wide(&label.chars().take(MAX_COMMENT).collect::<String>());
         let user = wide("RSnip");
         let credential = CREDENTIALW {
@@ -100,7 +142,11 @@ mod imp {
     }
 
     pub fn delete(id: &str) -> Result<(), String> {
-        let name = target(id);
+        (0..MAX_PARTS).try_for_each(|n| remove(&target(id, n)))
+    }
+
+    /// Removes the credential `name`; fine if there isn't one.
+    fn remove(name: &[u16]) -> Result<(), String> {
         if unsafe { CredDeleteW(name.as_ptr(), CRED_TYPE_GENERIC, 0) } == 0 && unsafe { GetLastError() } != ERROR_NOT_FOUND {
             return Err(failed("remove the saved password"));
         }
@@ -308,8 +354,27 @@ mod tests {
         set(&id, "A test", "second").unwrap();
         assert_eq!(get(&id), Ok(Some("second".to_owned())), "replaced, not added");
         assert_eq!(get(&format!("{id}-other")), Ok(None), "other destinations are separate");
+        // Longer than one credential holds on Windows, then shorter again.
+        let long = format!("{}ü{}", "a".repeat(2559), "b".repeat(5000));
+        set(&id, "A test", &long).unwrap();
+        assert_eq!(get(&id), Ok(Some(long)), "kept whole");
+        set(&id, "A test", "short").unwrap();
+        assert_eq!(get(&id), Ok(Some("short".to_owned())), "with none of the longer one's parts");
         delete(&id).unwrap();
         assert_eq!(get(&id), Ok(None), "gone");
         delete(&id).unwrap();
+    }
+
+    #[test]
+    fn long_secrets_are_split_between_characters() {
+        assert_eq!(split("", 4), [""]);
+        assert_eq!(split("abcd", 4), ["abcd"]);
+        assert_eq!(split("abcdefghi", 4), ["abcd", "efgh", "i"]);
+        // ü is two bytes, so it goes whole into the next piece.
+        assert_eq!(split("abcüdef", 4), ["abc", "üde", "f"]);
+        let long = "ñ".repeat(3000);
+        let parts = split(&long, 2560);
+        assert!(parts.iter().all(|p| p.len() <= 2560));
+        assert_eq!(parts.concat(), long);
     }
 }
