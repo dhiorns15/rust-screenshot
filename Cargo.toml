@@ -33,6 +33,8 @@ ureq = { version = "3", default-features = false, features = ["rustls", "platfor
 suppaftp = { version = "12", default-features = false, features = ["rustls-ring", "deprecated"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "0.7"
+# The capture panel's X11 window and the camera bubble's, from eframe (which depends on it already).
+raw-window-handle = "0.6"
 
 # Capture, tray, OCR, pinning and recording: Windows only.
 [target.'cfg(windows)'.dependencies]
@@ -82,8 +84,6 @@ libc = "0.2"
 # Copying files to the clipboard in every format a file manager or chat reads (arboard has one),
 # and scrolling a window for a scrolling capture (XTEST's fake mouse wheel).
 x11rb = { version = "0.14", features = ["xtest"] }
-# The capture panel's X11 window, from eframe (which depends on it already).
-raw-window-handle = "0.6"
 trash = "5"
 
 [dev-dependencies]

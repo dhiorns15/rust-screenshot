@@ -4,7 +4,8 @@
 //! to try it, or for a recording, which starts it as a process of its own (see `Bubble`) and closes
 //! it when it stops. With `--at` it sits by that point (in pixels: the recorded area's bottom right)
 //! until it's dragged somewhere else, where the desktop lets a window place itself (not on
-//! Wayland). Small, medium and large buttons show on hover.
+//! Wayland). Small, medium and large buttons show on hover; for a recording, which would take them
+//! in, there are none, and the mouse wheel changes its size instead.
 //!
 //! The pictures come from Media Foundation on Windows (`mf`), and GStreamer's Video4Linux source
 //! elsewhere (`gst`).
@@ -252,12 +253,49 @@ pub fn run(args: &[String]) {
             if let Some(window) = super::capture_panel::x11_window(cc) {
                 let _ = super::capture_panel::keep_off_the_taskbar(window);
             }
+            #[cfg(windows)]
+            without_a_frame(cc);
             let events = env.open_camera(launch.device.clone(), &cc.egui_ctx);
             Ok(Box::new(CameraBubble::new(&cc.egui_ctx, env, events, launch, true)))
         }),
     );
     if let Err(e) = shown {
         say(&format!("failed: its window couldn't open ({e})"));
+    }
+}
+
+/// Takes away what Windows draws around a window without a title bar: winit leaves it the styles
+/// of one with a frame and keeps a pixel of frame along the top, for which Windows draws a shadow
+/// under the whole window (seen through around the circle, and recorded), a border and round corners.
+#[cfg(windows)]
+fn without_a_frame(window: &impl raw_window_handle::HasWindowHandle) {
+    use raw_window_handle::RawWindowHandle;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND};
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_NCCALCSIZE};
+
+    /// All of the window is the picture's, with no frame at all.
+    unsafe extern "system" fn all_client(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+        if message == WM_NCCALCSIZE && wparam != 0 {
+            return 0;
+        }
+        unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+    }
+
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else { return };
+    let hwnd = handle.hwnd.get() as HWND;
+    let corners = DWMWCP_DONOTROUND;
+    let border = DWMWA_COLOR_NONE;
+    // SAFETY: the window is this thread's and stays for the process; the attributes are the
+    // 4-byte values Windows reads for them.
+    unsafe {
+        SetWindowSubclass(hwnd, Some(all_client), 1, 0);
+        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE as u32, (&raw const corners).cast(), 4);
+        DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR as u32, (&raw const border).cast(), 4);
+        // Has the frame worked out again, without it.
+        SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }
 
@@ -294,6 +332,8 @@ pub struct CameraBubble {
     pub said: Vec<String>,
     /// It says it on standard output too.
     speak: bool,
+    /// How far the mouse wheel has turned over it, in notches, towards the next size.
+    wheel: f32,
 }
 
 impl CameraBubble {
@@ -302,7 +342,7 @@ impl CameraBubble {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let place = launch.corner.map_or(Place::Free, |(x, y)| Place::Corner(Pos2::new(x as f32, y as f32)));
-        CameraBubble { size: Size::read(&env), env, events, picture: None, failed: None, launch, place, asked: None, said: Vec::new(), speak }
+        CameraBubble { size: Size::read(&env), env, events, picture: None, failed: None, launch, place, asked: None, said: Vec::new(), speak, wheel: 0.0 }
     }
 
     fn say(&mut self, line: String) {
@@ -345,6 +385,28 @@ impl CameraBubble {
         }
         self.size = size;
         self.env.set_setting(options::RECORD_CAMERA_SIZE.name, Size::ALL.iter().position(|s| *s == size).unwrap_or(1) as u32);
+    }
+
+    /// A size bigger for each notch the mouse wheel turns up, and smaller for each down. A touchpad's
+    /// scrolling counts a notch for each 50 points.
+    fn turn_wheel(&mut self, ctx: &egui::Context) {
+        self.wheel += ctx.input(|i| {
+            i.events
+                .iter()
+                .map(|event| match event {
+                    egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta, .. } => delta.y,
+                    egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, .. } => delta.y / 50.0,
+                    egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Page, delta, .. } => delta.y * 3.0,
+                    _ => 0.0,
+                })
+                .sum::<f32>()
+        });
+        if self.wheel.abs() >= 1.0 {
+            let now = Size::ALL.iter().position(|s| *s == self.size).unwrap_or(1);
+            let next = if self.wheel > 0.0 { (now + 1).min(Size::ALL.len() - 1) } else { now.saturating_sub(1) };
+            self.wheel = 0.0;
+            self.resize(ctx, Size::ALL[next]);
+        }
     }
 
     /// Asks the window to be the bubble's size, and where it should be, when that changes.
@@ -458,7 +520,11 @@ impl eframe::App for CameraBubble {
             self.place = Place::Free;
         }
         self.paint(ui, circle);
-        if ui.rect_contains_pointer(window) {
+        if self.launch.recording {
+            if behind.hovered() {
+                self.turn_wheel(&ctx);
+            }
+        } else if ui.rect_contains_pointer(window) {
             self.controls(ui, circle);
         }
         self.fit(&ctx);
@@ -762,6 +828,35 @@ pub(super) mod tests {
         // The next one is as big as the last.
         let again = bubble("bubble-sizes-again", |env| env.set_setting(options::RECORD_CAMERA_SIZE.name, 0));
         assert_eq!(again.state().size, Size::Small);
+    }
+
+    #[test]
+    fn for_a_recording_the_wheel_sizes_it_with_no_buttons_to_record() {
+        let env = Env::sandbox(gallery::sandbox_dir("bubble-wheel"));
+        let mut h = Harness::builder().with_size(window_size(Size::Medium)).build_eframe(move |cc| {
+            let events = env.open_camera(None, &cc.egui_ctx);
+            CameraBubble::new(&cc.egui_ctx, env, events, recording(None), false)
+        });
+        settle(&mut h);
+        h.hover_at(Pos2::new(90.0, 90.0));
+        settle(&mut h);
+        assert!(h.query_by_label("Large").is_none() && h.query_by_label("Close").is_none(), "no buttons in the recording");
+        let wheel = |h: &mut Harness<CameraBubble>, unit, y: f32| {
+            h.event(egui::Event::MouseWheel { unit, delta: Vec2::new(0.0, y), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move });
+            h.step();
+        };
+        wheel(&mut h, egui::MouseWheelUnit::Line, 1.0);
+        assert_eq!(h.state().size, Size::Large, "a notch up");
+        wheel(&mut h, egui::MouseWheelUnit::Line, 1.0);
+        assert_eq!(h.state().size, Size::Large, "as big as it goes");
+        // A touchpad's little moves add up.
+        wheel(&mut h, egui::MouseWheelUnit::Point, -30.0);
+        assert_eq!(h.state().size, Size::Large);
+        wheel(&mut h, egui::MouseWheelUnit::Point, -30.0);
+        assert_eq!(h.state().size, Size::Medium);
+        wheel(&mut h, egui::MouseWheelUnit::Line, -3.0);
+        assert_eq!(h.state().size, Size::Small);
+        assert_eq!(h.state().env.setting(options::RECORD_CAMERA_SIZE.name), Some(0), "remembered");
     }
 
     #[test]
