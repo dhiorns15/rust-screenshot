@@ -1,5 +1,6 @@
 //! What the library and editor need from the operating system.
 
+pub mod gnome_keys;
 #[cfg(not(windows))]
 mod unix;
 #[cfg(windows)]

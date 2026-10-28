@@ -21,9 +21,7 @@ Run `rsnip --region` and drag over the part of the screen to capture, or
 `rsnip --full` for all of it, `rsnip --delay 5` for a region in 5 seconds, `rsnip --text` to copy
 the text in an area (it needs Tesseract), or `rsnip --last` for the same area as last time. As on
 Windows, the screenshot is copied to the clipboard and saved to RSnip's folder, and a notification
-says so. To get them on keys, add custom shortcuts in your desktop's settings: on GNOME,
-*Settings → Keyboard → Keyboard Shortcuts → Custom Shortcuts*, with a command like `rsnip --region`
-(its full path, if RSnip isn't on your `PATH`). RSnip asks the desktop for the
+says so. To get them on keys, see [Keyboard shortcuts](#keyboard-shortcuts). RSnip asks the desktop for the
 screenshot (its screenshot portal, which Wayland desktops and most X11 ones have), so GNOME may ask
 once whether RSnip may take screenshots. If the desktop won't (Ubuntu 24.04's GNOME can refuse
 without asking, or take a while to), RSnip reads the screen itself on an X11 desktop, or on Wayland
@@ -43,11 +41,35 @@ pixels. Keep the mouse still meanwhile, as the wheel scrolls whatever is under t
 goes back where it was at the end. On Wayland an app can't scroll another app's windows, so it isn't
 offered there, and `rsnip --scroll` says it needs an X11 session.
 
+## Keyboard shortcuts
+
+On GNOME (X11 or Wayland), *Settings → Shortcuts* gives each action a key: capture region
+(`--region`), all screens (`--full`), the last region (`--last`), scrolling capture (`--scroll`,
+X11 only), recording an area (`--record`, which stops the recording too) and capturing text
+(`--text`). *Set…* waits for you to press the keys (Esc cancels): Ctrl, Alt or Super with a key, or
+a function key on its own. Keys GNOME already uses for something else never reach RSnip, so pick
+others. Each is saved as a custom shortcut in GNOME's own settings (named "RSnip: …", in
+*Settings → Keyboard → Keyboard Shortcuts → Custom Shortcuts*), so it works even when RSnip isn't
+running; giving a key another action has moves it, and *Clear* removes the shortcut. RSnip only
+ever changes or removes the custom shortcuts that run RSnip, never your others.
+
+Print Screen opens GNOME's own screenshot tool. **Use Print Screen for RSnip** takes it from that
+tool for the action you choose (a region capture by default), as RSnip does with Windows' Print
+Screen setting. Shift+Print Screen and Alt+Print Screen stay GNOME's. Turned off, Print Screen goes
+back to GNOME's tool.
+
+On other desktops (KDE Plasma, Xfce, …), *Settings → Shortcuts* lists each action's command with
+*Copy*: add it as a custom shortcut in the desktop's keyboard settings (on KDE Plasma: *System
+Settings → Keyboard → Shortcuts → Add New → Command or Script*). `rsnip --record-screen` records a
+screen or window, and `rsnip --delay 5` a region in 5 seconds; use RSnip's full path if it isn't on
+your `PATH`.
+
 ## Recording on Linux
 
 From RSnip's icon in the top bar or panel, choose *Record an area…* or
 *Record screen or window…* (or the same from RSnip's app-menu entry, or run `rsnip --record` /
-`rsnip --record-screen`, which you can give a keyboard shortcut in your desktop's settings).
+`rsnip --record-screen`; Settings → Shortcuts gives *Record screen area* a key, see
+[Keyboard shortcuts](#keyboard-shortcuts)).
 Your desktop asks which screen or window to share, as it does for screen sharing in a browser; for
 an area, RSnip then shows that screen to drag over. The icon gets a red dot while recording: click
 it (or *Stop recording*, or run the command again) to finish. The recording is saved to RSnip's

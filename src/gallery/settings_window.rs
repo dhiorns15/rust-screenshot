@@ -1,8 +1,9 @@
 //! The Settings window (`rsnip --settings`): every option in one place, in sections down the left.
 //!
 //! It reads and writes the same settings as the tray app and tells the running tray app to apply
-//! them. Shortcuts are recorded by the tray app (its keyboard hook sees keys like Print Screen
-//! before anything else). Settings are re-read every half second, so changes made elsewhere show up.
+//! them. On Windows, shortcuts are recorded by the tray app (its keyboard hook sees keys like Print
+//! Screen before anything else); on Linux, here, into GNOME's settings (see `linux_shortcuts`).
+//! Settings are re-read every half second, so changes made elsewhere show up.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -21,6 +22,7 @@ use crate::shortcuts::{self, Action};
 use crate::update::Release;
 
 mod descriptions;
+mod linux_shortcuts;
 mod push;
 
 pub const TITLE: &str = "RSnip Settings";
@@ -126,11 +128,6 @@ impl Section {
             Section::About => icon::INFO,
         }
     }
-
-    /// Only for the tray app (Windows).
-    fn needs_tray_app(self) -> bool {
-        matches!(self, Section::Shortcuts)
-    }
 }
 
 enum UpdateCheck {
@@ -144,7 +141,7 @@ pub struct SettingsApp {
     pub section: Section,
     update: UpdateCheck,
     /// A note under the section title, e.g. while a shortcut is being recorded.
-    note: Option<String>,
+    pub note: Option<String>,
     /// The window's graphics driver, read on the first frame.
     gpu: Option<Gpu>,
     /// The System info report, taken when that section opens.
@@ -174,6 +171,8 @@ pub struct SettingsApp {
     restart_tray: bool,
     push: push::PushState,
     describe: descriptions::DescribeState,
+    /// RSnip's shortcuts in GNOME's settings (Linux).
+    gnome: linux_shortcuts::GnomeShortcuts,
 }
 
 /// Installing an update from Settings → Updates.
@@ -190,11 +189,11 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, checking_recording: None, recording_support: None, sound_devices: Default::default(), picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, restart_tray: false, push: Default::default(), describe: Default::default() }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, checking_recording: None, recording_support: None, sound_devices: Default::default(), picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, restart_tray: false, push: Default::default(), describe: Default::default(), gnome: Default::default() }
     }
 
     pub fn sections(&self) -> Vec<Section> {
-        Section::ALL.into_iter().filter(|s| self.env.tray_app || !s.needs_tray_app()).collect()
+        Section::ALL.to_vec()
     }
 
     fn get(&self, flag: Flag) -> bool {
@@ -227,6 +226,7 @@ impl SettingsApp {
         self.note = None;
         self.report = None;
         self.sound_devices = Default::default();
+        self.gnome.reopen();
     }
 
     /// Goes to the section a launch asked for (see `asked`); Updates checks for one too, unless
@@ -266,7 +266,8 @@ impl SettingsApp {
         match self.section {
             Section::General => self.general(ui),
             Section::Capture => self.capture(ui),
-            Section::Shortcuts => self.shortcuts(ui),
+            Section::Shortcuts if self.env.tray_app => self.shortcuts(ui),
+            Section::Shortcuts => self.linux_shortcuts(ui),
             Section::Recording => self.recording(ui),
             Section::Library => self.library(ui),
             Section::Destinations => self.destinations(ui),
@@ -467,10 +468,13 @@ impl SettingsApp {
             theme::card(ui, |ui| {
                 self.flag_row(ui, options::HIDE_WHILE_CAPTURING, "Hide the library while recording", "It steps aside while you pick what to record, and comes back after");
             });
-            let how = "Record from RSnip's icon in the top bar or panel. For a keyboard shortcut, add a custom one in your \
-                       desktop's keyboard settings that runs \"rsnip --record\" (an area) or \"rsnip --record-screen\" \
-                       (a screen or window); it stops the recording too.";
-            ui.label(RichText::new(how).color(theme::palette(ui).muted));
+            ui.horizontal_wrapped(|ui| {
+                let muted = theme::palette(ui).muted;
+                ui.label(RichText::new("Record from RSnip's icon in the top bar or panel. To record with a key, which stops the recording too, give it one in").color(muted));
+                if ui.link("Shortcuts").clicked() {
+                    self.open(Section::Shortcuts);
+                }
+            });
         }
         ui.label(RichText::new("Recordings stop after 30 minutes.").color(theme::palette(ui).muted));
     }
@@ -823,6 +827,7 @@ impl eframe::App for SettingsApp {
         // launches' requests.
         ui.ctx().request_repaint_after(Duration::from_millis(500));
         self.poll_request(ui.ctx());
+        self.poll_gnome();
         // From the program just installed (see `platform::program`).
         if self.restart_tray && !self.env.tray_running() {
             self.restart_tray = false;
@@ -847,12 +852,17 @@ fn items(n: usize) -> String {
 
 /// A shortcut as a key cap, or "None".
 fn key_chip(ui: &mut Ui, key: u32) {
-    if key == 0 {
+    key_cap(ui, (key != 0).then(|| platform::shortcut_name(key)).as_deref());
+}
+
+/// A shortcut's name as a key cap, or "None".
+fn key_cap(ui: &mut Ui, name: Option<&str>) {
+    let Some(name) = name else {
         ui.label(RichText::new("None").color(theme::palette(ui).muted));
         return;
-    }
+    };
     egui::Frame::NONE.fill(theme::palette(ui).raised).corner_radius(6).inner_margin(egui::Margin::symmetric(10, 3)).show(ui, |ui| {
-        ui.label(RichText::new(platform::shortcut_name(key)).monospace());
+        ui.label(RichText::new(name).monospace());
     });
 }
 

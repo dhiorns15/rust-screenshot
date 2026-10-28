@@ -1058,3 +1058,67 @@ fn desktop_scrolls_a_window_to_its_end_and_stitches_it() {
     let shown = notifications.shown.lock().unwrap().clone();
     assert_eq!(shown.iter().map(|(title, _)| title.as_str()).collect::<Vec<_>>(), ["Scrolling capture needs an X11 session"]);
 }
+
+/// GNOME's schemas for keyboard shortcuts, as far as RSnip uses them: CI's image has `gsettings`
+/// but not GNOME.
+const GNOME_SCHEMAS: &str = r#"<schemalist>
+  <schema id="org.gnome.settings-daemon.plugins.media-keys" path="/org/gnome/settings-daemon/plugins/media-keys/">
+    <key name="custom-keybindings" type="as"><default>[]</default></key>
+  </schema>
+  <schema id="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding">
+    <key name="name" type="s"><default>''</default></key>
+    <key name="command" type="s"><default>''</default></key>
+    <key name="binding" type="s"><default>''</default></key>
+  </schema>
+  <schema id="org.gnome.shell.keybindings" path="/org/gnome/shell/keybindings/">
+    <key name="show-screenshot-ui" type="as"><default>['Print']</default></key>
+  </schema>
+</schemalist>"#;
+
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_gnome_shortcuts_go_through_the_real_gsettings() {
+    use super::platform::{self, gnome_keys};
+    use crate::shortcuts::Action;
+    let dir = temp_dir("gsettings");
+    let schemas = dir.join("schemas");
+    std::fs::create_dir_all(&schemas).unwrap();
+    std::fs::write(schemas.join("rsnip-test.gschema.xml"), GNOME_SCHEMAS).unwrap();
+    assert!(Command::new("glib-compile-schemas").arg(&schemas).status().unwrap().success());
+    // The keyfile backend keeps what's set between gsettings' runs, in the test's own folder (the
+    // memory one forgets it as each ends).
+    let run = |args: &[&str]| {
+        let mut command = Command::new("gsettings");
+        command.env("GSETTINGS_SCHEMA_DIR", &schemas).env("GSETTINGS_BACKEND", "keyfile").env("XDG_CONFIG_HOME", &dir);
+        platform::run_gsettings(command, args)
+    };
+    let get = |schema: &str, key: &str| run(&["get", schema, key]).unwrap().trim().to_owned();
+    let at = |name: &str| format!("{}:{}{name}/", gnome_keys::CUSTOM, gnome_keys::BASE);
+    // Someone else's.
+    run(&["set", &at("custom0"), "command", "'gnome-terminal'"]).unwrap();
+    run(&["set", &at("custom0"), "binding", "'<Control><Alt>t'"]).unwrap();
+    run(&["set", gnome_keys::MEDIA_KEYS, gnome_keys::LIST, &format!("['{}custom0/']", gnome_keys::BASE)]).unwrap();
+
+    let program = "/opt/RSnip's App/rsnip";
+    assert_eq!(gnome_keys::set(&run, program, Action::Region, "<Shift><Control>4"), Ok(None));
+    let list = format!("['{0}custom0/', '{0}rsnip0/']", gnome_keys::BASE);
+    assert_eq!(get(gnome_keys::MEDIA_KEYS, gnome_keys::LIST), list);
+    assert_eq!(get(&at("rsnip0"), "binding"), "'<Shift><Control>4'");
+    assert_eq!(get(&at("rsnip0"), "name"), "'RSnip: Capture region'");
+    let state = gnome_keys::read(&run, program).unwrap();
+    assert_eq!(state.keys[Action::Region.index()].as_deref(), Some("<Shift><Control>4"), "its command, quoted, read back as RSnip's");
+    assert!(state.gnome_has_print);
+
+    let saved = gnome_keys::take_print_screen(&run, program, Action::Full).unwrap();
+    assert_eq!(saved.as_deref(), Some("['Print']"));
+    assert_eq!(get(gnome_keys::SHELL, gnome_keys::SCREENSHOT_UI), "@as []");
+    assert_eq!(gnome_keys::read(&run, program).unwrap().print_screen(), Some(Action::Full));
+    gnome_keys::give_back_print_screen(&run, program, saved.as_deref()).unwrap();
+    assert_eq!(get(gnome_keys::SHELL, gnome_keys::SCREENSHOT_UI), "['Print']");
+
+    gnome_keys::clear(&run, program, Action::Region).unwrap();
+    assert_eq!(get(gnome_keys::MEDIA_KEYS, gnome_keys::LIST), format!("['{}custom0/']", gnome_keys::BASE));
+    assert_eq!(get(&at("rsnip0"), "binding"), "''", "reset");
+    assert_eq!(get(&at("custom0"), "command"), "'gnome-terminal'", "someone else's is left as it was");
+    assert_eq!(get(&at("custom0"), "binding"), "'<Control><Alt>t'");
+}

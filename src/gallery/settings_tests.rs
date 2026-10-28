@@ -10,7 +10,7 @@ use egui_kittest::Harness;
 
 use super::describer::Event;
 use super::env::{Env, SoundDeviceLists, TrayRequest};
-use super::platform::SoundDevice;
+use super::platform::{gnome_keys, SoundDevice};
 use super::settings_window::{Section, SettingsApp};
 use super::theme::Appearance;
 use super::{tests, Dock};
@@ -65,13 +65,12 @@ fn requests(h: &Harness<SettingsApp>) -> Vec<TrayRequest> {
 }
 
 #[test]
-fn shows_the_tray_app_sections_only_where_there_is_one() {
+fn shows_every_section_but_the_tray_apps_options_only_where_there_is_one() {
     let h = settings("settings-sections", |_| {});
     assert_eq!(h.state().sections().len(), 9);
     let h = settings("settings-sections-linux", |env| env.tray_app = false);
-    assert_eq!(h.state().sections(), [Section::General, Section::Capture, Section::Recording, Section::Library, Section::Destinations, Section::Updates, Section::SystemInfo, Section::About]);
+    assert_eq!(h.state().sections().len(), 9, "Linux has shortcuts of its own");
     assert!(h.query_by_label("Start with Windows").is_none(), "only the theme in General");
-    assert!(h.query_by_label_contains("Shortcuts").is_none());
 }
 
 #[test]
@@ -313,10 +312,13 @@ fn gifs_have_no_sound() {
 fn linux_recording_says_whats_missing_and_offers_hiding_the_library() {
     let mut h = settings("settings-recording-linux", |env| env.tray_app = false);
     open(&mut h, Section::Recording);
-    assert!(h.query_by_label_contains("rsnip --record").is_some(), "how to start a recording");
     toggle(&mut h, "Hide the library while recording");
     assert_eq!(h.state().env.setting(options::HIDE_WHILE_CAPTURING.name), Some(0));
     assert!(h.query_by_label_contains("Recording needs").is_none(), "nothing missing in the sandbox");
+    // How to record with a key, below the window's fold.
+    h.get_by_role_and_label(eframe::egui::accesskit::Role::Link, "Shortcuts").click_accesskit();
+    settle(&mut h);
+    assert_eq!(h.state().section, Section::Shortcuts);
 
     let problem = "Recording needs GStreamer's tools".to_string();
     let mut h = settings("settings-recording-linux-missing", |env| env.sandboxed().recording_problem = Some(problem));
@@ -632,7 +634,7 @@ fn system_info_leaves_out_the_tray_app_where_there_is_none() {
     let mut h = settings("settings-system-info-linux", |env| env.tray_app = false);
     open(&mut h, Section::SystemInfo);
     assert!(h.query_by_label("Tray app").is_none());
-    assert!(h.query_by_label("Shortcuts").is_none());
+    assert_eq!(h.get_all_by_label("Shortcuts").count(), 1, "only the section's name, among the others");
     assert!(h.query_by_label("Theme").is_some());
 }
 
@@ -1222,6 +1224,35 @@ mod snapshots {
         snapshot(&mut h, Section::Library, "settings_move_library");
     }
 
+    /// Linux's Shortcuts on GNOME, with keys, Print Screen taken and someone else's shortcut
+    /// alongside.
+    #[test]
+    fn linux_shortcuts_on_gnome() {
+        let _gpu = super::super::tests::gpu();
+        let mut h = rendered("snap-settings-linux-gnome", |env| {
+            env.tray_app = false;
+            gnome(env);
+            let mut sandbox = env.sandboxed();
+            let fake = &mut sandbox.gsettings;
+            fake.add_custom("rsnip0", "RSnip: Capture region", "/usr/bin/rsnip --region", "<Shift><Control>4");
+            fake.add_custom("rsnip1", "RSnip: Record screen area", "/usr/bin/rsnip --record", "<Super>r");
+            fake.add_custom("rsnip2", "RSnip: Capture all screens", "/usr/bin/rsnip --full", "Print");
+            fake.values.insert((gnome_keys::SHELL.into(), gnome_keys::SCREENSHOT_UI.into()), "@as []".into());
+        });
+        snapshot(&mut h, Section::Shortcuts, "settings_shortcuts_linux_gnome");
+    }
+
+    /// Elsewhere, the commands.
+    #[test]
+    fn linux_shortcuts_elsewhere() {
+        let _gpu = super::super::tests::gpu();
+        let mut h = rendered("snap-settings-linux-other", |env| {
+            env.tray_app = false;
+            env.sandboxed().current_desktop = "KDE".into();
+        });
+        snapshot(&mut h, Section::Shortcuts, "settings_shortcuts_linux_other");
+    }
+
     /// Renders the Settings window to a PNG, like `render_window` does the library:
     /// `RSNIP_UI="theme=light click=Shortcuts" RSNIP_UI_OUT=settings.png cargo test render_settings -- --ignored`.
     #[test]
@@ -1557,4 +1588,162 @@ mod description_snapshots {
         assert!(h.query_by_label("?").is_some(), "one without a known price");
         h.snapshot("settings_describe_models");
     }
+}
+
+// Settings → Shortcuts on Linux.
+
+/// A GNOME desktop with its schemas, and someone else's custom shortcut.
+fn gnome(env: &mut Env) {
+    let mut sandbox = env.sandboxed();
+    sandbox.current_desktop = "ubuntu:GNOME".into();
+    sandbox.gsettings.gnome = true;
+    sandbox.gsettings.add_custom("custom0", "Terminal", "gnome-terminal", "<Control><Alt>t");
+}
+
+fn linux_shortcuts(name: &str, setup: impl FnOnce(&mut Env)) -> Harness<'static, SettingsApp> {
+    let mut h = settings(name, |env| {
+        env.tray_app = false;
+        setup(env);
+    });
+    open(&mut h, Section::Shortcuts);
+    h
+}
+
+/// Presses `key` (at `physical`) with `modifiers`, as the keyboard would.
+fn press(h: &mut Harness<SettingsApp>, key: eframe::egui::Key, physical: Option<eframe::egui::Key>, modifiers: eframe::egui::Modifiers) {
+    for pressed in [true, false] {
+        h.event(eframe::egui::Event::Key { key, physical_key: physical, pressed, repeat: false, modifiers });
+    }
+    settle(h);
+}
+
+/// Clicks the Set… button of `action`'s row.
+fn set_key(h: &mut Harness<SettingsApp>, action: Action) {
+    h.get_all_by_label("Set…").nth(action.index()).unwrap().click();
+    settle(h);
+}
+
+fn binding(h: &Harness<SettingsApp>, name: &str) -> Option<String> {
+    h.state().env.sandboxed().gsettings.custom(name, "binding")
+}
+
+fn note(h: &Harness<SettingsApp>) -> Option<String> {
+    h.state().note.clone()
+}
+
+#[test]
+fn elsewhere_shortcuts_are_commands_to_copy() {
+    let mut h = linux_shortcuts("settings-shortcuts-other", |env| env.sandboxed().current_desktop = "KDE".into());
+    assert!(h.query_by_label("/usr/bin/rsnip --region").is_some());
+    assert!(h.query_by_label_contains("KDE Plasma").is_some(), "how to add them");
+    h.get_all_by_label_contains("Copy").nth(Action::Record.index()).unwrap().click();
+    settle(&mut h);
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some("/usr/bin/rsnip --record"));
+    assert!(h.state().env.sandboxed().gsettings.calls.is_empty(), "GNOME's settings aren't asked for");
+}
+
+#[test]
+fn gnome_without_its_schemas_gets_the_commands_and_why() {
+    let h = linux_shortcuts("settings-shortcuts-no-schemas", |env| {
+        gnome(env);
+        env.sandboxed().gsettings.gnome = false;
+    });
+    assert!(h.query_by_label_contains("Couldn't read GNOME's keyboard shortcuts").is_some());
+    assert!(h.query_by_label("/usr/bin/rsnip --text").is_some());
+}
+
+#[test]
+fn gnome_shortcuts_are_recorded_here_and_saved_in_gnomes_settings() {
+    use eframe::egui::{Key, Modifiers};
+    let mut h = linux_shortcuts("settings-shortcuts-gnome", gnome);
+    assert_eq!(h.get_all_by_label("None").count(), shortcuts::COUNT, "RSnip has none yet");
+    assert!(h.query_by_label("Scrolling capture (X11)").is_some());
+
+    set_key(&mut h, Action::Region);
+    assert!(note(&h).is_some_and(|n| n.contains("Press the new shortcut for capture region")));
+    press(&mut h, Key::Num4, Some(Key::Num4), Modifiers::SHIFT | Modifiers::CTRL);
+    assert_eq!(binding(&h, "rsnip0").as_deref(), Some("<Shift><Control>4"));
+    assert_eq!(h.state().env.sandboxed().gsettings.custom("rsnip0", "command").as_deref(), Some("/usr/bin/rsnip --region"));
+    assert!(h.query_by_label("Ctrl+Shift+4").is_some(), "shown as it was read back");
+    assert_eq!(note(&h).as_deref(), Some("Ctrl+Shift+4 now runs capture region."));
+
+    // A typing key alone isn't a shortcut; it waits for another, and Esc cancels.
+    set_key(&mut h, Action::Full);
+    press(&mut h, Key::A, Some(Key::A), Modifiers::NONE);
+    assert!(note(&h).is_some_and(|n| n.contains("Hold Ctrl, Alt or Super")));
+    assert!(h.query_by_label("Press the keys…").is_some(), "still waiting");
+    press(&mut h, Key::Escape, Some(Key::Escape), Modifiers::NONE);
+    assert!(h.query_by_label("Press the keys…").is_none());
+    assert_eq!(binding(&h, "rsnip1"), None);
+
+    // Super isn't among egui's modifiers, so it's followed by its own key presses.
+    set_key(&mut h, Action::Record);
+    h.event(eframe::egui::Event::Key { key: Key::SuperLeft, physical_key: Some(Key::SuperLeft), pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    press(&mut h, Key::R, Some(Key::R), Modifiers::NONE);
+    assert_eq!(binding(&h, "rsnip1").as_deref(), Some("<Super>r"));
+
+    // The region's key, given to recording, moves.
+    set_key(&mut h, Action::Record);
+    press(&mut h, Key::Num4, Some(Key::Num4), Modifiers::SHIFT | Modifiers::CTRL);
+    assert_eq!(binding(&h, "rsnip1").as_deref(), Some("<Shift><Control>4"));
+    assert_eq!(binding(&h, "rsnip0"), None);
+    assert_eq!(note(&h).as_deref(), Some("Ctrl+Shift+4 now runs record screen area, instead of capture region."));
+
+    h.get_all_by_label("Clear").nth(Action::Record.index()).unwrap().click();
+    settle(&mut h);
+    let sandbox = h.state().env.sandboxed();
+    assert_eq!(sandbox.gsettings.list(), [format!("{}custom0/", gnome_keys::BASE)], "only someone else's is left");
+    assert!(sandbox.gsettings.changes_to("custom0").is_empty(), "and it was never changed");
+}
+
+#[test]
+fn print_screen_is_taken_from_gnomes_screenshot_tool_and_given_back() {
+    let mut h = linux_shortcuts("settings-shortcuts-print", gnome);
+    assert!(!is_on(&h, "Use Print Screen for RSnip"));
+    toggle(&mut h, "Use Print Screen for RSnip");
+    assert!(is_on(&h, "Use Print Screen for RSnip"));
+    assert_eq!(binding(&h, "rsnip0").as_deref(), Some("Print"), "a region capture by default");
+    assert!(h.state().env.sandboxed().gsettings.screenshot_keys().is_empty());
+    assert_eq!(h.state().env.text_setting(options::GNOME_SCREENSHOT_KEYS).as_deref(), Some("['Print']"), "to give back");
+    assert!(h.query_by_label("PrtScn").is_some());
+
+    // Another action for it.
+    // The list's, after the row's.
+    h.get_all_by_value("Capture region").last().unwrap().click();
+    settle(&mut h);
+    h.get_all_by_label("Capture text (OCR)").last().unwrap().click();
+    settle(&mut h);
+    assert_eq!(h.state().env.setting(options::PRINT_SCREEN_ACTION.name), Some(Action::Text.index() as u32));
+    let sandbox = h.state().env.sandboxed();
+    assert_eq!(sandbox.gsettings.custom("rsnip1", "command").as_deref(), Some("/usr/bin/rsnip --text"));
+    assert_eq!(sandbox.gsettings.custom("rsnip1", "binding").as_deref(), Some("Print"));
+    assert_eq!(sandbox.gsettings.custom("rsnip0", "binding"), None);
+    drop(sandbox);
+
+    toggle(&mut h, "Use Print Screen for RSnip");
+    assert!(!is_on(&h, "Use Print Screen for RSnip"));
+    assert_eq!(h.state().env.sandboxed().gsettings.screenshot_keys(), ["Print"], "GNOME's again");
+    assert_eq!(h.state().env.text_setting(options::GNOME_SCREENSHOT_KEYS).as_deref(), Some(""));
+    assert_eq!(h.state().env.sandboxed().gsettings.list().len(), 1, "RSnip's shortcut for it is gone");
+    // Turned on again, it's for the action chosen last.
+    toggle(&mut h, "Use Print Screen for RSnip");
+    assert_eq!(h.state().env.sandboxed().gsettings.custom("rsnip0", "command").as_deref(), Some("/usr/bin/rsnip --text"));
+}
+
+#[test]
+fn gnome_keeping_print_screen_too_and_shared_keys_are_flagged() {
+    let mut h = linux_shortcuts("settings-shortcuts-gnome-problems", |env| {
+        gnome(env);
+        let fake = &mut env.sandboxed().gsettings;
+        // Made by hand, so both run RSnip.
+        fake.add_custom("custom1", "Region", "rsnip --region", "Print");
+        fake.add_custom("custom2", "Text", "rsnip --text", "<Control><Alt>t");
+        fake.add_custom("custom3", "Last", "rsnip --last", "<Ctrl><Alt>T");
+    });
+    assert!(h.query_by_label_contains("GNOME also opens its own screenshot tool").is_some(), "GNOME's default still has Print Screen");
+    assert!(h.query_by_label("Ctrl+Alt+T is set for both Capture last region and capture text (ocr); GNOME runs only one of them.").is_some());
+    click(&mut h, "Take Print Screen from it");
+    assert!(h.state().env.sandboxed().gsettings.screenshot_keys().is_empty());
+    assert!(h.query_by_label_contains("GNOME also opens its own screenshot tool").is_none());
+    assert!(h.state().env.sandboxed().gsettings.changes_to("custom0").is_empty());
 }

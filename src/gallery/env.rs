@@ -182,6 +182,10 @@ pub struct Sandbox {
     pub sample_description: Option<Result<Described, String>>,
     /// The library being described by hand, until the test says how it went.
     pub describing: Option<Describing>,
+    /// The desktop, as `$XDG_CURRENT_DESKTOP` names it (Linux).
+    pub current_desktop: String,
+    /// GNOME's settings, as `gsettings` would change them (for its keyboard shortcuts).
+    pub gsettings: platform::gnome_keys::Fake,
 }
 
 /// Describing the library, in the sandbox: what it was asked for, and how to say how it's going.
@@ -472,6 +476,54 @@ impl Env {
             Some(s) => s.borrow_mut().system_info_opened += 1,
             None => platform::open_settings(true),
         }
+    }
+
+    /// The desktop, as `$XDG_CURRENT_DESKTOP` names it (`ubuntu:GNOME`), for Settings → Shortcuts.
+    pub fn current_desktop(&self) -> String {
+        match &self.sandbox {
+            Some(s) => s.borrow().current_desktop.clone(),
+            None => std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
+        }
+    }
+
+    /// Runs `gsettings` with `args`, to read and change GNOME's keyboard shortcuts (see
+    /// `gnome_keys`): what it printed, or why it failed.
+    pub fn gsettings(&self, args: &[&str]) -> Result<String, String> {
+        match &self.sandbox {
+            Some(s) => s.borrow_mut().gsettings.run(args),
+            None => real_gsettings(args),
+        }
+    }
+
+    /// The program a keyboard shortcut runs: this one (see `platform::program`), or the package's
+    /// in the sandbox.
+    pub fn program(&self) -> String {
+        if self.sandbox.is_some() {
+            return "/usr/bin/rsnip".to_owned();
+        }
+        #[cfg(not(windows))]
+        return platform::program().to_string_lossy().into_owned();
+        #[cfg(windows)]
+        return std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    }
+
+    /// Runs `work` with `gsettings` (as `Env::gsettings` runs it) and the program shortcuts run, to
+    /// read or change GNOME's keyboard shortcuts (see `gnome_keys`). It's done on a thread, as
+    /// that runs `gsettings` several times over, which could be slow; the answer arrives on the
+    /// channel, and `ctx` repaints when it does.
+    pub fn with_gsettings<T: Send + 'static>(&self, ctx: &eframe::egui::Context, work: impl FnOnce(platform::gnome_keys::Run, &str) -> T + Send + 'static) -> Receiver<T> {
+        let (tx, rx) = channel();
+        let program = self.program();
+        if self.sandbox.is_some() {
+            let _ = tx.send(work(&|args| self.gsettings(args), &program));
+        } else {
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(work(&real_gsettings, &program));
+                ctx.request_repaint();
+            });
+        }
+        rx
     }
 
     /// Windows itself opens its screen capture on Print Screen, which can get in the way.
@@ -928,6 +980,14 @@ fn saved_service(provider: Provider) -> Result<Service, String> {
         Some(key) => Ok(Service::new(provider, &key)),
         None => Err(format!("Save your {} key first", provider.name())),
     }
+}
+
+/// `gsettings`, where there is one (see `platform::gsettings`).
+fn real_gsettings(args: &[&str]) -> Result<String, String> {
+    #[cfg(not(windows))]
+    return platform::gsettings(args);
+    #[cfg(windows)]
+    return Err(format!("There's no gsettings on Windows to {}", args.join(" ")));
 }
 
 /// Where a second `--gallery` launch leaves its request for the running library: on Linux in this

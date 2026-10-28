@@ -258,6 +258,55 @@ fn installed_program(exe: PathBuf) -> PathBuf {
     }
 }
 
+/// How long `gsettings` has to answer: a stuck settings service shouldn't hold up Settings longer.
+const GSETTINGS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Runs `gsettings` (GNOME's settings, for its keyboard shortcuts) with `args`: what it printed,
+/// or why it failed.
+pub fn gsettings(args: &[&str]) -> Result<String, String> {
+    run_gsettings(Command::new("gsettings"), args)
+}
+
+/// `gsettings`, as `command` (tests give it settings of their own).
+pub fn run_gsettings(mut command: Command, args: &[&str]) -> Result<String, String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => "gsettings isn't installed".to_owned(),
+        _ => format!("Couldn't run gsettings: {e}"),
+    })?;
+    // Read as it comes, so a long answer can't fill the pipe and stop it finishing.
+    let read = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut out);
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        })
+    };
+    let stdout = read(child.stdout.take().map(|p| Box::new(p) as _));
+    let stderr = read(child.stderr.take().map(|p| Box::new(p) as _));
+    let deadline = std::time::Instant::now() + GSETTINGS_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(5)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("gsettings didn't answer".to_owned());
+            }
+        }
+    };
+    let (out, err) = (stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default());
+    match status.success() {
+        true => Ok(out),
+        false if err.trim().is_empty() => Err(format!("gsettings failed ({status})")),
+        false => Err(err.trim().to_owned()),
+    }
+}
+
 pub fn shortcut_name(key: u32) -> String {
     crate::shortcuts::fallback_name(key)
 }

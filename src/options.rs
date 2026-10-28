@@ -55,6 +55,12 @@ pub const CAPTURE_PANEL_VIDEO: Choice = Choice { name: "CapturePanelVideo", defa
 pub const CAPTURE_PANEL_KEEP_OPEN: Flag = Flag { name: "CapturePanelKeepOpen", default: false };
 /// Where the capture panel was last moved to: its top left in pixels, as "x,y" (a text setting).
 pub const CAPTURE_PANEL_PLACE: &str = "CapturePanelPlace";
+/// The action Print Screen runs when Settings → Shortcuts takes it from GNOME's screenshot tool
+/// (Linux), as its `shortcuts::Action::index`; Capture region by default.
+pub const PRINT_SCREEN_ACTION: Choice = Choice { name: "PrintScreenAction", default: 0, values: &[0, 1, 2, 3, 4, 5] };
+/// GNOME's screenshot tool's keys from before RSnip took Print Screen, to give back when it stops
+/// (a text setting, as GVariant text like `['Print']`); empty when there's nothing to give back.
+pub const GNOME_SCREENSHOT_KEYS: &str = "GnomeScreenshotKeys";
 /// The library's player is muted.
 pub const PLAYER_MUTED: Flag = Flag { name: "PlayerMuted", default: false };
 

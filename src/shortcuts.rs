@@ -101,12 +101,13 @@ pub fn get(table: &Table, action: Action) -> u32 {
     table[action.index()]
 }
 
-/// Actions sharing a shortcut (only possible if the settings were edited by hand).
-pub fn conflicts(table: &Table) -> Vec<(Action, Action)> {
+/// Actions sharing a shortcut (only possible if the settings were edited by hand). The keys may be
+/// Windows' (`Table`) or GNOME's (see `gallery::platform::gnome_keys`), with the default as none.
+pub fn conflicts<K: PartialEq + Default>(table: &[K; COUNT]) -> Vec<(Action, Action)> {
     let mut out = Vec::new();
     for i in 0..COUNT {
         for j in i + 1..COUNT {
-            if table[i] != 0 && table[i] == table[j] {
+            if table[i] != K::default() && table[i] == table[j] {
                 out.push((Action::ALL[i], Action::ALL[j]));
             }
         }
