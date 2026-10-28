@@ -8,6 +8,7 @@ mod custom;
 mod discord;
 mod dropbox;
 mod ftps;
+mod google_drive;
 pub mod history;
 mod immich;
 mod oauth;
@@ -19,7 +20,7 @@ mod smb;
 mod webdav;
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -130,6 +131,17 @@ pub enum Kind {
         #[serde(default = "default_true")]
         share_link: bool,
     },
+    /// A folder in the user's Google Drive, through RSnip's own Google app. Secret: the refresh
+    /// token that signing in gave (see `oauth`).
+    GoogleDrive {
+        /// From the top of My Drive; made if it isn't there.
+        folder: String,
+        #[serde(default = "default_true")]
+        share_link: bool,
+        /// The folder's id, once a push has found or made it (see `Kind::learn`).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        folder_id: String,
+    },
     /// Any HTTP upload API, described as ShareX's custom uploaders are (see `custom`). Secret, if it
     /// needs one: a token, put wherever `{secret}` is written.
     Custom {
@@ -157,6 +169,8 @@ pub enum SignIn {
     /// The browser opens the service's page, which shows a code to paste back into RSnip
     /// (Dropbox's, with PKCE).
     PasteCode,
+    /// RSnip shows a code, which the user enters on the service's page, from any browser (RFC 8628).
+    ShowCode,
 }
 
 fn default_port() -> u16 {
@@ -173,7 +187,7 @@ fn default_true() -> bool {
 
 impl Kind {
     /// An empty one of each kind, in the order they're offered.
-    pub const ALL: [fn() -> Kind; 11] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::smb, Kind::ftps, Kind::dropbox, Kind::discord, Kind::slack, Kind::immich, Kind::photoprism, Kind::custom];
+    pub const ALL: [fn() -> Kind; 12] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::smb, Kind::ftps, Kind::dropbox, Kind::google_drive, Kind::discord, Kind::slack, Kind::immich, Kind::photoprism, Kind::custom];
 
     pub fn sftp() -> Kind {
         Kind::Sftp { host: String::new(), port: default_port(), user: String::new(), folder: String::new(), public_url: String::new() }
@@ -218,6 +232,10 @@ impl Kind {
         Kind::Dropbox { app_key: String::new(), folder: "/Screenshots".into(), share_link: true }
     }
 
+    pub fn google_drive() -> Kind {
+        Kind::GoogleDrive { folder: "Screenshots".into(), share_link: true, folder_id: String::new() }
+    }
+
     pub fn smb() -> Kind {
         Kind::Smb { share: String::new(), folder: String::new(), user: String::new(), public_url: String::new() }
     }
@@ -245,6 +263,7 @@ impl Kind {
             Kind::Ftps { .. } => "FTPS",
             Kind::Smb { .. } => "SMB share",
             Kind::Dropbox { .. } => "Dropbox",
+            Kind::GoogleDrive { .. } => "Google Drive",
             Kind::Custom { .. } => "Custom uploader",
         }
     }
@@ -261,7 +280,7 @@ impl Kind {
             Kind::PhotoPrism { .. } => Some("App password"),
             Kind::Ftps { .. } => Some("Password"),
             Kind::Smb { .. } => Some("Password"),
-            Kind::Dropbox { .. } => Some("Sign-in"),
+            Kind::Dropbox { .. } | Kind::GoogleDrive { .. } => Some("Sign-in"),
             Kind::Custom { .. } => Some("Token"),
         }
     }
@@ -284,7 +303,20 @@ impl Kind {
     pub fn sign_in(&self) -> Option<SignIn> {
         match self {
             Kind::Dropbox { .. } => Some(SignIn::PasteCode),
+            Kind::GoogleDrive { .. } => Some(SignIn::ShowCode),
             _ => None,
+        }
+    }
+
+    /// Takes what a push learned about the place from `learned`, its kind as the push found it:
+    /// Google Drive's folder's id, while it's still the same folder (else what was learned, of
+    /// another folder, is forgotten).
+    pub fn learn(&mut self, learned: &Kind) {
+        if let Kind::GoogleDrive { folder, folder_id, .. } = self {
+            *folder_id = match learned {
+                Kind::GoogleDrive { folder: was, folder_id: id, .. } if was.trim() == folder.trim() => id.clone(),
+                _ => String::new(),
+            };
         }
     }
 
@@ -314,6 +346,7 @@ impl Kind {
             Kind::Immich { server } => address(server).into(),
             Kind::PhotoPrism { server, album } => address(server).into_iter().chain([album.clone()]).collect(),
             Kind::Dropbox { app_key, folder, .. } => vec![app_key.clone(), folder.clone()],
+            Kind::GoogleDrive { folder, folder_id, .. } => vec![folder.clone(), folder_id.clone()],
             Kind::Custom { url, .. } => address(url).into(),
         };
         words.into_iter().map(|w| w.trim().to_owned()).filter(|w| !w.is_empty()).collect()
@@ -343,6 +376,10 @@ impl Kind {
             Kind::Dropbox { folder, .. } => {
                 let folder = folder.trim();
                 if folder.is_empty() { "/".to_owned() } else { folder.to_owned() }
+            }
+            Kind::GoogleDrive { folder, .. } => {
+                let folder = folder.trim();
+                if folder.is_empty() { "My Drive".to_owned() } else { folder.to_owned() }
             }
             // Without the query, which may carry a key.
             Kind::Custom { url, .. } => url.split('?').next().unwrap_or_default().to_owned(),
@@ -401,6 +438,8 @@ impl Destination {
                 smb::parse(share, "").is_none().then(|| smb::BAD_SHARE.to_owned()).or_else(|| public(public_url))
             }
             Kind::Dropbox { app_key, .. } => required(app_key, "the app key"),
+            // Signing in is the form's to check; no folder is the top of My Drive.
+            Kind::GoogleDrive { .. } => None,
             Kind::Custom { url, .. } => address(url, "the upload address").or_else(|| custom::problems(&uploader(&self.kind, ""))),
         }
     }
@@ -439,20 +478,32 @@ pub fn save(env: &Env, destinations: &[Destination]) {
 
 /// Keeps a secret, replacing the one there was.
 type Keep = dyn Fn(&str) -> Result<(), String> + Send;
+/// Keeps what a push learned about the place, with the place.
+type Remember = dyn Fn(&Kind) + Send;
 
 /// What's kept for a destination apart from its place in the list: its secret, as `push` and
 /// `test` use it. A service RSnip signs in to with OAuth may give a new refresh token in place of
 /// the one it was given (Microsoft does every time, and one left unused for 90 days expires), so
-/// the secret can be replaced: the new one is used from then on, and kept for next time.
+/// the secret can be replaced: the new one is used from then on, and kept for next time. With it
+/// goes what a push learned about the place (Google Drive's folder's id), kept likewise.
 pub struct Saved {
     secret: Option<String>,
     /// Keeps a new secret where the old one was (the credential store).
     keep: Box<Keep>,
+    /// The destination's kind as the last push found it, if that learned anything.
+    learned: Option<Kind>,
+    /// Keeps that with the destination (in the list of them).
+    remember: Box<Remember>,
 }
 
 impl Saved {
     pub fn new(secret: Option<String>, keep: impl Fn(&str) -> Result<(), String> + Send + 'static) -> Saved {
-        Saved { secret, keep: Box::new(keep) }
+        Saved { secret, keep: Box::new(keep), learned: None, remember: Box::new(|_| {}) }
+    }
+
+    /// The same, with what a push learns about the place kept by `remember`.
+    pub fn remembering(self, remember: impl Fn(&Kind) + Send + 'static) -> Saved {
+        Saved { remember: Box::new(remember), ..self }
     }
 
     /// A secret that isn't kept anywhere (one typed into the form and not saved yet), so nor is
@@ -472,6 +523,55 @@ impl Saved {
         self.secret = Some(secret.to_owned());
         let _ = (self.keep)(secret);
     }
+
+    /// Notes what a push learned about the place (`kind`, as the push found it): the next push
+    /// with this uses it, and it's kept with the place.
+    fn learn(&mut self, kind: Kind) {
+        (self.remember)(&kind);
+        self.learned = Some(kind);
+    }
+}
+
+/// The list of destinations (as JSON) with what a push learned about the one with `id` (`learned`,
+/// its kind as the push found it), if that changes it.
+pub fn remember(json: &str, id: &str, learned: &Kind) -> Option<String> {
+    let mut list: Vec<Destination> = serde_json::from_str(json).ok()?;
+    let d = list.iter_mut().find(|d| d.id == id)?;
+    let before = d.kind.clone();
+    d.kind.learn(learned);
+    (d.kind != before).then(|| serde_json::to_string(&list).ok())?
+}
+
+/// How signing in with a code shown in Settings is going (see `sign_in_with_code`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum CodeEvent {
+    /// The code to enter, and the page to enter it on.
+    Code { user_code: String, verification_url: String },
+    /// Signed in: the refresh token to save, and as whom, if the service says.
+    SignedIn { refresh_token: String, name: Option<String> },
+    Failed(String),
+}
+
+/// Whether this build can sign in to `kind`: it has RSnip's own app for the service.
+pub fn can_sign_in(kind: &Kind) -> bool {
+    match kind {
+        Kind::GoogleDrive { .. } => google_drive::available(),
+        _ => true,
+    }
+}
+
+/// Signs in to `kind` with a code shown in Settings, saying how it's going to `report`, until the
+/// user has signed in (or said no, or the code expired) or `cancelled` is set.
+pub fn sign_in_with_code(kind: &Kind, cancelled: &AtomicBool, report: impl Fn(CodeEvent)) {
+    let shown = |code: &oauth::DeviceCode| report(CodeEvent::Code { user_code: code.user_code.clone(), verification_url: code.verification_url.clone() });
+    let signed_in = match kind {
+        Kind::GoogleDrive { .. } => google_drive::sign_in(cancelled, shown),
+        _ => Err(format!("{} isn't signed in to with a code", kind.name())),
+    };
+    report(match signed_in {
+        Ok((refresh_token, name)) => CodeEvent::SignedIn { refresh_token, name },
+        Err(e) => CodeEvent::Failed(e),
+    });
 }
 
 /// Checks that `destination` can be reached with its secret (its password, key or webhook
@@ -492,6 +592,7 @@ pub fn test(destination: &Destination, saved: &mut Saved) -> Result<String, Stri
         Kind::Ftps { host, port, user, folder, trusted, .. } => ftps::test(&ftps::Server { host, port: *port, user, password: secret, folder, trusted }),
         Kind::Smb { share, folder, user, .. } => smb::test(&smb::Share { share, folder, user, password: secret }),
         Kind::Dropbox { app_key, share_link, .. } => dropbox::test(app_key, saved, *share_link),
+        Kind::GoogleDrive { .. } => google_drive::test(saved),
         Kind::Custom { .. } => custom::test(&uploader(&destination.kind, secret)),
     }
 }
@@ -529,6 +630,7 @@ pub fn push(destination: &Destination, saved: &mut Saved, file: &Path) -> Result
             Ok(link(public_url, &name))
         }
         Kind::Dropbox { app_key, folder, share_link } => dropbox::upload(app_key, saved, folder, *share_link, file),
+        Kind::GoogleDrive { folder, share_link, folder_id } => google_drive::upload(saved, folder, folder_id, *share_link, file),
         Kind::Custom { .. } => custom::upload(&uploader(&destination.kind, secret), file),
     }
 }
@@ -762,6 +864,7 @@ mod tests {
             Kind::Ftps { port, .. } => Kind::Ftps { host: "nas.local".into(), port, user: "me".into(), folder: "shots".into(), public_url: String::new(), trusted: String::new() },
             Kind::Smb { .. } => Kind::Smb { share: "\\\\nas\\shots".into(), folder: "rsnip".into(), user: String::new(), public_url: String::new() },
             Kind::Dropbox { .. } => Kind::Dropbox { app_key: "abc123".into(), folder: "/Screenshots".into(), share_link: false },
+            Kind::GoogleDrive { .. } => Kind::GoogleDrive { folder: "Screenshots/RSnip".into(), share_link: true, folder_id: "1AbCfolder".into() },
             Kind::Custom { .. } => Kind::Custom {
                 url: "https://i.example.com/api/upload".into(),
                 method: "POST".into(),
@@ -815,6 +918,31 @@ mod tests {
         assert_eq!(d.kind.private_words(), ["k", "/S"]);
         let missing = saved_secret_from(&d, |_| Ok(None)).unwrap();
         assert_eq!(missing, Err("Not signed in to Dropbox; choose Edit to sign in".into()));
+    }
+
+    #[test]
+    fn google_drive_makes_links_and_keeps_the_folders_id_while_its_the_same_folder() {
+        let json = r#"{"id":"a","name":"x","kind":"GoogleDrive","folder":"S","auto":false,"auto_since":null}"#;
+        let d: Destination = serde_json::from_str(json).unwrap();
+        assert_eq!(d.kind, Kind::GoogleDrive { folder: "S".into(), share_link: true, folder_id: String::new() });
+        assert!(!serde_json::to_string(&d).unwrap().contains("folder_id"), "nothing to keep till it's found");
+        assert_eq!((d.kind.target().as_str(), d.problems()), ("S", None));
+        assert_eq!(Kind::GoogleDrive { folder: " ".into(), share_link: true, folder_id: String::new() }.target(), "My Drive");
+        assert_eq!(saved_secret_from(&d, |_| Ok(None)).unwrap(), Err("Not signed in to Google Drive; choose Edit to sign in".into()));
+
+        let found = Kind::GoogleDrive { folder: "S ".into(), share_link: false, folder_id: "F1".into() };
+        let list = serde_json::to_string(&[d.clone(), Destination::new(Kind::discord())]).unwrap();
+        let remembered = remember(&list, "a", &found).expect("changed");
+        let list: Vec<Destination> = serde_json::from_str(&remembered).unwrap();
+        assert_eq!(list[0].kind, Kind::GoogleDrive { folder: "S".into(), share_link: true, folder_id: "F1".into() }, "only the id is taken");
+        assert_eq!(remember(&remembered, "a", &found), None, "nothing new");
+        assert_eq!(remember(&remembered, "gone", &found), None);
+        assert_eq!(list[0].kind.private_words(), ["S", "F1"]);
+
+        // Changed to another folder since: what was found is of the old one.
+        let mut moved = Kind::GoogleDrive { folder: "Other".into(), share_link: true, folder_id: "F1".into() };
+        moved.learn(&found);
+        assert_eq!(moved, Kind::GoogleDrive { folder: "Other".into(), share_link: true, folder_id: String::new() });
     }
 
     /// Against real servers, as ci/test-destinations.sh starts them: rclone's S3 and WebDAV at
@@ -951,6 +1079,7 @@ mod tests {
                 ("SMB share", Some("Password")),
                 ("FTPS", Some("Password")),
                 ("Dropbox", Some("Sign-in")),
+                ("Google Drive", Some("Sign-in")),
                 ("Discord", Some("Webhook URL")),
                 ("Slack", Some("Bot token")),
                 ("Immich", Some("API key")),
@@ -964,7 +1093,8 @@ mod tests {
     fn empty_ones_have_problems_and_filled_ones_do_not() {
         for kind in every_kind() {
             let d = Destination::new(kind.clone());
-            let complete = matches!(kind, Kind::Discord { .. });
+            // Signing in is the form's to check.
+            let complete = matches!(kind, Kind::Discord { .. } | Kind::GoogleDrive { .. });
             assert_eq!(d.problems().is_none(), complete, "{}", kind.name());
             assert_eq!(filled(kind.clone()).problems(), None, "{}", kind.name());
         }

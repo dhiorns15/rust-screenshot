@@ -676,7 +676,7 @@ fn push_to_starts_empty() {
     open(&mut h, Section::Destinations);
     assert!(h.query_by_label("Nowhere yet. Add a place to push to.").is_some());
     click(&mut h, "Add…");
-    for kind in ["SFTP", "WebDAV", "S3-compatible", "SMB share", "FTPS", "Dropbox", "Discord", "Slack", "Immich", "PhotoPrism", "Custom uploader", "Custom uploader from a ShareX file (.sxcu)…"] {
+    for kind in ["SFTP", "WebDAV", "S3-compatible", "SMB share", "FTPS", "Dropbox", "Google Drive", "Discord", "Slack", "Immich", "PhotoPrism", "Custom uploader", "Custom uploader from a ShareX file (.sxcu)…"] {
         assert!(h.query_by_label(kind).is_some(), "{kind}");
     }
 }
@@ -964,6 +964,135 @@ fn editing_dropbox_keeps_the_sign_in_unless_the_app_changes() {
     assert_eq!(h.state().env.sandboxed().secrets.get(&id).map(String::as_str), Some("refresh-for-c2"), "replaced");
 }
 
+/// Starts adding a place of `kind` that signs in with a code shown in Settings.
+fn start_code_sign_in(h: &mut Harness<SettingsApp>, kind: &str) {
+    open(h, Section::Destinations);
+    click(h, "Add…");
+    click(h, kind);
+}
+
+/// Says how the latest sign-in with a code is going, as the service would.
+fn code_event(h: &mut Harness<SettingsApp>, event: push::CodeEvent) {
+    let (_, events, _) = h.state().env.sandboxed().code_sign_ins.last().cloned().expect("signing in");
+    events.send(event).unwrap();
+    settle(h);
+}
+
+fn code_shown(h: &mut Harness<SettingsApp>, url: &str) {
+    code_event(h, push::CodeEvent::Code { user_code: "GQVQ-JKEC".into(), verification_url: url.into() });
+}
+
+fn signed_in(h: &mut Harness<SettingsApp>, refresh_token: &str, name: Option<&str>) {
+    code_event(h, push::CodeEvent::SignedIn { refresh_token: refresh_token.into(), name: name.map(str::to_owned) });
+}
+
+#[test]
+fn google_drive_signs_in_with_a_code_shown_here_and_keeps_the_token_as_the_secret() {
+    let mut h = settings("settings-push-google-drive", |_| {});
+    start_code_sign_in(&mut h, "Google Drive");
+    assert!(h.query_by_label("Add Google Drive").is_some());
+    assert!(h.query_by_label("Sign-in").is_none(), "no box for the secret");
+    assert!(is_on(&h, "Share link"), "links by default");
+    assert!(h.query_by_label_contains("Sign in to Google Drive first").is_some(), "why it can't be saved");
+    assert!(!is_enabled(&h, "Save"));
+    type_into(&mut h, "Folder", "/2026");
+
+    click(&mut h, "Sign in to Google Drive");
+    assert!(h.query_by_label("Asking Google Drive for a code…").is_some());
+    assert!(!is_enabled(&h, "Sign in to Google Drive"), "one at a time");
+    assert!(matches!(h.state().env.sandboxed().code_sign_ins[0].0, Kind::GoogleDrive { .. }));
+    code_shown(&mut h, "https://www.google.com/device");
+    assert!(h.query_by_label("GQVQ-JKEC").is_some(), "the code");
+    let shown = h.get_by_role_and_label(eframe::egui::accesskit::Role::TextInput, "Go to").accesskit_node().value();
+    assert_eq!(shown.as_deref(), Some("https://www.google.com/device"));
+    assert!(h.query_by_label("Waiting for you to sign in…").is_some());
+    assert!(h.query_by_label_contains("On this computer or any other (a phone too)").is_some());
+    click(&mut h, "Copy code");
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some("GQVQ-JKEC"));
+    assert!(h.query_by_label("Copied: paste it where the page asks for it").is_some());
+    click(&mut h, "Copy link");
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some("https://www.google.com/device"));
+    assert!(!is_enabled(&h, "Save"), "not signed in yet");
+
+    signed_in(&mut h, "1//refresh", Some("Dan H"));
+    assert!(h.query_by_label("Signed in as Dan H. Save to keep it").is_some());
+    assert!(h.query_by_label("GQVQ-JKEC").is_none() && h.query_by_label("Cancel sign-in").is_none(), "gone once signed in");
+    assert!(h.state().env.sandboxed().secrets.is_empty(), "kept only once saved");
+    click(&mut h, "Save");
+
+    let saved = destinations(&h);
+    assert_eq!(saved[0].kind, Kind::GoogleDrive { folder: "Screenshots/2026".into(), share_link: true, folder_id: String::new() });
+    assert_eq!(h.state().env.sandboxed().secrets.get(&saved[0].id).map(String::as_str), Some("1//refresh"));
+    assert!(!h.state().env.text_setting(options::DESTINATIONS).unwrap().contains("1//refresh"));
+    assert!(h.query_by_label_contains("Google Drive · Screenshots/2026").is_some());
+}
+
+#[test]
+fn a_code_sign_in_can_be_cancelled_and_says_when_it_fails() {
+    let mut h = settings("settings-push-google-drive-cancel", |_| {});
+    start_code_sign_in(&mut h, "Google Drive");
+    click(&mut h, "Sign in to Google Drive");
+    code_shown(&mut h, "https://www.google.com/device");
+    click(&mut h, "Cancel sign-in");
+    let (_, _, cancelled) = h.state().env.sandboxed().code_sign_ins[0].clone();
+    assert!(cancelled.load(std::sync::atomic::Ordering::Relaxed), "it stops waiting");
+    assert!(h.query_by_label("GQVQ-JKEC").is_none());
+    assert!(h.query_by_label("Not signed in yet").is_some());
+    assert!(is_enabled(&h, "Sign in to Google Drive"), "and can start again");
+
+    click(&mut h, "Sign in to Google Drive");
+    code_shown(&mut h, "https://www.google.com/device");
+    code_event(&mut h, push::CodeEvent::Failed("You didn't allow RSnip in Google Drive: choose Sign in to try again".into()));
+    assert!(h.query_by_label("You didn't allow RSnip in Google Drive: choose Sign in to try again").is_some());
+    assert!(h.query_by_label("GQVQ-JKEC").is_none());
+    assert!(!is_enabled(&h, "Save"));
+    click(&mut h, "Sign in to Google Drive");
+    assert!(h.query_by_label("You didn't allow RSnip in Google Drive: choose Sign in to try again").is_none(), "a new try clears it");
+
+    // Leaving the form stops the wait too.
+    let (_, _, waiting) = h.state().env.sandboxed().code_sign_ins.last().cloned().unwrap();
+    click(&mut h, "Cancel");
+    assert!(waiting.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[test]
+fn editing_a_place_signed_in_with_a_code_keeps_the_sign_in() {
+    let mut h = settings("settings-push-google-drive-edit", |_| {});
+    start_code_sign_in(&mut h, "Google Drive");
+    click(&mut h, "Sign in to Google Drive");
+    code_shown(&mut h, "https://www.google.com/device");
+    signed_in(&mut h, "R-1", None);
+    assert!(h.query_by_label("Signed in. Save to keep it").is_some(), "as whom isn't known");
+    click(&mut h, "Save");
+    let id = destinations(&h)[0].id.clone();
+
+    // A push found the folder meanwhile, which a change of something else keeps.
+    let mut list = destinations(&h);
+    list[0].kind = Kind::GoogleDrive { folder: "Screenshots".into(), share_link: true, folder_id: "F1".into() };
+    push::save(&h.state().env, &list);
+    click(&mut h, "Edit");
+    assert!(h.query_by_label("Signed in. Sign in again only to use another account").is_some());
+    assert!(is_enabled(&h, "Save"), "no need to sign in again");
+    toggle(&mut h, "Share link");
+    click(&mut h, "Save");
+    assert_eq!(destinations(&h)[0].kind, Kind::GoogleDrive { folder: "Screenshots".into(), share_link: false, folder_id: "F1".into() });
+    assert_eq!(h.state().env.sandboxed().secrets.get(&id).map(String::as_str), Some("R-1"), "kept");
+    // Another folder is another folder to find.
+    click(&mut h, "Edit");
+    type_into(&mut h, "Folder", "2");
+    click(&mut h, "Save");
+    assert_eq!(destinations(&h)[0].kind, Kind::GoogleDrive { folder: "Screenshots2".into(), share_link: false, folder_id: String::new() });
+}
+
+#[test]
+fn a_build_without_rsnips_apps_says_signing_in_isnt_available() {
+    let mut h = settings("settings-push-google-drive-unavailable", |env| env.sandboxed().without_sign_in_apps = true);
+    start_code_sign_in(&mut h, "Google Drive");
+    assert!(!is_enabled(&h, "Sign in to Google Drive"));
+    assert!(h.query_by_label("Signing in to Google Drive isn't available in this build of RSnip: it was made without RSnip's app for Google Drive").is_some());
+    assert!(!is_enabled(&h, "Save"));
+}
+
 #[test]
 fn the_question_mark_opens_how_to_set_it_up() {
     use crate::gallery::theme::icon;
@@ -1185,6 +1314,17 @@ mod snapshots {
         type_into(&mut h, "App key", "abc123xyz789");
         click(&mut h, "Sign in to Dropbox");
         snapshot(&mut h, Section::Destinations, "settings_push_dropbox");
+    }
+
+    /// Part way through signing in with a code: it's shown, waiting to be entered.
+    #[test]
+    fn push_to_google_drive_form() {
+        let _gpu = super::super::tests::gpu();
+        let mut h = rendered("snap-settings-push-google-drive", |_| {});
+        start_code_sign_in(&mut h, "Google Drive");
+        click(&mut h, "Sign in to Google Drive");
+        code_shown(&mut h, "https://www.google.com/device");
+        snapshot(&mut h, Section::Destinations, "settings_push_google_drive");
     }
 
     #[test]

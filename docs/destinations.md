@@ -7,7 +7,7 @@ edits to it are saved; what was there before isn't) or **By hand**: *Export → 
 editor and player, or *Push to* in the library's right-click menu, for everything selected. When
 the place gives a link, it's copied, and the item's right-click menu has *Copy link* for each place
 it went; an edited one pushed again to SFTP, WebDAV, S3, an SMB share or FTPS replaces the file
-there, while Dropbox, Discord, Slack, Immich and PhotoPrism get a new copy, and *Copy link* gives the newest. A push that fails by itself is
+there, while Dropbox, Google Drive, Discord, Slack, Immich and PhotoPrism get a new copy, and *Copy link* gives the newest. A push that fails by itself is
 tried again after a minute, five minutes and half an hour, then reported with a notification.
 *Recent pushes*, under the places, lists the last ten pushes, by hand and automatic, with what
 went wrong when one didn't, and a *Retry* on the latest failure of a file to a place.
@@ -22,6 +22,7 @@ went wrong when one didn't, and a *Retry* on the latest failure of a file to a p
 | SMB share | The share (`\\nas\shots`), and a user and password or none; Samba's `smbclient` on Linux | With a public address for the folder |
 | FTPS | The server, user, password and folder; FTP over TLS only, and a NAS's self-signed certificate can be trusted by its fingerprint | With a public address for the folder |
 | Dropbox | A free Dropbox app of your own (its App key), and signing in to it from RSnip | A Dropbox link to the file |
+| Google Drive | Signing in to your Google account with a code, from any browser; RSnip sees only its own files | A Google Drive link anyone can open |
 | Discord | A channel's webhook address | The attachment |
 | Slack | A bot token from a Slack app of your own (`files:write`) and the channel's ID | The file in Slack |
 | Immich | The server's address and an API key (`asset.upload`, `user.read`) | The photo in Immich |
@@ -38,8 +39,8 @@ keyring to be unlocked.
 Give RSnip its own key, token or app password where the service has them, with no more than it
 needs, so it can be taken back without changing anything else.
 
-**Coming later:** Google Drive, OneDrive, Imgur (with albums) and Box (each needs RSnip
-registered with them), Microsoft Teams, Gyazo, Streamable and Synology Photos. Mattermost, Imgbb
+**Coming later:** OneDrive, Imgur (with albums) and Box (each needs RSnip registered with them),
+Microsoft Teams, Gyazo, Streamable and Synology Photos. Mattermost, Imgbb
 and Catbox if someone asks: [suggest a place](https://github.com/dhiorns15/rust-screenshot/issues/new?template=push_destination.yml),
 though many hosts with an upload API already work as a custom uploader.
 
@@ -59,6 +60,7 @@ the connection*: check that it's running and reachable from this computer, and t
 - [SMB share](#smb-share)
 - [FTPS](#ftps)
 - [Dropbox](#dropbox)
+- [Google Drive](#google-drive)
 - [Discord](#discord)
 - [Slack](#slack)
 - [Immich](#immich)
@@ -215,6 +217,51 @@ RSnip.
   make links* (from Test connection): turn on `sharing.write`, or turn off Share link; a push that
   can't make its link still puts the file up, without a link.
 - **Link:** a Dropbox link to the file (it opens a preview page; add `dl=1` to the end to download).
+
+## Google Drive
+
+A folder in your Google Drive (My Drive), through RSnip's own Google app: nothing to make or
+register yourself, just sign in.
+
+- **Set up:** *Settings → Push to → Add… → Google Drive*:
+  1. Give the **Folder** (`Screenshots`, made in My Drive if it isn't there; `Screenshots/2026`
+     for one inside another; empty for the top of My Drive). Each Google Drive place is one
+     folder; add more places for more folders.
+  2. Choose *Sign in to Google Drive*. RSnip shows a short code and a page,
+     [google.com/device](https://www.google.com/device): on this computer or any other (a phone
+     too, which helps over remote desktop), go to the page, enter the code, choose your Google
+     account and allow RSnip. *Copy link* and *Copy code* copy them. RSnip says *Waiting for you to
+     sign in…* until you have, then *Signed in as …*; choose *Save*. *Cancel sign-in* stops
+     waiting. The code lasts about half an hour.
+  3. *Share link* (on by default) lets anyone with the link see each file pushed, and copies the
+     link.
+- **What to expect:** until Google has verified RSnip's app (its name and logo), the page may not
+  show them, or may warn that *Google hasn't verified this app*: if it does, choose *Advanced*,
+  then *Go to RSnip* to carry on. RSnip asks only for `drive.file`, which Google counts as
+  non-sensitive: it sees and changes only the files and folders it put in your
+  Drive itself, never anything else there. So a folder you made yourself with the same name
+  isn't used: RSnip makes its own beside it.
+- **Signs in with:** the OAuth device flow, as TVs and other apps without a browser of their own
+  do. RSnip keeps only the refresh token Google gives, in the credential store with the other
+  secrets, and trades it for a short-lived access token at each push; *Remove* forgets it. To take
+  access back, remove RSnip under *Third-party apps & services* at
+  [myaccount.google.com/connections](https://myaccount.google.com/connections).
+- **Test:** signs in and asks whose Drive it is (*Connected as …*), changing nothing.
+- **Files:** one by that name already in the folder isn't replaced: Google Drive keeps both. Over
+  5 MB (recordings) goes up in 8 MB pieces, picking up where Google says it got to. The folder's
+  id is kept with the place once it's found; if you delete the folder (or put it in the bin), the
+  next push makes it again.
+- **Errors:** *Google Drive signed RSnip out: sign in again in Settings → Push to*: access was taken
+  back, or the sign-in expired; choose *Edit → Sign in to Google Drive*. *Your Google Drive is
+  full*. *Google Drive says RSnip is sending too many requests*: wait a little. *You didn't allow
+  RSnip in Google Drive*, *The code expired before you signed in*: choose *Sign in to Google Drive*
+  for a new code. *Your organisation doesn't let RSnip use Google Drive*: a Google Workspace
+  administrator has to allow it. *Signing in to Google Drive isn't available in this build of
+  RSnip*: a copy built from the source without RSnip's Google app (see `GOOGLE_CLIENT_ID` in
+  `src/push/google_drive.rs`).
+- **Link:** the file's Google Drive page, which anyone with the link can open without signing in.
+  A Google Workspace account may not be allowed links for people outside it: then the file still
+  goes up, without a link.
 
 ## Discord
 

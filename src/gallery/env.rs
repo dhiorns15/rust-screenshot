@@ -17,7 +17,7 @@ use super::platform;
 use super::system_info::Host;
 use super::words::Word;
 use crate::describe::{self, Described, Model, Provider, Service};
-use crate::push::{Destination, Saved};
+use crate::push::{CodeEvent, Destination, Kind, Saved};
 use crate::shortcuts::Action;
 use crate::update::{Release, Version};
 
@@ -173,6 +173,11 @@ pub struct Sandbox {
     /// The refresh token a code pasted back after signing in gives (Dropbox's; `None`: one made
     /// from the code).
     pub pasted_code_token: Option<Result<String, String>>,
+    /// Each sign-in with a code shown in Settings: what to, where to say how it's going (the test
+    /// does), and whether it was cancelled.
+    pub code_sign_ins: Vec<(Kind, Sender<CodeEvent>, Arc<AtomicBool>)>,
+    /// This build has no app of RSnip's to sign in to Google Drive or OneDrive with.
+    pub without_sign_in_apps: bool,
     /// Files pushed, with the destination's name.
     pub pushed: Vec<(String, PathBuf)>,
     /// What pushing a file gives (`None`: a link ending in its name).
@@ -885,6 +890,34 @@ impl Env {
         rx
     }
 
+    /// Whether this build can sign in to `kind` (see `push::can_sign_in`).
+    pub fn can_sign_in(&self, kind: &Kind) -> bool {
+        match &self.sandbox {
+            Some(s) => !s.borrow().without_sign_in_apps,
+            None => crate::push::can_sign_in(kind),
+        }
+    }
+
+    /// Signs in to `kind` with a code shown in Settings (see `push::sign_in_with_code`), until it's
+    /// done or `cancel` is set; how it's going arrives on the channel, and `ctx` repaints as it
+    /// does. In the sandbox the test says how it's going (`Sandbox::code_sign_ins`).
+    pub fn sign_in_with_code(&self, ctx: &eframe::egui::Context, kind: &Kind, cancel: Arc<AtomicBool>) -> Receiver<CodeEvent> {
+        let (tx, rx) = channel();
+        match &self.sandbox {
+            Some(s) => s.borrow_mut().code_sign_ins.push((kind.clone(), tx, cancel)),
+            None => {
+                let (ctx, kind) = (ctx.clone(), kind.clone());
+                std::thread::spawn(move || {
+                    crate::push::sign_in_with_code(&kind, &cancel, |event| {
+                        let _ = tx.send(event);
+                        ctx.request_repaint();
+                    });
+                });
+            }
+        }
+        rx
+    }
+
     /// Checks that `destination` can be reached (see `push::test`), with `secret` if given, else the
     /// one saved for it; the answer arrives on the channel, and `ctx` repaints when it does.
     pub fn test_destination(&self, ctx: &eframe::egui::Context, destination: &Destination, secret: Option<String>) -> Receiver<Result<String, String>> {
@@ -980,10 +1013,17 @@ fn saved_secret(destination: &Destination, given: Option<String>) -> Result<Save
     }
 }
 
-/// `secret`, read from the credential store for `destination`, with what replaces it kept there.
+/// `secret`, read from the credential store for `destination`, with what replaces it kept there,
+/// and what a push learns about the place kept in the list of destinations.
 pub fn kept(destination: &Destination, secret: Option<String>) -> Saved {
     let (id, label) = (destination.id.clone(), destination.name.clone());
-    Saved::new(secret, move |new| crate::secrets::set(&id, &label, new))
+    let place = id.clone();
+    Saved::new(secret, move |new| crate::secrets::set(&id, &label, new)).remembering(move |learned| {
+        // Read again here, as Settings may have changed the list since.
+        if let Some(json) = platform::text_setting(crate::options::DESTINATIONS).and_then(|json| crate::push::remember(&json, &place, learned)) {
+            platform::set_text_setting(crate::options::DESTINATIONS, &json);
+        }
+    })
 }
 
 /// The provider, with the key saved for it in the credential store (which may wait for the keyring

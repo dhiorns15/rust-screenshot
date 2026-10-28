@@ -33,7 +33,8 @@ command line or a desktop shortcut, with a few things Windows-only (see
   shows large thumbnails, sorted by date, name, size or type, with the selected one's details beside
   it. [More](docs/editor.md#the-library)
 - **Push to other places**, as they're saved or when you choose: SFTP, WebDAV, S3, SMB shares,
-  FTPS, Dropbox, Discord, Slack, Immich, PhotoPrism, or any upload API (ShareX `.sxcu` uploaders too).
+  FTPS, Dropbox, Google Drive, Discord, Slack, Immich, PhotoPrism, or any upload API (ShareX `.sxcu`
+  uploaders too).
   [More](docs/destinations.md)
 - **Updates** itself when you want it to: it says when a new version is out, and an installed copy
   can download, check and install it. [Settings](docs/settings.md)

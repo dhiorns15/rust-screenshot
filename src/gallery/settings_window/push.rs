@@ -4,7 +4,9 @@
 //! is polled every frame, like the folder chooser's.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Ui};
@@ -13,7 +15,7 @@ use super::{row, SettingsApp};
 use crate::gallery::env::{PickedFolder, PushEvent, TrayRequest};
 use crate::gallery::theme::{self, icon};
 use crate::push::history::{self, Entry};
-use crate::push::{self, Destination, Kind, Pkce, SignIn as SignInWay};
+use crate::push::{self, CodeEvent, Destination, Kind, Pkce, SignIn as SignInWay};
 
 type Answer<T> = Receiver<Result<T, String>>;
 
@@ -79,6 +81,10 @@ struct SignIn {
     saved_for: Option<String>,
     /// Pasting a code back (Dropbox's), once started.
     pasted: Option<PastedCode>,
+    /// Showing a code to enter on the service's page (the others'), once started.
+    shown: Option<ShownCode>,
+    /// Signed in just now as whom, if the service said.
+    who: Option<String>,
 }
 
 impl SignIn {
@@ -108,12 +114,33 @@ struct PastedCode {
     exchanging: Option<Answer<String>>,
 }
 
+/// Signing in with a code shown here, which the user enters on the service's page, on this
+/// computer or any other (a phone, say).
+struct ShownCode {
+    events: Receiver<CodeEvent>,
+    /// Set to stop waiting for the user.
+    cancel: Arc<AtomicBool>,
+    /// The code, and the page to enter it on, once the service has given them.
+    code: Option<(String, String)>,
+    /// What was copied last: "link" or "code".
+    copied: Option<&'static str>,
+}
+
+impl Drop for ShownCode {
+    /// No more waiting once it's left behind: cancelled, signed in, or the form closed.
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
 /// What was clicked in the sign-in rows of the form.
 #[derive(Default)]
 struct SignInClicks {
     sign_in: bool,
     finish: bool,
     copy: bool,
+    copy_code: bool,
+    cancel: bool,
 }
 
 impl Form {
@@ -223,6 +250,7 @@ fn fields(kind: &mut Kind) -> Vec<Field<'_>> {
             field("App key", "From the Settings tab of your app at dropbox.com/developers", app_key),
             field("Folder", "/Screenshots, in the app's folder (or Dropbox, with full access)", folder),
         ],
+        Kind::GoogleDrive { folder, .. } => vec![field("Folder", "Screenshots, in My Drive (made if it isn't there); empty for the top", folder)],
         Kind::Custom { url, method, file_field, fields, headers, link } => vec![
             field("Upload address", "https://i.example.com/api/upload", url),
             field("Method", "POST", method),
@@ -246,6 +274,7 @@ fn help(kind: &Kind) -> &'static str {
         Kind::Ftps { .. } => "FTP over TLS: port 21 for explicit TLS, 990 for implicit. Plain FTP isn't offered, as it sends the password unencrypted.",
         Kind::Smb { .. } => "A Windows or Samba share, a NAS's say. On Linux it needs Samba's smbclient.",
         Kind::Dropbox { .. } => "Uses a free Dropbox app of your own, made as docs/destinations.md says: enter its App key, then sign in to Dropbox.",
+        Kind::GoogleDrive { .. } => "Sign in with a code, on this computer or any other (a phone too). RSnip sees only the files and folders it puts in your Drive.",
         Kind::Custom { .. } => "Any upload API, like ShareX's custom uploaders. {secret} is replaced by the token, {filename} by the file's name.",
     }
 }
@@ -476,8 +505,13 @@ impl SettingsApp {
     fn commit(&mut self, destination: Destination) {
         let mut list = push::load(&self.env);
         match list.iter_mut().find(|d| d.id == destination.id) {
-            // Whether it pushes automatically is changed in the list, not here.
-            Some(existing) => (existing.name, existing.kind) = (destination.name, destination.kind),
+            // Whether it pushes automatically is changed in the list, not here; what pushes have
+            // learned about the place since the form was opened is kept.
+            Some(existing) => {
+                let mut kind = destination.kind;
+                kind.learn(&existing.kind);
+                (existing.name, existing.kind) = (destination.name, kind);
+            }
             None => list.push(destination),
         }
         self.save_destinations(&list);
@@ -579,8 +613,29 @@ impl SettingsApp {
         if clicks.sign_in || clicks.finish {
             form.error = None;
         }
-        if let Some(SignInWay::PasteCode) = form.destination.kind.sign_in() {
-            self.pasted_click(ctx, form, clicks);
+        match form.destination.kind.sign_in() {
+            Some(SignInWay::PasteCode) => self.pasted_click(ctx, form, clicks),
+            Some(SignInWay::ShowCode) => self.shown_click(ctx, form, clicks),
+            None => {}
+        }
+    }
+
+    /// Asks the service for a code to show, stops waiting for it to be entered, or copies the
+    /// page or the code.
+    fn shown_click(&mut self, ctx: &egui::Context, form: &mut Form, clicks: &SignInClicks) {
+        if clicks.sign_in {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let events = self.env.sign_in_with_code(ctx, &form.destination.kind, cancel.clone());
+            let shown = ShownCode { events, cancel, code: None, copied: None };
+            form.sign_in = SignIn { shown: Some(shown), saved_for: form.sign_in.saved_for.take(), ..SignIn::default() };
+        } else if clicks.cancel {
+            form.sign_in.shown = None;
+        } else if let Some(ShownCode { code: Some((code, url)), copied, .. }) = &mut form.sign_in.shown {
+            let (text, what) = if clicks.copy_code { (code, "code") } else if clicks.copy { (url, "link") } else { return };
+            match self.env.copy_text(text) {
+                Ok(()) => *copied = Some(what),
+                Err(e) => form.error = Some(format!("Couldn't copy it: {e}")),
+            }
         }
     }
 
@@ -593,7 +648,7 @@ impl SettingsApp {
                     let url = pkce.authorize_url(&key);
                     let opening = Some(self.env.open_link(ctx, std::path::Path::new(&url)));
                     let pasted = PastedCode { pkce, url, opening, unopened: None, copied: false, app_key: key, code: String::new(), exchanging: None };
-                    form.sign_in = SignIn { pasted: Some(pasted), saved_for: form.sign_in.saved_for.take(), done: None };
+                    form.sign_in = SignIn { pasted: Some(pasted), saved_for: form.sign_in.saved_for.take(), ..SignIn::default() };
                 }
                 Err(e) => form.error = Some(e),
             }
@@ -630,6 +685,7 @@ impl SettingsApp {
             let busy = form.saving.is_some();
             let mut fetch = false;
             let mut clicks = SignInClicks::default();
+            let available = self.env.can_sign_in(&form.destination.kind);
             ui.add_enabled_ui(!busy, |ui| {
                 egui::Grid::new("destination-form").num_columns(2).spacing([16.0, 8.0]).min_col_width(130.0).show(ui, |ui| {
                     text_row(ui, "Name", "", &mut form.destination.name, false);
@@ -647,7 +703,7 @@ impl SettingsApp {
                         }
                     }
                     if form.destination.kind.sign_in().is_some() {
-                        clicks = sign_in_rows(ui, &mut form);
+                        clicks = sign_in_rows(ui, &mut form, available);
                     } else if let Some(label) = form.destination.kind.secret_label() {
                         let hint = match (form.editing, form.destination.kind.secret_optional()) {
                             (true, _) => "Leave empty to keep the saved one",
@@ -711,6 +767,7 @@ impl SettingsApp {
 
 /// Takes in how signing in is going.
 fn poll_sign_in(form: &mut Form) {
+    poll_shown(form);
     let Some(pasted) = &mut form.sign_in.pasted else { return };
     if let Some(Ok(opened)) = pasted.opening.as_ref().map(|rx| rx.try_recv()) {
         pasted.opening = None;
@@ -729,16 +786,41 @@ fn poll_sign_in(form: &mut Form) {
     }
 }
 
+/// Takes in the code to show, once the service gives it, and how signing in with it ended.
+fn poll_shown(form: &mut Form) {
+    let Some(shown) = &mut form.sign_in.shown else { return };
+    let mut ended = None;
+    for event in shown.events.try_iter() {
+        match event {
+            CodeEvent::Code { user_code, verification_url } => shown.code = Some((user_code, verification_url)),
+            CodeEvent::SignedIn { refresh_token, name } => ended = Some(Ok((refresh_token, name))),
+            CodeEvent::Failed(e) => ended = Some(Err(e)),
+        }
+    }
+    match ended {
+        Some(Ok((token, who))) => {
+            form.secret = token;
+            form.sign_in = SignIn { done: Some(String::new()), who, ..SignIn::default() };
+        }
+        Some(Err(e)) => {
+            form.error = Some(e);
+            form.sign_in.shown = None;
+        }
+        None => {}
+    }
+}
+
 /// Whether pushes make links, for the kinds that can be told.
 fn share_link(kind: &mut Kind) -> Option<&mut bool> {
     match kind {
-        Kind::Dropbox { share_link, .. } => Some(share_link),
+        Kind::Dropbox { share_link, .. } | Kind::GoogleDrive { share_link, .. } => Some(share_link),
         _ => None,
     }
 }
 
-/// The rows of the form's grid for a kind that signs in: whether to make links, and signing in.
-fn sign_in_rows(ui: &mut Ui, form: &mut Form) -> SignInClicks {
+/// The rows of the form's grid for a kind that signs in: whether to make links, and signing in
+/// (if this build can: `available`).
+fn sign_in_rows(ui: &mut Ui, form: &mut Form, available: bool) -> SignInClicks {
     let muted = theme::palette(ui).muted;
     if let Some(share_link) = share_link(&mut form.destination.kind) {
         ui.label("Share link");
@@ -750,8 +832,70 @@ fn sign_in_rows(ui: &mut Ui, form: &mut Form) -> SignInClicks {
     }
     match form.destination.kind.sign_in() {
         Some(SignInWay::PasteCode) => pasted_rows(ui, form),
+        Some(SignInWay::ShowCode) => shown_rows(ui, form, available),
         None => SignInClicks::default(),
     }
+}
+
+/// Signing in with a code shown here: the button, how it's going, and the code and the page to
+/// enter it on.
+fn shown_rows(ui: &mut Ui, form: &mut Form, available: bool) -> SignInClicks {
+    let mut clicks = SignInClicks::default();
+    let muted = theme::palette(ui).muted;
+    let name = form.destination.kind.name();
+    let sign_in = &mut form.sign_in;
+    let waiting = sign_in.shown.is_some();
+    let status = if !available {
+        format!("Signing in to {name} isn't available in this build of RSnip: it was made without RSnip's app for {name}")
+    } else if sign_in.done.is_some() {
+        match &sign_in.who {
+            Some(who) => format!("Signed in as {who}. Save to keep it"),
+            None => "Signed in. Save to keep it".to_owned(),
+        }
+    } else {
+        match sign_in.shown.as_ref().map(|s| s.code.is_some()) {
+            Some(true) => "Waiting for you to sign in…".to_owned(),
+            Some(false) => format!("Asking {name} for a code…"),
+            None if sign_in.saved_for.is_some() => "Signed in. Sign in again only to use another account".to_owned(),
+            None => "Not signed in yet".to_owned(),
+        }
+    };
+    ui.label(name);
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            let why = if available { "Signing in already" } else { "Not in this build of RSnip" };
+            clicks.sign_in = ui.add_enabled(available && !waiting, egui::Button::new(format!("Sign in to {name}"))).on_disabled_hover_text(why).clicked();
+            if waiting {
+                clicks.cancel = ui.button("Cancel sign-in").clicked();
+            }
+        });
+        ui.label(RichText::new(status).small().color(muted));
+    });
+    ui.end_row();
+
+    let Some(ShownCode { code: Some((code, url)), copied, .. }) = &sign_in.shown else { return clicks };
+    let text = ui.label("Go to");
+    ui.horizontal(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut url.as_str()).desired_width(220.0)).labelled_by(text.id);
+        clicks.copy = ui.button("Copy link").clicked();
+    });
+    ui.end_row();
+
+    ui.label("Enter the code");
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(code).monospace().size(20.0).strong());
+            clicks.copy_code = ui.button("Copy code").clicked();
+        });
+        let note = match copied {
+            Some("code") => "Copied: paste it where the page asks for it".to_owned(),
+            Some(_) => "Copied: paste it into a browser's address bar".to_owned(),
+            None => format!("On this computer or any other (a phone too): go to the page, enter the code, and allow RSnip in {name}"),
+        };
+        ui.label(RichText::new(note).small().color(muted));
+    });
+    ui.end_row();
+    clicks
 }
 
 /// Signing in by pasting a code back, and the code to paste.

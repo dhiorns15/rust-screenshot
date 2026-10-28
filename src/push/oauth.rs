@@ -26,7 +26,6 @@ const SLOWER: Duration = Duration::from_secs(5);
 const EXPIRES: Duration = Duration::from_secs(15 * 60);
 
 /// What a service is, as far as signing in to it goes.
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct Provider<'a> {
     /// Its name, for messages: "Dropbox".
     pub name: &'a str,
@@ -151,7 +150,6 @@ fn refusal(provider: &Provider, error: &str) -> Option<String> {
 
 /// A device sign-in under way: the code the user enters, and the page they enter it on.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct DeviceCode {
     pub user_code: String,
     pub verification_url: String,
@@ -164,14 +162,12 @@ pub struct DeviceCode {
 
 /// Signed in on another device: the refresh token to keep, and an access token to use now.
 #[derive(Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct SignedIn {
     pub refresh_token: String,
     pub access_token: String,
 }
 
 /// Asks for a code for the user to enter (RFC 8628 section 3.1).
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn start_device(provider: &Provider) -> Result<DeviceCode, String> {
     let form = format!("client_id={}&scope={}", encode(provider.client_id), encode(provider.scope));
     let reply = post_form(&provider.device_url, &form)?;
@@ -196,7 +192,6 @@ pub fn start_device(provider: &Provider) -> Result<DeviceCode, String> {
 
 /// Waits for the user to sign in with `code` elsewhere, asking the service every so often, until
 /// they have (or said no, or the code expired, or `cancelled` was set).
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn finish_device(provider: &Provider, code: &DeviceCode, cancelled: &AtomicBool) -> Result<SignedIn, String> {
     finish_device_with(provider, code, cancelled, |wait| {
         // In steps, so a cancel is noticed straight away.
@@ -217,7 +212,6 @@ enum Poll {
 }
 
 /// As `finish_device`, with `pause` doing the waiting (it's to return early once `cancelled` is set).
-#[cfg_attr(not(test), allow(dead_code))]
 fn finish_device_with(provider: &Provider, code: &DeviceCode, cancelled: &AtomicBool, mut pause: impl FnMut(Duration)) -> Result<SignedIn, String> {
     let mut interval = code.interval;
     let mut waited = Duration::ZERO;
@@ -244,7 +238,6 @@ fn expired() -> String {
 }
 
 /// Asks once whether the user has signed in (RFC 8628 section 3.4).
-#[cfg_attr(not(test), allow(dead_code))]
 fn poll(provider: &Provider, code: &DeviceCode) -> Result<Poll, String> {
     let mut form = format!("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={}&client_id={}", encode(&code.device_code), encode(provider.client_id));
     if !provider.client_secret.is_empty() {
