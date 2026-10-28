@@ -2,7 +2,8 @@
 //!
 //! On Windows it's the full app (see `win_main.rs`). Elsewhere it has the screenshot library and
 //! editor, `rsnip [file]`, and takes screenshots and recordings from the background icon (see
-//! `gallery::background`), with scrolling captures on X11, but not pins.
+//! `gallery::background`), with scrolling captures on X11 and the camera's bubble (`rsnip --camera`),
+//! but not pins.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -33,6 +34,8 @@ enum Action {
     RecordScreen,
     /// A frame of the screen, and what the area is for (see `gallery::pick_area`).
     PickArea(String, Option<String>),
+    /// The camera's bubble, with what follows `--camera` (see `gallery::camera`).
+    Camera(Vec<String>),
     SystemInfo,
     CheckRecording,
     TrayQuit,
@@ -63,6 +66,9 @@ fn action(args: &[String]) -> Action {
     }
     if let Some(frame) = after("--pick-area", 1) {
         return Action::PickArea(frame, after("--pick-area", 2));
+    }
+    if has("--camera") {
+        return Action::Camera(args.iter().skip_while(|a| *a != "--camera").skip(1).cloned().collect());
     }
     for (flag, action) in [("--system-info", Action::SystemInfo), ("--check-recording", Action::CheckRecording), ("--tray-quit", Action::TrayQuit)] {
         if has(flag) {
@@ -104,6 +110,7 @@ fn main() {
         Action::Record => gallery::record(true),
         Action::RecordScreen => gallery::record(false),
         Action::PickArea(frame, purpose) => gallery::pick_area(std::path::Path::new(&frame), purpose.as_deref()),
+        Action::Camera(args) => gallery::run_camera(&args),
         Action::SystemInfo => gallery::print_system_info(),
         Action::CheckRecording => gallery::check_recording(),
         Action::TrayQuit => gallery::quit_background(),
@@ -185,6 +192,13 @@ mod tests {
         assert_eq!(action("--tray-quit"), Action::TrayQuit);
         assert_eq!(action("--write-icon /tmp/rsnip.png"), Action::WriteIcon("/tmp/rsnip.png".into()));
         assert_eq!(action("--record --full"), Action::Record, "recording was first");
+    }
+
+    #[test]
+    fn shows_the_camera() {
+        let camera = |args: &[&str]| Action::Camera(args.iter().map(|a| a.to_string()).collect());
+        assert_eq!(action("--camera"), camera(&[]));
+        assert_eq!(action("--camera /dev/video2 --at 1200,800 --recording"), camera(&["/dev/video2", "--at", "1200,800", "--recording"]));
     }
 
     #[test]

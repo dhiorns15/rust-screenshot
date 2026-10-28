@@ -125,7 +125,7 @@ pub fn run() {
 
 /// The panel's X11 window, when it has one (not on Wayland).
 #[cfg(not(windows))]
-fn x11_window(window: &impl raw_window_handle::HasWindowHandle) -> Option<u32> {
+pub(super) fn x11_window(window: &impl raw_window_handle::HasWindowHandle) -> Option<u32> {
     use raw_window_handle::RawWindowHandle;
     match window.window_handle().ok()?.as_raw() {
         RawWindowHandle::Xlib(handle) => u32::try_from(handle.window).ok(),
@@ -592,38 +592,47 @@ impl CapturePanel {
             settings_rows::flag_row(ui, &self.env, options::RECORD_SOUND, "Computer sound", "");
             settings_rows::flag_row(ui, &self.env, options::RECORD_MICROPHONE, "Microphone", "");
         });
+        // The camera is on the screen, not in the video, so GIFs have it too.
+        settings_rows::flag_row(ui, &self.env, options::RECORD_CAMERA, "Camera", "");
         if gif {
             ui.label(RichText::new("GIFs have no sound").size(12.0).color(theme::palette(ui).muted));
         }
     }
 
     /// Under the columns, which output's sound and which microphone (each under its switch, when
-    /// it's on), so a long name doesn't push the button off the panel.
+    /// it's on), then which camera, so a long name doesn't push the button off the panel.
     fn video_devices(&mut self, ui: &mut Ui) {
         let on = |flag: options::Flag| flag.read(|name| self.env.setting(name));
         let (sound, microphone) = (on(options::RECORD_SOUND), on(options::RECORD_MICROPHONE));
-        if !(sound || microphone) {
-            return;
+        if sound || microphone {
+            // Greyed out with the switches, for GIFs.
+            let gif = on(options::RECORD_GIF);
+            ui.add_enabled_ui(!gif, |ui| ui.horizontal(|ui| {
+                for (shown, glyph, width) in [(sound, icon::SPEAKER_HIGH, OPTIONS), (microphone, icon::MICROPHONE, SWITCHES)] {
+                    ui.allocate_ui_with_layout(Vec2::new(width, 26.0), Layout::left_to_right(Align::Center), |ui| {
+                        ui.set_width(width);
+                        if !shown {
+                            return;
+                        }
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label(RichText::new(glyph).size(16.0).color(theme::palette(ui).muted));
+                        if glyph == icon::SPEAKER_HIGH {
+                            settings_rows::output_picker(ui, &self.env, &mut self.sound_devices);
+                        } else {
+                            settings_rows::microphone_picker(ui, &self.env, &mut self.sound_devices);
+                        }
+                    });
+                }
+            }));
         }
-        // Greyed out with the switches, for GIFs.
-        let gif = on(options::RECORD_GIF);
-        ui.add_enabled_ui(!gif, |ui| ui.horizontal(|ui| {
-            for (shown, glyph, width) in [(sound, icon::SPEAKER_HIGH, OPTIONS), (microphone, icon::MICROPHONE, SWITCHES)] {
-                ui.allocate_ui_with_layout(Vec2::new(width, 26.0), Layout::left_to_right(Align::Center), |ui| {
-                    ui.set_width(width);
-                    if !shown {
-                        return;
-                    }
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    ui.label(RichText::new(glyph).size(16.0).color(theme::palette(ui).muted));
-                    if glyph == icon::SPEAKER_HIGH {
-                        settings_rows::output_picker(ui, &self.env, &mut self.sound_devices);
-                    } else {
-                        settings_rows::microphone_picker(ui, &self.env, &mut self.sound_devices);
-                    }
-                });
-            }
-        }));
+        if on(options::RECORD_CAMERA) {
+            ui.allocate_ui_with_layout(Vec2::new(OPTIONS, 26.0), Layout::left_to_right(Align::Center), |ui| {
+                ui.set_width(OPTIONS);
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new(icon::WEBCAM).size(16.0).color(theme::palette(ui).muted));
+                settings_rows::camera_picker(ui, &self.env, &mut self.sound_devices);
+            });
+        }
     }
 
     /// The library, and Settings.

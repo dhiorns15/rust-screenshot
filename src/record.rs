@@ -1,5 +1,6 @@
 //! Recording an area of the screen to MP4 (or GIF). While recording, a red frame marks the area
 //! and a small bar shows the time with a Stop button; both are hidden from the recording itself.
+//! The camera's bubble, if it's on, is not: it's recorded wherever it's put in the area.
 
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
@@ -19,6 +20,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::audio;
 use crate::capture::capture_rect_with_cursor;
 use crate::encode::{even, Encoder, Gif, Mp4};
+use crate::gallery::camera::{Bubble, Launch};
 use windows_sys::core::PCWSTR;
 
 use crate::util::{inflate, rect, wide};
@@ -36,6 +38,8 @@ pub struct Recording {
     stop: Arc<AtomicBool>,
     thread: JoinHandle<Result<Recorded, String>>,
     windows: [HWND; 2],
+    /// The camera's bubble, if it's shown. It's a window of its own process, left in the recording.
+    camera: Option<Bubble>,
 }
 
 /// What recordings are saved as (see Settings → Recording).
@@ -50,6 +54,9 @@ pub struct Format {
     pub sound: Option<Option<String>>,
     /// Record a microphone too: the default one, or the one with this id (MP4s only).
     pub microphone: Option<Option<String>>,
+    /// Show the camera on top while recording (see gallery's `camera`), so it's in the recording:
+    /// the first one, or the one with this id.
+    pub camera: Option<Option<String>>,
 }
 
 impl Format {
@@ -141,17 +148,28 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
     };
     let started = ready_rx.recv().map_err(|_| "The recording didn't start".to_string())??;
     let windows = unsafe { [frame_window(area), bar_window(main, area, started)] };
-    Ok(Recording { stop, thread, windows })
+    // By the area's bottom right, in it.
+    let camera = format.camera.map(|device| Bubble::start(&Launch { device, corner: Some((area.right, area.bottom)), recording: true }));
+    Ok(Recording { stop, thread, windows, camera })
 }
 
 impl Recording {
     /// Stops and returns the thread finishing the file.
     pub fn stop(self) -> JoinHandle<Result<Recorded, String>> {
         self.stop.store(true, Ordering::Relaxed);
+        // Closed once the recording has stopped, so it's there to the end.
+        let camera = self.camera.and_then(Bubble::stop);
         for hwnd in self.windows {
             unsafe { DestroyWindow(hwnd) };
         }
-        self.thread
+        let Some(camera) = camera else { return self.thread };
+        // What became of the camera goes with the rest of what's said about the recording.
+        let thread = self.thread;
+        std::thread::spawn(move || {
+            let recorded = thread.join().unwrap_or_else(|_| Err("The recording stopped unexpectedly".into()))?;
+            let note = Some(recorded.note.map_or(camera.clone(), |n| format!("{n} {camera}")));
+            Ok(Recorded { note, ..recorded })
+        })
     }
 }
 

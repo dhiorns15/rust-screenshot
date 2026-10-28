@@ -24,9 +24,10 @@ command line or a desktop shortcut, with a few things Windows-only (see
 - **Hide what shouldn't be seen** with blur, pixelate or redact, or let *Auto-redact* find the
   emails, keys and card numbers for you. [More](docs/editor.md#tools)
 - **Copy text** from a screenshot: pick out the words and copy them. [More](docs/editor.md#tools)
-- **Record** an area to MP4 or GIF, with the computer's sound and your microphone, play it in the
-  library with its sound and trim it to a new file without re-encoding.
-  [More](docs/capturing.md#sound-in-recordings) and [the player](docs/editor.md#recordings)
+- **Record** an area to MP4 or GIF, with the computer's sound, your microphone and your camera in
+  a round bubble on top, play it in the library with its sound and trim it to a new file without
+  re-encoding. [More](docs/capturing.md#sound-in-recordings), [the camera](docs/capturing.md#camera-in-recordings)
+  and [the player](docs/editor.md#recordings)
 - **Library and Gallery**: browse every screenshot, grouped by date (the groups fold away), and
   search by the words in them, the app and window they came from, their name, and (if you turn on
   AI descriptions, with your own key) what they show. The Gallery page

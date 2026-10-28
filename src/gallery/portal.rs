@@ -27,6 +27,10 @@ pub struct ScreenCast {
     session: OwnedObjectPath,
     /// The PipeWire stream to record.
     pub node: u32,
+    /// Where the shared screen's top left is on the desktop (0, 0 if the desktop doesn't say).
+    pub origin: (i32, i32),
+    /// It's a window rather than a screen.
+    pub window: bool,
 }
 
 /// What the portal answers a request with: whether it went ahead, and its results.
@@ -49,7 +53,7 @@ impl ScreenCast {
         };
         let session: String = take(results, "session_handle")?;
         let session = OwnedObjectPath::try_from(session).map_err(|e| e.to_string())?;
-        let screen_cast = ScreenCast { conn, session, node: 0 };
+        let screen_cast = ScreenCast { conn, session, node: 0, origin: (0, 0), window: false };
         let path = ObjectPath::from(&screen_cast.session);
 
         let mut options = source_options(sources, available, cursor_modes);
@@ -63,7 +67,9 @@ impl ScreenCast {
         };
         let streams: Vec<(u32, HashMap<String, OwnedValue>)> = take(results, "streams")?;
         let mut screen_cast = screen_cast;
-        screen_cast.node = streams.first().map(|s| s.0).ok_or("The desktop shared nothing to record")?;
+        let (node, properties) = streams.into_iter().next().ok_or("The desktop shared nothing to record")?;
+        screen_cast.node = node;
+        (screen_cast.origin, screen_cast.window) = placed(properties);
         Ok(Some(screen_cast))
     }
 
@@ -86,6 +92,14 @@ impl Drop for ScreenCast {
             let _ = session.call_method("Close", &());
         }
     }
+}
+
+/// Where a shared stream is on the desktop, and whether it's a window, from its properties: a
+/// screen's `position` (which only screens have), and its `source_type` (window 2).
+fn placed(mut properties: HashMap<String, OwnedValue>) -> ((i32, i32), bool) {
+    let origin = properties.remove("position").and_then(|p| <(i32, i32)>::try_from(p).ok()).unwrap_or((0, 0));
+    let window = properties.remove("source_type").and_then(|t| u32::try_from(t).ok()) == Some(2);
+    (origin, window)
 }
 
 /// SelectSources' options: what to offer of what the desktop can (`available`), and the pointer
@@ -214,6 +228,15 @@ fn take<T: TryFrom<OwnedValue>>(mut results: HashMap<String, OwnedValue>, key: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn knows_where_the_shared_screen_is() {
+        let value = |v: Value| OwnedValue::try_from(v).unwrap();
+        let screen = HashMap::from([("position".to_string(), value(Value::from((1920, -200)))), ("size".to_string(), value(Value::from((1280, 1024)))), ("source_type".to_string(), value(Value::from(1u32)))]);
+        assert_eq!(placed(screen), ((1920, -200), false));
+        assert_eq!(placed(HashMap::from([("source_type".to_string(), value(Value::from(2u32)))])), ((0, 0), true), "a window, which has no place");
+        assert_eq!(placed(HashMap::new()), ((0, 0), false));
+    }
 
     /// The types the screen-cast portal's documentation gives, which GNOME's checks.
     #[test]

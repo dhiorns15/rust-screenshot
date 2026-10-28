@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender};
 use std::sync::Arc;
 
 use image::RgbaImage;
@@ -82,12 +82,13 @@ pub enum TrayRequest {
     Quit,
 }
 
-/// The outputs whose sound can be recorded, and the microphones that are connected (see
-/// `Env::sound_devices`).
+/// The outputs whose sound can be recorded, the microphones that are connected, and the cameras
+/// (see `Env::sound_devices`).
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct SoundDeviceLists {
     pub outputs: Vec<platform::SoundDevice>,
     pub microphones: Vec<platform::SoundDevice>,
+    pub cameras: Vec<platform::SoundDevice>,
 }
 
 /// What Settings → Recording says about recording here (see `Env::recording_support`).
@@ -132,11 +133,17 @@ pub struct Sandbox {
     pub microphones: Vec<platform::SoundDevice>,
     /// The outputs whose sound can be recorded.
     pub outputs: Vec<platform::SoundDevice>,
-    /// Looking for the outputs and microphones waits for the test to answer (on
+    /// The cameras there are.
+    pub cameras: Vec<platform::SoundDevice>,
+    /// Looking for the outputs, microphones and cameras waits for the test to answer (on
     /// `sound_device_lookups`), as a slow sound server would have it.
     pub hold_sound_devices: bool,
-    /// Each time the outputs and microphones were looked for, with where to answer.
+    /// Each time the outputs, microphones and cameras were looked for, with where to answer.
     pub sound_device_lookups: Vec<Sender<SoundDeviceLists>>,
+    /// Why the camera can't be used (`None`: it shows a test pattern).
+    pub camera_error: Option<String>,
+    /// Each camera opened, with where to send more of what it sends.
+    pub cameras_opened: Vec<(Option<String>, SyncSender<super::camera::Event>)>,
     pub latest: Option<Release>,
     /// The text "read" from each file name, for search.
     pub ocr_text: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
@@ -561,28 +568,46 @@ impl Env {
         rx
     }
 
-    /// Looks for the outputs whose sound can be recorded and the microphones that are connected.
-    /// It's done on a thread, as a sound server can be slow to answer (or not answer, see
-    /// `recorder::pactl`), and `ctx` repaints when they're found.
+    /// Looks for the outputs whose sound can be recorded, the microphones that are connected and
+    /// the cameras. It's done on a thread, as a sound server can be slow to answer (or not answer,
+    /// see `recorder::pactl`), and `ctx` repaints when they're found.
     pub fn sound_devices(&self, ctx: &eframe::egui::Context) -> Receiver<SoundDeviceLists> {
         let (tx, rx) = channel();
         match &self.sandbox {
             Some(s) => {
                 let mut s = s.borrow_mut();
                 if !s.hold_sound_devices {
-                    let _ = tx.send(SoundDeviceLists { outputs: s.outputs.clone(), microphones: s.microphones.clone() });
+                    let _ = tx.send(SoundDeviceLists { outputs: s.outputs.clone(), microphones: s.microphones.clone(), cameras: s.cameras.clone() });
                 }
                 s.sound_device_lookups.push(tx);
             }
             None => {
                 let ctx = ctx.clone();
                 std::thread::spawn(move || {
-                    let _ = tx.send(SoundDeviceLists { outputs: platform::outputs(), microphones: platform::microphones() });
+                    let _ = tx.send(SoundDeviceLists { outputs: platform::outputs(), microphones: platform::microphones(), cameras: super::camera::cameras() });
                     ctx.request_repaint();
                 });
             }
         }
         rx
+    }
+
+    /// Starts the camera `device` (the first one if `None`) for the camera's bubble: its pictures
+    /// come on the channel, and `ctx` repaints for each (see `camera::open`).
+    pub fn open_camera(&self, device: Option<String>, ctx: &eframe::egui::Context) -> Receiver<super::camera::Event> {
+        match &self.sandbox {
+            Some(s) => {
+                let mut s = s.borrow_mut();
+                let (tx, rx) = sync_channel(2);
+                let _ = tx.send(match &s.camera_error {
+                    Some(why) => super::camera::Event::Failed(why.clone()),
+                    None => super::camera::Event::Picture(super::camera::test_pattern(120)),
+                });
+                s.cameras_opened.push((device, tx));
+                rx
+            }
+            None => super::camera::open(device, Some(ctx.clone())),
+        }
     }
 
     /// Asks for the latest release, if it's newer than this build (see `update::check`); the

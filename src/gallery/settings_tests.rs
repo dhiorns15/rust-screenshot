@@ -222,6 +222,30 @@ fn recording_has_a_sound_card_with_the_computer_and_a_microphone() {
 }
 
 #[test]
+fn recording_can_show_the_camera_and_which_one() {
+    let mut h = settings("settings-camera", |env| env.sandboxed().cameras = vec![SoundDevice { id: "usb-cam".into(), name: "USB Camera".into() }]);
+    open(&mut h, Section::Recording);
+    assert!(!is_on(&h, "Camera"), "off by default");
+    assert!(h.query_by_value("First camera").is_none(), "no list until it's on");
+    h.get_by_role_and_label(eframe::egui::accesskit::Role::CheckBox, "Camera").scroll_to_me();
+    settle(&mut h);
+    toggle(&mut h, "Camera");
+    assert_eq!(h.state().env.setting(options::RECORD_CAMERA.name), Some(1));
+    h.get_by_value("First camera").scroll_to_me();
+    settle(&mut h);
+    h.get_by_value("First camera").click();
+    settle(&mut h);
+    click(&mut h, "USB Camera");
+    assert_eq!(h.state().env.text_setting(options::RECORD_CAMERA_DEVICE).as_deref(), Some("usb-cam"));
+    assert_eq!(requests(&h), [TrayRequest::SettingsChanged; 2]);
+    // A GIF has it too: it's on the screen, not in the video.
+    h.get_by_label("GIF").scroll_to_me();
+    settle(&mut h);
+    click(&mut h, "GIF");
+    assert!(!h.get_by_role_and_label(eframe::egui::accesskit::Role::CheckBox, "Camera").accesskit_node().is_disabled());
+}
+
+#[test]
 fn the_microphone_list_has_those_connected_and_keeps_one_that_is_gone() {
     let mics = ["USB Microphone", "Laptop array"].map(|name| SoundDevice { id: name.to_lowercase(), name: name.into() });
     let mut h = settings("settings-microphones", |env| {
@@ -258,7 +282,7 @@ fn sound_devices_are_looked_for_in_the_background_and_again_when_a_list_opens() 
     assert_eq!(h.state().env.sandboxed().sound_device_lookups.len(), 1, "one look for both lists");
     let device = |name: &str| SoundDevice { id: name.to_lowercase(), name: name.into() };
     let answer = |h: &mut Harness<SettingsApp>, lookup: usize, microphones: Vec<SoundDevice>| {
-        let lists = SoundDeviceLists { outputs: vec![device("Speakers")], microphones };
+        let lists = SoundDeviceLists { outputs: vec![device("Speakers")], microphones, cameras: Vec::new() };
         h.state().env.sandboxed().sound_device_lookups[lookup].send(lists).unwrap();
         settle(h);
     };
@@ -312,11 +336,16 @@ fn gifs_have_no_sound() {
 fn linux_recording_says_whats_missing_and_offers_hiding_the_library() {
     let mut h = settings("settings-recording-linux", |env| env.tray_app = false);
     open(&mut h, Section::Recording);
+    // Below the camera's card.
+    h.get_by_role_and_label(eframe::egui::accesskit::Role::CheckBox, "Hide the library while recording").scroll_to_me();
+    settle(&mut h);
     toggle(&mut h, "Hide the library while recording");
     assert_eq!(h.state().env.setting(options::HIDE_WHILE_CAPTURING.name), Some(0));
     assert!(h.query_by_label_contains("Recording needs").is_none(), "nothing missing in the sandbox");
-    // How to record with a key, below the window's fold.
-    h.get_by_role_and_label(eframe::egui::accesskit::Role::Link, "Shortcuts").click_accesskit();
+    // How to record with a key, below the window's fold, past the camera's card.
+    h.get_by_label("Recordings stop after 30 minutes.").scroll_to_me();
+    settle(&mut h);
+    h.query_all_by_label("Shortcuts").find(|n| n.accesskit_node().role() != eframe::egui::accesskit::Role::Button).expect("the link to Shortcuts").click();
     settle(&mut h);
     assert_eq!(h.state().section, Section::Shortcuts);
 

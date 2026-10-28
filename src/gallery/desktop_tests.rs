@@ -362,7 +362,7 @@ fn desktop_records_through_the_real_portal() {
     assert_eq!((frame.width(), frame.height()), SCREEN);
 
     let dir = temp_dir("mp4");
-    let format = Format { gif: false, hevc: false, fps: 30, sound: None, microphone: None };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: None, microphone: None, camera: None };
     let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
     std::thread::sleep(Duration::from_secs(2));
     let recorded = recording.stop().expect("recording finishes");
@@ -405,7 +405,7 @@ fn desktop_records_the_computers_sound() {
     desktop();
     let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
     let dir = temp_dir("sound");
-    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None, camera: None };
     let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
     std::thread::sleep(Duration::from_secs(3));
     let recorded = recording.stop().expect("recording finishes");
@@ -444,7 +444,7 @@ fn desktop_records_sound_over_a_still_screen() {
     desktop.picker.lock().unwrap().still = true;
     let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
     let dir = temp_dir("still");
-    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None, camera: None };
     let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
     let started = Instant::now();
     std::thread::sleep(Duration::from_secs(12));
@@ -465,7 +465,7 @@ fn desktop_a_trimmed_recording_keeps_its_sound_in_step() {
     desktop();
     let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
     let dir = temp_dir("trim-sound");
-    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None, camera: None };
     let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
     std::thread::sleep(Duration::from_secs(3));
     let recorded = recording.stop().expect("recording finishes");
@@ -514,7 +514,7 @@ fn desktop_plays_a_recordings_sound() {
     desktop();
     let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
     let dir = temp_dir("play-sound");
-    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None, camera: None };
     let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
     std::thread::sleep(Duration::from_secs(4));
     let recorded = recording.stop().expect("recording finishes");
@@ -542,7 +542,7 @@ fn desktop_a_missing_microphone_is_left_out() {
     let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
     let dir = temp_dir("no-microphone");
     // The test sound server has an output and no microphone.
-    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: Some(None) };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: Some(None), camera: None };
     let recorded = {
         let recording = recorder::start(&cast, SCREEN, None, format, &dir).expect("recording starts");
         std::thread::sleep(Duration::from_secs(2));
@@ -562,7 +562,7 @@ fn desktop_records_without_sound_when_the_sound_server_is_gone() {
     // Tests run one at a time, so nothing else reads this meanwhile.
     let server = std::env::var("PULSE_SERVER").unwrap();
     std::env::set_var("PULSE_SERVER", "unix:/nonexistent/pulse/native");
-    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: Some(None), microphone: None, camera: None };
     let recorded = recorder::start(&cast, SCREEN, None, format, &dir).map(|recording| {
         std::thread::sleep(Duration::from_secs(2));
         recording.stop()
@@ -581,7 +581,7 @@ fn desktop_records_an_area_as_a_gif() {
     let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
     let area = Area { x: 100, y: 60, width: 200, height: 120 };
     let dir = temp_dir("gif");
-    let format = Format { gif: true, hevc: false, fps: 30, sound: Some(None), microphone: Some(None) };
+    let format = Format { gif: true, hevc: false, fps: 30, sound: Some(None), microphone: Some(None), camera: None };
     let recording = recorder::start(&cast, SCREEN, Some(area), format, &dir).unwrap();
     std::thread::sleep(Duration::from_secs(2));
     let recorded = recording.stop().unwrap();
@@ -1121,4 +1121,59 @@ fn desktop_gnome_shortcuts_go_through_the_real_gsettings() {
     assert_eq!(get(&at("rsnip0"), "binding"), "''", "reset");
     assert_eq!(get(&at("custom0"), "command"), "'gnome-terminal'", "someone else's is left as it was");
     assert_eq!(get(&at("custom0"), "binding"), "'<Control><Alt>t'");
+}
+
+/// The top-level window on the X server named `title`, if there is one. With no window manager,
+/// each is a child of the root.
+fn x_window(conn: &impl x11rb::connection::Connection, root: u32, title: &str) -> Option<u32> {
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+    let name = conn.intern_atom(false, b"_NET_WM_NAME").ok()?.reply().ok()?.atom;
+    let children = conn.query_tree(root).ok()?.reply().ok()?.children;
+    children.into_iter().find(|&w| conn.get_property(false, w, name, AtomEnum::ANY, 0, 256).ok().and_then(|c| c.reply().ok()).is_some_and(|p| p.value == title.as_bytes()))
+}
+
+/// Recording with the camera on: its bubble opens in a process of its own (this test binary, see
+/// `camera::tests::bubble_child`), by the area's bottom right, on top and out of the taskbar,
+/// showing the camera (a red test picture here, in place of `v4l2src`); stopping closes it. The
+/// stand-in picker shares a test picture rather than this X server's screen, so the bubble isn't in
+/// the recording itself.
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_records_with_the_camera_on_top() {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, ImageFormat, MapState};
+    desktop();
+    let _x = XServer::start(78);
+    std::env::set_var(super::camera::gst::TEST_SOURCE, "videotestsrc is-live=true pattern=red");
+    let cast = ScreenCast::start(Sources::Screen).unwrap().unwrap();
+    let dir = temp_dir("camera");
+    let area = Area { x: 100, y: 60, width: 400, height: 300 };
+    let format = Format { gif: false, hevc: false, fps: 30, sound: None, microphone: None, camera: Some(None) };
+    let recording = recorder::start(&cast, SCREEN, Some(area), format, &dir).expect("recording starts");
+    wait_for(|| recording.camera().is_some_and(|c| c.shown()), "the camera's bubble to show a picture");
+
+    let (conn, screen) = x11rb::connect(None).unwrap();
+    let root = conn.setup().roots[screen].root;
+    let window = x_window(&conn, root, super::camera::TITLE).expect("the bubble's window");
+    let geometry = conn.get_geometry(window).unwrap().reply().unwrap();
+    // Medium, 16 points in from the corner at 500, 360.
+    let side = super::camera::window_size(super::camera::Size::Medium).x as i16;
+    assert_eq!((geometry.x, geometry.y, geometry.width as i16, geometry.height as i16), (500 - side - 16, 360 - side - 16, side, side));
+    // eframe shows it once it's drawn.
+    wait_for(|| conn.get_window_attributes(window).unwrap().reply().unwrap().map_state == MapState::VIEWABLE, "the bubble's window to show");
+    let atom = |name: &str| conn.intern_atom(false, name.as_bytes()).unwrap().reply().unwrap().atom;
+    let state: Vec<u32> = conn.get_property(false, window, atom("_NET_WM_STATE"), AtomEnum::ATOM, 0, 16).unwrap().reply().unwrap().value32().unwrap().collect();
+    assert!(state.contains(&atom("_NET_WM_STATE_SKIP_TASKBAR")) && state.contains(&atom("_NET_WM_STATE_ABOVE")), "on top, out of the taskbar: {state:?}");
+    // Its middle shows the camera.
+    let middle = |conn: &x11rb::rust_connection::RustConnection| conn.get_image(ImageFormat::Z_PIXMAP, root, geometry.x + side / 2, geometry.y + side / 2, 1, 1, !0).unwrap().reply().unwrap().data;
+    wait_for(|| matches!(middle(&conn)[..3], [b, g, r] if r > 200 && g < 60 && b < 60), "the bubble to show the red test picture");
+    let camera_running = || std::fs::read_dir("/proc").unwrap().flatten().any(|p| std::fs::read(p.path().join("cmdline")).is_ok_and(|c| c.windows(11).any(|w| w == b"pattern=red")));
+    assert!(camera_running());
+
+    let recorded = recording.stop().expect("recording finishes");
+    assert_eq!(recorded.note, None, "the camera was there all along");
+    wait_for(|| x_window(&conn, root, super::camera::TITLE).is_none(), "the bubble to close");
+    // And the camera with it: its GStreamer goes with the bubble, which is killed.
+    wait_for(|| !camera_running(), "the camera's pipeline to stop");
+    std::env::remove_var(super::camera::gst::TEST_SOURCE);
 }

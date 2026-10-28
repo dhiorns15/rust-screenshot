@@ -13,6 +13,7 @@
 // `rsnip --update`   checks for a newer version and installs it.
 // `rsnip --settings` opens the Settings window.
 // `rsnip --capture-panel` opens the capture panel (`--at X,Y`: by that point).
+// `rsnip --camera [camera]` shows the camera's bubble, as recordings do (see gallery's `camera`).
 
 mod audio;
 mod capture;
@@ -181,6 +182,7 @@ fn main() {
         Some("--pin") => return args.get(1).map_or((), |file| pin::run(PathBuf::from(file))),
         Some("--settings") => return gallery::run_settings(),
         Some("--capture-panel") => return gallery::run_capture_panel(),
+        Some("--camera") => return gallery::run_camera(&args[1..]),
         Some("--system-info") => {
             // A windowed program has no console of its own: write to the terminal it was run
             // from, unless the output already goes somewhere (`> file`).
@@ -763,7 +765,8 @@ unsafe fn start_recording(hwnd: HWND, area: RECT) {
     // Read now rather than from `Settings`: the library window can change these (see `settings::get`).
     let microphone = crate::options::RECORD_MICROPHONE.read(settings::get).then(|| settings::get_text(crate::options::RECORD_MICROPHONE_DEVICE));
     let sound = crate::options::RECORD_SOUND.read(settings::get).then(|| settings::get_text(crate::options::RECORD_SOUND_DEVICE));
-    let format = record::Format { gif: s.record_gif, hevc: s.record_hevc, fps: s.record_fps, sound, microphone };
+    let camera = crate::options::RECORD_CAMERA.read(settings::get).then(|| settings::get_text(crate::options::RECORD_CAMERA_DEVICE).filter(|d| !d.is_empty()));
+    let format = record::Format { gif: s.record_gif, hevc: s.record_hevc, fps: s.record_fps, sound, microphone, camera };
     match record::start(hwnd, area, format) {
         Ok(recording) => {
             RECORDING.with(|r| *r.borrow_mut() = Some(recording));

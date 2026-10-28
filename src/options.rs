@@ -46,6 +46,13 @@ pub const RECORD_MICROPHONE_DEVICE: &str = "RecordMicrophoneDevice";
 /// Which output the computer's sound is recorded from, by its id (a text setting); empty means the
 /// default one. With a mixer such as SteelSeries Sonar, the real headphones have every app's sound.
 pub const RECORD_SOUND_DEVICE: &str = "RecordSoundDevice";
+/// Show the camera in a round window on top while recording (see `gallery::camera`), so it's in
+/// the recording wherever it's put.
+pub const RECORD_CAMERA: Flag = Flag { name: "RecordCamera", default: false };
+/// Which camera, by the id its platform gives it (a text setting); empty means the first one.
+pub const RECORD_CAMERA_DEVICE: &str = "RecordCameraDevice";
+/// How big the camera's bubble is: small, medium or large, as an index (the bubble remembers it).
+pub const RECORD_CAMERA_SIZE: Choice = Choice { name: "RecordCameraSize", default: 1, values: &[0, 1, 2] };
 /// What the capture panel (by the tray icon) shows and does, as the index of each choice (see
 /// `gallery::capture_panel`): its tab, and what the Capture button captures or records.
 pub const CAPTURE_PANEL_TAB: Choice = Choice { name: "CapturePanelTab", default: 0, values: &[0, 1] };

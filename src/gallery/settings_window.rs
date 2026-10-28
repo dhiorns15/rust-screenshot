@@ -464,6 +464,9 @@ impl SettingsApp {
         theme::card(ui, |ui| {
             settings_rows::sound_rows(ui, &self.env, &mut self.sound_devices, true);
         });
+        theme::card(ui, |ui| {
+            settings_rows::camera_rows(ui, &self.env, &mut self.sound_devices, true);
+        });
         if !self.env.tray_app {
             theme::card(ui, |ui| {
                 self.flag_row(ui, options::HIDE_WHILE_CAPTURING, "Hide the library while recording", "It steps aside while you pick what to record, and comes back after");

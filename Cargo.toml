@@ -93,6 +93,8 @@ proptest = "1"
 # Pixel snapshots render on a GPU, so they run on Linux with a software one (ci/Dockerfile).
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 egui_kittest = { version = "0.36", features = ["eframe", "snapshot", "wgpu"] }
+# eframe's own, to open the camera's bubble in a test's thread (see gallery/camera's `run`).
+winit = { version = "0.30", default-features = false, features = ["x11"] }
 
 [profile.release]
 lto = true

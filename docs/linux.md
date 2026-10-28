@@ -84,6 +84,7 @@ recorder does:
 | H.264 | `gstreamer1.0-plugins-ugly gstreamer1.0-plugins-bad` | `gstreamer1-plugin-openh264 gstreamer1-plugins-bad-free` | `gst-plugins-ugly gst-plugins-bad` | `gstreamer-plugins-ugly` (Packman) `gstreamer-plugins-bad` |
 | H.265 | `gstreamer1.0-plugins-bad` | `gstreamer1-plugins-bad-freeworld` (RPM Fusion) | `gst-plugins-bad` | `gstreamer-plugins-bad` (Packman) |
 | Sound | `gstreamer1.0-pulseaudio pulseaudio-utils gstreamer1.0-libav` | `gstreamer1-plugins-good pulseaudio-utils gstreamer1-plugin-libav` | `gst-plugins-good libpulse gst-libav` | `gstreamer-plugins-good pulseaudio-utils gstreamer-plugins-libav` |
+| Camera | `gstreamer1.0-plugins-good` | `gstreamer1-plugins-good` | `gst-plugins-good` | `gstreamer-plugins-good` |
 
 Without an H.264 or H.265 encoder, recordings are WebM (VP8), which every GStreamer install can
 write; the graphics card's encoder (VA-API) is used when it's there and the others aren't. Each
@@ -119,6 +120,22 @@ If GStreamer stops part way through a recording (the sound server goes away, say
 played, because its index is written when it's finished: RSnip says it couldn't save the recording
 rather than keeping a file that won't open. A WebM is kept, and the notification says its end may
 be missing.
+
+### Camera
+
+With *Camera* on in Settings → Recording (or on the capture panel's Video tab), recordings show
+your camera in a round bubble on top (see [Camera in recordings](capturing.md#camera-in-recordings)).
+GStreamer's Video4Linux source (`v4l2src`, in `gstreamer1.0-plugins-good`, which the `.deb` and
+`.rpm` recommend) reads the camera. The cameras to pick from are the ones GStreamer's device
+monitor lists (`gst-device-monitor-1.0`, in `gstreamer1.0-plugins-base-apps`; it has five seconds
+to answer), or else the kernel's own list, by name.
+
+On X11 the bubble opens at the bottom right of the area (or of the screen), stays above other
+windows and out of the dock and Alt+Tab. On Wayland your desktop places it, and may not keep it on
+top. A window that's shared is recorded by itself, without what's in front of it, so there's no
+bubble for *Record screen or window…* when you pick a window; the notification says so. If the
+camera can't be opened (another app has it, or there's none), the recording goes on without it and
+the notification says why.
 
 
 ## The icon in the top bar or panel

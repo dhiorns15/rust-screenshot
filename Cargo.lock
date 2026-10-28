@@ -3139,6 +3139,7 @@ dependencies = [
  "windows",
  "windows-core",
  "windows-sys 0.61.2",
+ "winit",
  "x11rb 0.14.0",
  "zbus",
 ]

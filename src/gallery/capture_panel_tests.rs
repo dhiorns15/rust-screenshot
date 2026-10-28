@@ -343,6 +343,25 @@ fn the_microphone_is_picked_from_those_connected() {
 }
 
 #[test]
+fn the_camera_is_turned_on_and_picked_here_even_for_gifs() {
+    let mut h = panel("panel-camera", |env| {
+        env.set_setting(options::CAPTURE_PANEL_TAB.name, 1);
+        env.sandboxed().cameras = vec![mic("/dev/video2", "USB Camera")];
+    });
+    assert!(!is_on(&h, "Camera"), "off to begin with");
+    assert!(h.query_by_value("First camera").is_none(), "only with the camera on");
+    toggle(&mut h, "Camera");
+    assert_eq!(h.state().env.setting(options::RECORD_CAMERA.name), Some(1));
+    open_list(&mut h, "First camera");
+    click(&mut h, "USB Camera");
+    assert_eq!(h.state().env.text_setting(options::RECORD_CAMERA_DEVICE).as_deref(), Some("/dev/video2"));
+    assert_eq!(requests(&h).len(), 2, "the switch and the choice");
+    // It's on the screen, not in the video, so a GIF has it too.
+    click(&mut h, "GIF");
+    assert!(!is_disabled(&h, "Camera") && !h.get_by_value("USB Camera").accesskit_node().is_disabled());
+}
+
+#[test]
 fn a_microphone_plugged_in_later_shows_when_the_list_opens() {
     let mut h = panel("panel-mic-later", |env| {
         env.set_setting(options::CAPTURE_PANEL_TAB.name, 1);
@@ -721,6 +740,9 @@ mod snapshots {
             // A long name, cut short.
             env.sandboxed().outputs = vec![mic("arctis", "Headphones (2- Arctis Nova Pro Wireless)")];
             env.set_text_setting(options::RECORD_SOUND_DEVICE, "arctis");
+            env.set_setting(options::RECORD_CAMERA.name, 1);
+            env.sandboxed().cameras = vec![mic("/dev/video0", "Integrated Camera: Integrated C")];
+            env.set_text_setting(options::RECORD_CAMERA_DEVICE, "/dev/video0");
         });
         snapshot(&mut h, "capture_panel_video");
     }

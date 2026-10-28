@@ -13,6 +13,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use super::camera::{self, Bubble};
 use super::portal::ScreenCast;
 
 /// The file descriptor the pipeline reads PipeWire from.
@@ -33,6 +34,9 @@ pub struct Format {
     pub sound: Option<Option<String>>,
     /// Record a microphone: none, the default one, or the one with this name in PulseAudio.
     pub microphone: Option<Option<String>>,
+    /// Show the camera on top while recording (see `camera`): none, the first one, or the one with
+    /// this device path.
+    pub camera: Option<Option<String>>,
 }
 
 /// A part of the frame to record, in its pixels.
@@ -140,14 +144,22 @@ const PACTL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `pactl`'s output, if it ran and the sound server answered in time.
 fn pactl(args: &[&str]) -> Option<String> {
-    let mut child = Command::new("pactl").args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut command = Command::new("pactl");
+    command.args(args);
+    output_of(command, PACTL_TIMEOUT)
+}
+
+/// What `command` writes on its standard output, if it ran, succeeded and finished within
+/// `timeout` (it's killed if it doesn't).
+pub(super) fn output_of(mut command: Command, timeout: Duration) -> Option<String> {
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     // Read as it comes, so a long list can't fill the pipe and stop it finishing.
     let mut stdout = child.stdout.take()?;
     let reading = std::thread::spawn(move || {
         let mut out = Vec::new();
         stdout.read_to_end(&mut out).map(|_| out)
     });
-    let deadline = Instant::now() + PACTL_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -409,7 +421,7 @@ pub fn check(hevc: bool) -> Result<String, String> {
     // Sound is tried with a test tone, which needs no sound server; whether the server is there
     // comes from planning a recording with sound.
     let audio = audio_encoder(encoder.extension == "mp4", &|e| installed(e));
-    let asked = Format { gif: false, hevc, fps: 30, sound: Some(None), microphone: None };
+    let asked = Format { gif: false, hevc, fps: 30, sound: Some(None), microphone: None, camera: None };
     let sound_note = plan_sound(&asked, audio.clone(), &|e| installed(e), &sources).1;
     let dir = super::platform::runtime_dir().join(format!("check-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
@@ -541,7 +553,7 @@ fn launch(args: &[String], pipewire: OwnedFd, stdout: Stdio) -> Result<(Child, O
 
 /// Reads what a pipeline says on its standard error as it comes, so it never fills the pipe and
 /// holds the pipeline up (with GST_DEBUG set it says a lot), keeping the end of it.
-fn said(child: &mut Child) -> Option<JoinHandle<String>> {
+pub(super) fn said(child: &mut Child) -> Option<JoinHandle<String>> {
     let mut stderr = child.stderr.take()?;
     Some(std::thread::spawn(move || {
         let (mut kept, mut chunk) = (Vec::new(), [0; 4096]);
@@ -601,6 +613,8 @@ pub struct Recording {
     /// Writes the GIF from the pipeline's frames.
     gif: Option<JoinHandle<Result<(), String>>>,
     note: Option<String>,
+    /// The camera's bubble, if it's shown.
+    camera: Option<Bubble>,
 }
 
 /// A finished recording, and anything worth saying about how it was made.
@@ -622,8 +636,9 @@ pub fn start(cast: &ScreenCast, frame: (u32, u32), area: Option<Area>, format: F
         let frames = child.stdout.take().expect("piped");
         let file = std::fs::File::create(&working).map_err(|e| format!("Couldn't create {}: {e}", working.display()))?;
         let gif = std::thread::spawn(move || write_gif(frames, file, size));
-        let mut recording = Recording { child, said, path, working, started: Instant::now(), gif: Some(gif), note: None };
+        let mut recording = Recording { child, said, path, working, started: Instant::now(), gif: Some(gif), note: None, camera: None };
         running(&mut recording)?;
+        recording.camera = bubble(&format, cast, frame, area);
         return Ok(recording);
     }
     let (encoder, video_note) = encoder(format.hevc);
@@ -635,12 +650,13 @@ pub fn start(cast: &ScreenCast, frame: (u32, u32), area: Option<Area>, format: F
     loop {
         let args = video_pipeline(&source(cast.node), frame, area, format.fps.clamp(1, 60), &encoder, sound.as_ref(), &working);
         let (child, said) = launch(&args, cast.connect()?, Stdio::null())?;
-        let mut recording = Recording { child, said, path: path.clone(), working: working.clone(), started: Instant::now(), gif: None, note: None };
+        let mut recording = Recording { child, said, path: path.clone(), working: working.clone(), started: Instant::now(), gif: None, note: None, camera: None };
         match running(&mut recording) {
             Ok(()) => {
                 // It was the sound only if it records without.
                 notes.extend(sound_error.map(|error| format!("Sound couldn't be recorded, so it was recorded without it. ({error})")));
                 recording.note = (!notes.is_empty()).then(|| notes.join(" "));
+                recording.camera = bubble(&format, cast, frame, area);
                 return Ok(recording);
             }
             // The sound is the likeliest thing to stop it (the sound server went away, a device
@@ -652,6 +668,24 @@ pub fn start(cast: &ScreenCast, frame: (u32, u32), area: Option<Area>, format: F
             Err(error) => return Err(error),
         }
     }
+}
+
+/// The camera's bubble for a recording of `cast` (a `frame` of it, or the `area` of that), if
+/// `format` has it: by the bottom right of what's recorded. A window that's shared is recorded by
+/// itself, without what's on top of it, so there's no bubble for one.
+fn bubble(format: &Format, cast: &ScreenCast, frame: (u32, u32), area: Option<Area>) -> Option<Bubble> {
+    let device = format.camera.clone()?;
+    if cast.window {
+        return Some(Bubble::left_out("The camera is only recorded with a screen or an area, not a window, so it wasn't shown.".into()));
+    }
+    Some(Bubble::start(&camera::Launch { device, corner: Some(corner(cast.origin, frame, area)), recording: true }))
+}
+
+/// The bottom right of `area` of a `frame` (all of it, without one) of the screen whose top left
+/// is at `origin` on the desktop.
+fn corner(origin: (i32, i32), frame: (u32, u32), area: Option<Area>) -> (i32, i32) {
+    let area = area.unwrap_or(Area { x: 0, y: 0, width: frame.0, height: frame.1 });
+    (origin.0 + (area.x + area.width) as i32, origin.1 + (area.y + area.height) as i32)
 }
 
 /// Gives a pipeline a moment to start, and fails if it stopped straight away (a missing element,
@@ -681,6 +715,8 @@ impl Recording {
     /// Stops it and finishes the file.
     pub fn stop(mut self) -> Result<Recorded, String> {
         unsafe { libc::kill(self.child.id() as i32, libc::SIGINT) };
+        // Closed once the recording has stopped, so it's there to the end.
+        let camera = self.camera.take().and_then(Bubble::stop);
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut late = false;
         let status = loop {
@@ -699,7 +735,7 @@ impl Recording {
         if let Some(gif) = gif {
             gif.join().unwrap_or_else(|_| Err("The GIF encoder stopped unexpectedly".into()))?;
         }
-        let mut note = self.note;
+        let mut note = [self.note.take(), camera].into_iter().flatten().reduce(|a, b| format!("{a} {b}"));
         if !status.success() {
             let why = if late { Some("it took more than 20 seconds".to_string()) } else { last_line(self.said.take()) };
             let why = why.map_or(String::new(), |w| format!(" ({w})"));
@@ -719,6 +755,11 @@ impl Recording {
     /// The pipeline ended by itself (the shared window closed, say).
     pub fn ended(&mut self) -> bool {
         self.child.try_wait().ok().flatten().is_some()
+    }
+
+    #[cfg(test)]
+    pub fn camera(&self) -> Option<&Bubble> {
+        self.camera.as_ref()
     }
 }
 
@@ -790,6 +831,13 @@ mod tests {
     }
 
     #[test]
+    fn the_camera_sits_by_the_corner_of_what_is_recorded() {
+        assert_eq!(corner((0, 0), (1920, 1080), None), (1920, 1080), "the whole screen");
+        // An area of the screen to the right of the first.
+        assert_eq!(corner((1920, -200), (1280, 1024), Some(Area { x: 100, y: 50, width: 400, height: 300 })), (2420, 150));
+    }
+
+    #[test]
     fn keeps_the_path_in_one_argument() {
         let args = video_pipeline(&source(42), (1920, 1080), None, 30, &H264[0], None, Path::new("/home/a b/Recording \"1\".mp4"));
         assert_eq!(&args[..2], ["-q", "-e"]);
@@ -809,7 +857,7 @@ mod tests {
     }
 
     fn asked(sound: bool, microphone: Option<Option<&str>>) -> Format {
-        Format { gif: false, hevc: false, fps: 30, sound: sound.then_some(None), microphone: microphone.map(|m| m.map(String::from)) }
+        Format { gif: false, hevc: false, fps: 30, sound: sound.then_some(None), microphone: microphone.map(|m| m.map(String::from)), camera: None }
     }
 
     /// The sound a recording of `format` gets with everything installed, in an MP4 or a WebM.
@@ -1060,7 +1108,7 @@ mod tests {
         let mut child = Command::new("gst-launch-1.0").args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
         let said = said(&mut child);
         std::thread::sleep(Duration::from_secs(3));
-        let recording = Recording { child, said, path: path.clone(), working, started: Instant::now(), gif: None, note: None };
+        let recording = Recording { child, said, path: path.clone(), working, started: Instant::now(), gif: None, note: None, camera: None };
         let recorded = recording.stop().expect("it finishes");
         assert_eq!(recorded.note, None, "it ended properly");
         let movie = crate::mp4::Movie::open(&path).unwrap();
@@ -1089,7 +1137,7 @@ mod tests {
             let said = said(&mut child);
             std::thread::sleep(Duration::from_millis(1500));
             child.kill().unwrap();
-            let recording = Recording { child, said, path: path.clone(), working: working.clone(), started: Instant::now(), gif: None, note: Some("Noted.".into()) };
+            let recording = Recording { child, said, path: path.clone(), working: working.clone(), started: Instant::now(), gif: None, note: Some("Noted.".into()), camera: None };
             let stopped = recording.stop();
             if encoder.extension == "mp4" {
                 assert_eq!(stopped.err().as_deref(), Some("GStreamer stopped before it finished the recording, so it can't be played"));

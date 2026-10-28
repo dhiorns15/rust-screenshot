@@ -18,7 +18,7 @@ Run `rsnip.exe`. It sits in the notification area.
 | Scrolling capture | Tray menu → *Scrolling capture*, then click a window (or drag over the part that scrolls). RSnip scrolls it to the end and stitches one tall image; sticky headers and footers appear once. Esc stops early. On Linux it works on an X11 desktop: *Scrolling capture…* in the icon's menu, *Scrolling* in the capture panel, or `rsnip --scroll`, then drag over the part that scrolls (see [RSnip on Linux](linux.md#scrolling-capture)) |
 | Record video | Tray menu → *Record screen area*, pick an area, and it records to MP4 (or GIF, chosen in Settings), mouse pointer included. MP4s are H.264 or H.265 at 15, 24, 30 or 60 frames a second (Settings → Recording; H.265 needs an encoder, which most graphics drivers include). A red frame marks the area and a bar shows the time; click *Stop* or press a capture shortcut to finish. The video is saved to RSnip's folder and copied as a file, ready to paste |
 | Delayed capture | Tray menu → *Delayed capture* → 3, 5 or 10 seconds, to open a menu or tooltip first. The countdown shows in the tray tooltip |
-| Capture panel | Left-click the tray icon (or tray menu → *Capture panel…*) to open a panel by it: **Image** and **Video** tabs down the left, what to capture or record and the options for it beside them, and a round red button (*Capture*, or *Record*) with the action's shortcut under it. Image: *Selection* is Region, Full screen, Last area, Scrolling or Text (copy the text in an area), and the switches are Open in editor, Save to folder, Magnifier and Hide RSnip while capturing. Video: *Selection* is Area, the format (MP4 or GIF), frame rate, computer sound and microphone. The switches are the same settings as in Settings and change at once; the tab and the selections are remembered. Enter does the same as the button, and the panel closes first so it is not in the picture. *Open library & editor* opens the library, and the gear opens Settings (on Recording, from the Video tab). Drag it by any empty part to move it: it opens where you left it from then on. Esc, its ×, or clicking elsewhere closes it; with the pin (*Keep open*) on, clicking elsewhere leaves it open, and it steps aside while you capture or record and comes back after |
+| Capture panel | Left-click the tray icon (or tray menu → *Capture panel…*) to open a panel by it: **Image** and **Video** tabs down the left, what to capture or record and the options for it beside them, and a round red button (*Capture*, or *Record*) with the action's shortcut under it. Image: *Selection* is Region, Full screen, Last area, Scrolling or Text (copy the text in an area), and the switches are Open in editor, Save to folder, Magnifier and Hide RSnip while capturing. Video: *Selection* is Area, the format (MP4 or GIF), frame rate, computer sound, microphone and camera. The switches are the same settings as in Settings and change at once; the tab and the selections are remembered. Enter does the same as the button, and the panel closes first so it is not in the picture. *Open library & editor* opens the library, and the gear opens Settings (on Recording, from the Video tab). Drag it by any empty part to move it: it opens where you left it from then on. Esc, its ×, or clicking elsewhere closes it; with the pin (*Keep open*) on, clicking elsewhere leaves it open, and it steps aside while you capture or record and comes back after |
 | Open library | Tray menu → *Open library & editor*, or click the "saved" notification |
 | Update | When a new version is out, a notification says so (once per version) and the tray menu offers *Update to RSnip x.y.z…*. If you used the installer, clicking either downloads the new installer, checks its SHA-256 against GitHub's, installs it and restarts RSnip. A standalone `rsnip.exe` opens the download page instead |
 
@@ -45,6 +45,27 @@ WebMs, and comes from the desktop's sound server: see [Sound](linux.md#sound) in
 If the microphone can't be used, RSnip records without it and says so when the recording is
 saved. The usual reason is Windows' own privacy setting: under *Settings → Privacy & security →
 Microphone*, turn on *Let desktop apps access your microphone*.
+
+## Camera in recordings
+
+Turn on *Camera* in *Settings → Recording*, or on the capture panel's Video tab, to show your
+camera while you record: a round picture of you (mirrored, as in a video call) in a window of its
+own, on top of everything else. Nothing is added to the video afterwards: the bubble is recorded
+because it's on the screen, wherever you put it in the area, so GIFs have it too. It's off by
+default. Pick which camera under the switch (the first one unless you choose); the list is read
+again each time you open it, and a camera you picked that isn't connected is shown as "not
+connected" (the first one is shown instead, and the "Recording saved" notification says so).
+
+The bubble opens when the recording starts, at the bottom right of the area, and closes when it
+stops. Drag it anywhere. Hover over it for its buttons: three sizes (small, medium and large,
+remembered for next time) and × to close it, which leaves the recording going without it. Run
+`rsnip --camera` to try it without recording, with the camera chosen in Settings; close it with
+its ×.
+
+If the camera can't be used (another app has it, or it's unplugged), the recording goes on without
+it and the "Recording saved" notification says why. On Windows the usual reason is the privacy
+setting: under *Settings → Privacy & security → Camera*, turn on *Let desktop apps access your
+camera*. On Linux, see [Camera](linux.md#camera) in RSnip on Linux.
 
 ## Shortcuts
 

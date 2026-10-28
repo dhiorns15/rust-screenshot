@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod app_tests;
 mod auto_push;
+pub(crate) mod camera;
 #[cfg(not(windows))]
 mod background;
 #[cfg(not(windows))]
@@ -50,6 +51,7 @@ pub(crate) mod words;
 
 #[cfg(windows)]
 pub use auto_push::start as start_auto_push;
+pub use camera::run as run_camera;
 pub use capture_panel::run as run_capture_panel;
 pub use settings_window::run as run_settings;
 #[cfg(not(windows))]

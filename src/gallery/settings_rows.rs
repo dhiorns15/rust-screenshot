@@ -59,9 +59,9 @@ pub(super) fn frame_rate_row(ui: &mut Ui, env: &Env, detail: &str) {
     });
 }
 
-/// The outputs and microphones to choose from: looked for in the background when a drop-down first
-/// shows, and again each time one is opened, so one plugged in meanwhile is there (`Default` to
-/// start over).
+/// The outputs, microphones and cameras to choose from: looked for in the background when a
+/// drop-down first shows, and again each time one is opened, so one plugged in meanwhile is there
+/// (`Default` to start over).
 #[derive(Default)]
 pub(super) struct SoundDevices {
     /// As last found.
@@ -127,6 +127,22 @@ pub(super) fn sound_rows(ui: &mut Ui, env: &Env, devices: &mut SoundDevices, det
             microphone_picker(ui, env, devices);
         }
     });
+}
+
+/// Whether the camera's bubble shows while recording, and which camera. GIFs have it too: it's on
+/// the screen, not in the video.
+pub(super) fn camera_rows(ui: &mut Ui, env: &Env, devices: &mut SoundDevices, details: bool) {
+    let detail = if details { "Your camera in a round window on top while you record, so it's in the recording. Drag it anywhere; hover over it for its size" } else { "" };
+    flag_row(ui, env, options::RECORD_CAMERA, "Camera", detail);
+    if options::RECORD_CAMERA.read(|name| env.setting(name)) {
+        ui.add_space(6.0);
+        camera_picker(ui, env, devices);
+    }
+}
+
+/// "First camera" and each one there is, as a drop-down.
+pub(super) fn camera_picker(ui: &mut Ui, env: &Env, devices: &mut SoundDevices) {
+    device_picker(ui, env, devices, "camera", "First camera", options::RECORD_CAMERA_DEVICE, |l| &l.cameras);
 }
 
 /// "Default output" and each one there is, as a drop-down.

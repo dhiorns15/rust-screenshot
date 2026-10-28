@@ -18,6 +18,7 @@ rsnip --pin <file>      pin an image on top of other windows
 rsnip --update         check for a newer version and install it
 rsnip --settings       open the Settings window
 rsnip --capture-panel   open the capture panel, as clicking the tray icon does
+rsnip --camera [camera] show the camera's bubble, as recordings do, to try it
 rsnip --system-info    print what Settings → System info shows, for a bug report
 ```
 
@@ -37,6 +38,7 @@ rsnip --settings       open the Settings window
 rsnip --capture-panel   open the capture panel, as the icon's menu does
 rsnip --record         pick an area and record it (run again to stop)
 rsnip --record-screen  pick a screen or window and record it (run again to stop)
+rsnip --camera [camera] show the camera's bubble, as recordings do, to try it
 rsnip --tray           put RSnip's icon in the top bar or panel (the library does this itself)
 rsnip --tray-quit      remove it again
 rsnip --system-info    print what Settings → System info shows, for a bug report
