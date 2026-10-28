@@ -130,9 +130,10 @@ GStreamer's Video4Linux source (`v4l2src`, in `gstreamer1.0-plugins-good`, which
 monitor lists (`gst-device-monitor-1.0`, in `gstreamer1.0-plugins-base-apps`; it has five seconds
 to answer), or else the kernel's own list, by name.
 
-On X11 the bubble opens at the bottom right of the area (or of the screen), stays above other
-windows and out of the dock and Alt+Tab. On Wayland your desktop places it, and may not keep it on
-top. A window that's shared is recorded by itself, without what's in front of it, so there's no
+On X11 the bubble opens where you last dragged it, or at the bottom right of the area (or of the
+screen), stays above other windows and out of the dock and Alt+Tab, and never takes the focus.
+On Wayland your desktop places it, may not keep it on top, and doesn't tell RSnip where it was
+dragged to. A window that's shared is recorded by itself, without what's in front of it, so there's no
 bubble for *Record screen or window…* when you pick a window; the notification says so. If the
 camera can't be opened (another app has it, or there's none), the recording goes on without it and
 the notification says why.

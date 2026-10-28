@@ -56,11 +56,17 @@ default. Pick which camera under the switch (the first one unless you choose); t
 again each time you open it, and a camera you picked that isn't connected is shown as "not
 connected" (the first one is shown instead, and the "Recording saved" notification says so).
 
-The bubble opens when the recording starts, at the bottom right of the area, and closes when it
-stops. Drag it anywhere. It has three sizes (small, medium and large, remembered for next time):
-turn the mouse wheel over it for a bigger or smaller one. It shows no buttons while recording,
-since they'd be in the video. Run `rsnip --camera` to try it without recording, with the camera
-chosen in Settings: hover over it for the size buttons and × to close it.
+To set it up before recording, open the capture panel on Video with Camera on: the bubble shows
+beside it. Hover over it for its buttons: three sizes (small, medium and large) and × to close it.
+Drag it to where you want it in your recordings. RSnip remembers the size and the place, and the
+bubble closes again when the panel does, or you switch to Image or turn Camera off. `rsnip
+--camera` shows it by itself the same way, without the panel.
+
+The bubble opens when the recording starts and closes when it stops. It goes where you last
+dragged it if that's inside what you're recording (always, for a whole screen), and otherwise at
+the bottom right of the area. You can drag it while recording too. It shows no buttons then, since
+they'd be in the video: turn the mouse wheel over it for a bigger or smaller one. Clicking or
+dragging it never takes the focus from the app you're recording.
 
 If the camera can't be used (another app has it, or it's unplugged), the recording goes on without
 it and the "Recording saved" notification says why. On Windows the usual reason is the privacy

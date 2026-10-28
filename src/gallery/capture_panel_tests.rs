@@ -361,6 +361,115 @@ fn the_camera_is_turned_on_and_picked_here_even_for_gifs() {
     assert!(!is_disabled(&h, "Camera") && !h.get_by_value("USB Camera").accesskit_node().is_disabled());
 }
 
+/// The panel on Video with the camera on, and the sandbox's cameras.
+fn panel_with_the_camera(name: &str, setup: impl FnOnce(&mut Env)) -> Harness<'static, CapturePanel> {
+    panel(name, |env| {
+        env.set_setting(options::CAPTURE_PANEL_TAB.name, 1);
+        env.set_setting(options::RECORD_CAMERA.name, 1);
+        env.sandboxed().cameras = vec![mic("/dev/video0", "Integrated Camera"), mic("/dev/video2", "USB Camera")];
+        setup(env);
+    })
+}
+
+/// The bubbles the panel has shown, by camera.
+fn bubbles(h: &Harness<CapturePanel>) -> Vec<Option<String>> {
+    h.state().env.sandboxed().bubbles_shown.iter().map(|launch| launch.device.clone()).collect()
+}
+
+/// Steps until egui's clock has moved on `seconds`.
+fn wait(h: &mut Harness<CapturePanel>, seconds: f64) {
+    let time = |h: &Harness<CapturePanel>| h.ctx.input(|i| i.time);
+    let until = time(h) + seconds;
+    while time(h) < until {
+        h.step();
+    }
+}
+
+#[test]
+fn with_the_camera_on_video_shows_its_bubble_to_set_it_up() {
+    let mut h = panel_with_the_camera("panel-bubble", |_| {});
+    wait(&mut h, 0.5);
+    assert_eq!(bubbles(&h), [None], "the first camera, once the panel's in place");
+    let shown = h.state().env.sandboxed().bubbles_shown[0].clone();
+    assert!(!shown.recording && shown.area.is_none(), "by itself, with its buttons: {shown:?}");
+    settle(&mut h);
+    assert_eq!(bubbles(&h).len(), 1, "once");
+
+    // Another camera shows that one instead.
+    open_list(&mut h, "First camera");
+    click(&mut h, "USB Camera");
+    assert_eq!(bubbles(&h), [None, Some("/dev/video2".into())]);
+    assert_eq!(h.state().camera.as_ref().unwrap().device.as_deref(), Some("/dev/video2"));
+
+    // Only on Video, with the camera on.
+    click(&mut h, "Image");
+    assert!(h.state().camera.is_none());
+    click(&mut h, "Video");
+    assert_eq!(bubbles(&h).len(), 3);
+    toggle(&mut h, "Camera");
+    assert!(h.state().camera.is_none());
+
+    // Where it was last dragged to, if it has been.
+    let mut h = panel_with_the_camera("panel-bubble-placed", |env| env.set_text_setting(options::RECORD_CAMERA_PLACE, "900,700"));
+    wait(&mut h, 0.5);
+    assert_eq!(h.state().env.sandboxed().bubbles_shown[0].corner, Some((900, 700)));
+
+    // Not at all with the camera off.
+    let mut h = panel("panel-bubble-off", |env| env.set_setting(options::CAPTURE_PANEL_TAB.name, 1));
+    wait(&mut h, 0.5);
+    assert!(bubbles(&h).is_empty());
+}
+
+#[test]
+fn its_bubble_goes_before_a_recording_and_is_back_after_one_kept_open() {
+    let mut h = panel_with_the_camera("panel-bubble-record", |_| {});
+    wait(&mut h, 0.5);
+    click(&mut h, "Record");
+    assert!(h.state().closing && h.state().camera.is_none(), "gone, so the camera is free for the recording's");
+
+    // Kept open, the tray app hides it while it records, and it's back after.
+    let mut h = panel_with_the_camera("panel-bubble-record-pinned", |env| env.set_setting(options::CAPTURE_PANEL_KEEP_OPEN.name, 1));
+    wait(&mut h, 0.5);
+    click(&mut h, "Record");
+    assert_eq!(h.state().env.sandboxed().captures_started, ["--record"]);
+    assert!(!h.state().closing && h.state().camera.is_none());
+    wait(&mut h, 1.0);
+    assert!(h.state().camera.is_none(), "not while the tray app is taking the panel down");
+    wait(&mut h, 1.5);
+    assert!(h.state().camera.is_some(), "back with the pointer on the panel");
+    assert_eq!(bubbles(&h).len(), 2);
+}
+
+#[test]
+fn losing_the_focus_to_its_bubble_doesnt_close_it() {
+    let mut h = panel_with_the_camera("panel-bubble-focus", |env| env.tray_app = false);
+    wait(&mut h, 0.5);
+    focus(&mut h, true);
+    h.state().camera.as_ref().unwrap().bubble.touch();
+    focus_once(&mut h, false);
+    assert!(!h.state().closing, "the bubble has it");
+    settle(&mut h);
+    assert!(!h.state().closing);
+    // It takes it back once the bubble's let go of (a moment after, by the clock).
+    std::thread::sleep(Duration::from_millis(1600));
+    let asked = |h: &Harness<CapturePanel>| h.output().viewport_output[&ViewportId::ROOT].commands.contains(&ViewportCommand::Focus);
+    let mut was_asked = false;
+    let time = |h: &Harness<CapturePanel>| h.ctx.input(|i| i.time);
+    let until = time(&h) + 3.0;
+    while !was_asked && time(&h) < until {
+        h.step();
+        was_asked = asked(&h);
+    }
+    assert!(was_asked, "it asks for the focus back");
+    assert!(!h.state().closing);
+    focus(&mut h, true);
+    assert!(!h.state().closing);
+
+    // Otherwise losing it closes the panel, as ever.
+    focus(&mut h, false);
+    assert!(h.state().closing);
+}
+
 #[test]
 fn a_microphone_plugged_in_later_shows_when_the_list_opens() {
     let mut h = panel("panel-mic-later", |env| {

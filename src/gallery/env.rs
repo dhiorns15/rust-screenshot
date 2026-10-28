@@ -144,6 +144,8 @@ pub struct Sandbox {
     pub camera_error: Option<String>,
     /// Each camera opened, with where to send more of what it sends.
     pub cameras_opened: Vec<(Option<String>, SyncSender<super::camera::Event>)>,
+    /// Each camera bubble shown by itself (by the capture panel).
+    pub bubbles_shown: Vec<super::camera::Launch>,
     pub latest: Option<Release>,
     /// The text "read" from each file name, for search.
     pub ocr_text: Arc<std::sync::Mutex<BTreeMap<String, String>>>,
@@ -607,6 +609,18 @@ impl Env {
                 rx
             }
             None => super::camera::open(device, Some(ctx.clone())),
+        }
+    }
+
+    /// Shows the camera's bubble in a process of its own, as `launch` says; `ctx` repaints when it
+    /// says something (see `camera::Bubble::touched`).
+    pub fn show_bubble(&self, launch: &super::camera::Launch, ctx: &eframe::egui::Context) -> super::camera::Bubble {
+        match &self.sandbox {
+            Some(s) => {
+                s.borrow_mut().bubbles_shown.push(launch.clone());
+                super::camera::Bubble::stand_in()
+            }
+            None => super::camera::Bubble::start_with(launch, Some(ctx.clone())),
         }
     }
 

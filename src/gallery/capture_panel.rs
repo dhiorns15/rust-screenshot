@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use eframe::egui::{self, Align, Color32, Key, Layout, Margin, Pos2, Rect, RichText, Sense, Ui, Vec2, ViewportCommand};
 
+use super::camera::{self, Bubble};
 use super::env::Env;
 use super::settings_rows;
 use super::theme::{self, icon, Appearance, IconButton, ACCENT};
@@ -71,6 +72,14 @@ impl Anchor {
 fn parse_place(text: &str) -> Option<(i32, i32)> {
     let (x, y) = text.split_once(',')?;
     Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
+/// Where the camera's bubble goes beside the panel: its bottom right level with the panel's, to its
+/// left, in pixels (as `camera::Launch::corner` has it).
+fn beside(ctx: &egui::Context) -> Option<(i32, i32)> {
+    let outer = ctx.input(|i| i.viewport().outer_rect)?;
+    let corner = (Pos2::new(outer.left() - GAP, outer.bottom()) + Vec2::splat(camera::MARGIN)) * ctx.pixels_per_point();
+    Some((corner.x.round() as i32, corner.y.round() as i32))
 }
 
 /// What the panel has been asked to run: the flag to start RSnip with (see `launch_flag`).
@@ -318,6 +327,15 @@ const MOVE_TAKES_FOCUS: f64 = 1.0;
 /// How long it asks for the focus after it opens, in seconds. GNOME may never give it (to keep
 /// windows from taking it), and then it's had once it's clicked.
 const FOCUS_WAIT: f64 = 2.0;
+/// For this long after the camera's bubble is clicked or let go of, the focus may go to it (on
+/// Linux) without the panel closing, in seconds.
+const BUBBLE_TAKES_FOCUS: f64 = 1.5;
+/// How long the panel has to have been showing before its bubble opens beside it, in seconds: the
+/// window may still be moving into place before then.
+const BUBBLE_WAIT: f64 = 0.3;
+/// After a capture by a panel kept open, the bubble is back no sooner than this, once the
+/// pointer's on the panel, in seconds.
+const BUBBLE_HELD: f64 = 2.0;
 
 pub struct CapturePanel {
     pub env: Env,
@@ -342,6 +360,20 @@ pub struct CapturePanel {
     pub moving: Moving,
     /// Where it was last remembered to be, in pixels.
     remembered: Option<Pos2>,
+    /// The camera's bubble, while Video is chosen with Camera on: to see the picture, choose its
+    /// size and drag it where recordings are to have it (see `show_camera`).
+    pub camera: Option<Preview>,
+    /// When it was closed for a capture by a panel kept open (egui's time): the tray app hides the
+    /// panel, and the bubble is back once the pointer is on it again.
+    camera_held: Option<f64>,
+    /// The focus went to the bubble, and the panel is to take it back rather than close.
+    take_focus_back: bool,
+}
+
+/// The camera's bubble shown by the panel, and the camera it shows.
+pub struct Preview {
+    pub device: Option<String>,
+    pub bubble: Bubble,
 }
 
 impl CapturePanel {
@@ -350,7 +382,7 @@ impl CapturePanel {
         let mut fonts = egui::FontDefinitions::default();
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
-        CapturePanel { env, anchor, sound_devices: Default::default(), had_focus: false, opened: None, height: HEIGHT, placed: None, closing: false, launch, dragged: false, moving: Moving::No, remembered: None }
+        CapturePanel { env, anchor, sound_devices: Default::default(), had_focus: false, opened: None, height: HEIGHT, placed: None, closing: false, launch, dragged: false, moving: Moving::No, remembered: None, camera: None, camera_held: None, take_focus_back: false }
     }
 
     /// It stays open when another window is clicked.
@@ -360,6 +392,8 @@ impl CapturePanel {
 
     fn close(&mut self, ctx: &egui::Context) {
         self.closing = true;
+        // Gone first, so the camera is free for the recording's.
+        self.camera = None;
         ctx.send_viewport_cmd(ViewportCommand::Close);
     }
 
@@ -375,11 +409,47 @@ impl CapturePanel {
     fn capture(&mut self, ctx: &egui::Context) {
         let flag = launch_flag(&self.env);
         if self.keep_open() && self.env.tray_app {
+            self.camera = None;
+            self.camera_held = Some(ctx.input(|i| i.time));
             self.env.start_capture(flag);
         } else {
             self.launch.set(Some(flag));
             self.close(ctx);
         }
+    }
+
+    /// Shows the camera's bubble while Video is chosen with Camera on, and closes it otherwise. It
+    /// opens where it was last dragged to, or else beside the panel; a different camera opens it
+    /// again, and one closed with its × stays closed until then.
+    fn show_camera(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        if let Some(since) = self.camera_held {
+            if now - since < BUBBLE_HELD || !ctx.input(|i| i.pointer.has_pointer()) {
+                return;
+            }
+            self.camera_held = None;
+        }
+        let wanted = !self.closing && Tab::read(&self.env) == Tab::Video && options::RECORD_CAMERA.read(|name| self.env.setting(name));
+        let device = self.env.text_setting(options::RECORD_CAMERA_DEVICE).filter(|d| !d.is_empty());
+        if !wanted || self.camera.as_ref().is_some_and(|shown| shown.device != device) {
+            self.camera = None;
+        }
+        if !wanted || self.camera.is_some() {
+            return;
+        }
+        let opened = self.opened.unwrap_or(now);
+        if now - opened < BUBBLE_WAIT {
+            ctx.request_repaint_after(Duration::from_secs_f64(BUBBLE_WAIT - (now - opened)));
+            return;
+        }
+        let corner = self.env.text_setting(options::RECORD_CAMERA_PLACE).as_deref().and_then(parse_place).or_else(|| beside(ctx));
+        let launch = camera::Launch { device: device.clone(), corner, ..Default::default() };
+        self.camera = Some(Preview { bubble: self.env.show_bubble(&launch, ctx), device });
+    }
+
+    /// The bubble was clicked or let go of a moment ago, so the focus may have gone to it.
+    fn bubble_touched(&self) -> bool {
+        self.camera.as_ref().and_then(|shown| shown.bubble.touched()).is_some_and(|at| at.elapsed().as_secs_f64() < BUBBLE_TAKES_FOCUS)
     }
 
     /// Lets the window be dragged by any part of it that isn't a control, and (on Windows) remembers
@@ -724,7 +794,21 @@ impl eframe::App for CapturePanel {
         }
         let opened = *self.opened.get_or_insert(now);
         match focused {
-            Some(true) => self.had_focus = true,
+            Some(true) => {
+                self.had_focus = true;
+                self.take_focus_back = false;
+            }
+            // The camera's bubble took it (X11 may, when it's clicked): the panel takes it back
+            // once the bubble's let go of, and only closes if that doesn't work.
+            Some(false) if self.had_focus && self.moving == Moving::No && !self.keep_open() && self.bubble_touched() => {
+                self.take_focus_back = true;
+                ctx.request_repaint_after(Duration::from_millis(250));
+            }
+            Some(false) if self.take_focus_back => {
+                self.take_focus_back = false;
+                ctx.send_viewport_cmd(ViewportCommand::Focus);
+                ctx.request_repaint_after(Duration::from_millis(500));
+            }
             Some(false) if self.had_focus && self.moving == Moving::No && !self.keep_open() => self.close(&ctx),
             // Not for ever: each ask is another frame drawn, with no GPU to draw it.
             _ if !self.had_focus && now - opened < FOCUS_WAIT => {
@@ -752,6 +836,7 @@ impl eframe::App for CapturePanel {
             self.height = content.height() + margins;
         });
         self.fit(&ctx);
+        self.show_camera(&ctx);
     }
 }
 

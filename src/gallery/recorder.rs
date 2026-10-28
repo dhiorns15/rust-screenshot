@@ -671,21 +671,23 @@ pub fn start(cast: &ScreenCast, frame: (u32, u32), area: Option<Area>, format: F
 }
 
 /// The camera's bubble for a recording of `cast` (a `frame` of it, or the `area` of that), if
-/// `format` has it: by the bottom right of what's recorded. A window that's shared is recorded by
-/// itself, without what's on top of it, so there's no bubble for one.
+/// `format` has it: where it was last dragged to in what's recorded, or by its bottom right. A
+/// window that's shared is recorded by itself, without what's on top of it, so there's no bubble
+/// for one.
 fn bubble(format: &Format, cast: &ScreenCast, frame: (u32, u32), area: Option<Area>) -> Option<Bubble> {
     let device = format.camera.clone()?;
     if cast.window {
         return Some(Bubble::left_out("The camera is only recorded with a screen or an area, not a window, so it wasn't shown.".into()));
     }
-    Some(Bubble::start(&camera::Launch { device, corner: Some(corner(cast.origin, frame, area)), recording: true }))
+    Some(Bubble::start(&camera::Launch::in_area(device, bounds(cast.origin, frame, area))))
 }
 
-/// The bottom right of `area` of a `frame` (all of it, without one) of the screen whose top left
-/// is at `origin` on the desktop.
-fn corner(origin: (i32, i32), frame: (u32, u32), area: Option<Area>) -> (i32, i32) {
+/// The left, top, right and bottom of `area` of a `frame` (all of it, without one) of the screen
+/// whose top left is at `origin` on the desktop.
+fn bounds(origin: (i32, i32), frame: (u32, u32), area: Option<Area>) -> [i32; 4] {
     let area = area.unwrap_or(Area { x: 0, y: 0, width: frame.0, height: frame.1 });
-    (origin.0 + (area.x + area.width) as i32, origin.1 + (area.y + area.height) as i32)
+    let (left, top) = (origin.0 + area.x as i32, origin.1 + area.y as i32);
+    [left, top, left + area.width as i32, top + area.height as i32]
 }
 
 /// Gives a pipeline a moment to start, and fails if it stopped straight away (a missing element,
@@ -832,9 +834,9 @@ mod tests {
 
     #[test]
     fn the_camera_sits_by_the_corner_of_what_is_recorded() {
-        assert_eq!(corner((0, 0), (1920, 1080), None), (1920, 1080), "the whole screen");
+        assert_eq!(bounds((0, 0), (1920, 1080), None), [0, 0, 1920, 1080], "the whole screen");
         // An area of the screen to the right of the first.
-        assert_eq!(corner((1920, -200), (1280, 1024), Some(Area { x: 100, y: 50, width: 400, height: 300 })), (2420, 150));
+        assert_eq!(bounds((1920, -200), (1280, 1024), Some(Area { x: 100, y: 50, width: 400, height: 300 })), [2020, -150, 2420, 150]);
     }
 
     #[test]

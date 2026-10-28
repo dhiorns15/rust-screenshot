@@ -53,6 +53,9 @@ pub const RECORD_CAMERA: Flag = Flag { name: "RecordCamera", default: false };
 pub const RECORD_CAMERA_DEVICE: &str = "RecordCameraDevice";
 /// How big the camera's bubble is: small, medium or large, as an index (the bubble remembers it).
 pub const RECORD_CAMERA_SIZE: Choice = Choice { name: "RecordCameraSize", default: 1, values: &[0, 1, 2] };
+/// Where the camera's bubble was last dragged to, as `x,y` in pixels (a text setting, see
+/// `gallery::camera::Launch::corner`); a recording puts it there when that's in what it records.
+pub const RECORD_CAMERA_PLACE: &str = "RecordCameraPlace";
 /// What the capture panel (by the tray icon) shows and does, as the index of each choice (see
 /// `gallery::capture_panel`): its tab, and what the Capture button captures or records.
 pub const CAPTURE_PANEL_TAB: Choice = Choice { name: "CapturePanelTab", default: 0, values: &[0, 1] };

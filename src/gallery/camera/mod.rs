@@ -15,6 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, Align2, Color32, ColorImage, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Ui, Vec2, ViewportCommand};
 
@@ -33,11 +34,13 @@ pub const TITLE: &str = "RSnip Camera";
 /// The pictures are this many pixels square: enough for the largest bubble at 175%.
 pub const SIDE: usize = 480;
 /// How far in from the recorded area's corner it sits, in points.
-const MARGIN: f32 = 16.0;
+pub const MARGIN: f32 = 16.0;
 /// Around the picture, for its ring.
 const EDGE: f32 = 3.0;
 /// The size buttons, and the close button.
 const BUTTON: f32 = 22.0;
+/// How long it stays put after being dragged before where it is is remembered, in seconds.
+const SETTLED: f64 = 0.5;
 
 /// How big the bubble is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -85,20 +88,36 @@ pub struct Launch {
     pub device: Option<String>,
     /// Where its bottom right goes (less a margin), in pixels.
     pub corner: Option<(i32, i32)>,
+    /// What's being recorded (left, top, right and bottom, in pixels): where it was last dragged
+    /// to goes instead of `corner` when that's in here.
+    pub area: Option<[i32; 4]>,
     /// It's for a recording: if the camera can't be used it says why (to the recorder, see
     /// `Bubble`) and closes, rather than showing why in the bubble.
     pub recording: bool,
 }
 
 impl Launch {
+    /// What's being recorded, at the bottom right of which it goes unless it was last dragged
+    /// somewhere in it.
+    pub fn in_area(device: Option<String>, [left, top, right, bottom]: [i32; 4]) -> Launch {
+        Launch { device, corner: Some((right, bottom)), area: Some([left, top, right, bottom]), recording: true }
+    }
+
     /// From what follows `--camera`, in any order: the camera (anything that isn't a flag),
-    /// `--at X,Y` and `--recording`. Flags it doesn't know are ignored.
+    /// `--at X,Y`, `--area LEFT,TOP,RIGHT,BOTTOM` and `--recording`. Flags it doesn't know are
+    /// ignored.
     pub fn parse(args: &[String]) -> Launch {
         let mut launch = Launch::default();
         let mut words = args.iter();
         while let Some(word) = words.next() {
             match word.as_str() {
-                "--at" => launch.corner = words.next().and_then(|at| at.split_once(',')).and_then(|(x, y)| Some((x.trim().parse().ok()?, y.trim().parse().ok()?))),
+                "--at" => launch.corner = words.next().and_then(|at| point(at)),
+                "--area" => {
+                    launch.area = words.next().and_then(|area| {
+                        let edges: Vec<i32> = area.split(',').map(|n| n.trim().parse().ok()).collect::<Option<_>>()?;
+                        edges.try_into().ok()
+                    })
+                }
                 "--recording" => launch.recording = true,
                 flag if flag.starts_with("--") => {}
                 device if launch.device.is_none() && !device.trim().is_empty() => launch.device = Some(device.into()),
@@ -114,11 +133,27 @@ impl Launch {
         if let Some((x, y)) = self.corner {
             args.extend(["--at".into(), format!("{x},{y}")]);
         }
+        if let Some(area) = self.area {
+            args.extend(["--area".into(), area.map(|n| n.to_string()).join(",")]);
+        }
         if self.recording {
             args.push("--recording".into());
         }
         args
     }
+
+    /// Where it goes: where it was last dragged to (`remembered`, see `options::RECORD_CAMERA_PLACE`)
+    /// if that's in what's being recorded, or else by `corner`.
+    fn place(&self, remembered: Option<&str>) -> Option<(i32, i32)> {
+        let inside = |(x, y): (i32, i32)| self.area.is_some_and(|[left, top, right, bottom]| (left..=right).contains(&x) && (top..=bottom).contains(&y));
+        remembered.and_then(point).filter(|&at| inside(at)).or(self.corner)
+    }
+}
+
+/// `X,Y`.
+fn point(text: &str) -> Option<(i32, i32)> {
+    let (x, y) = text.split_once(',')?;
+    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
 }
 
 /// What a camera sends.
@@ -217,6 +252,7 @@ pub fn run(args: &[String]) {
     let env = Env::real();
     // Without one named, the one chosen in Settings.
     launch.device = launch.device.or_else(|| env.text_setting(options::RECORD_CAMERA_DEVICE).filter(|d| !d.is_empty()));
+    launch.corner = launch.place(env.text_setting(options::RECORD_CAMERA_PLACE).as_deref());
     let window = window_size(Size::read(&env));
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
@@ -252,6 +288,7 @@ pub fn run(args: &[String]) {
             #[cfg(not(windows))]
             if let Some(window) = super::capture_panel::x11_window(cc) {
                 let _ = super::capture_panel::keep_off_the_taskbar(window);
+                let _ = never_focused(window);
             }
             #[cfg(windows)]
             without_a_frame(cc);
@@ -264,21 +301,44 @@ pub fn run(args: &[String]) {
     }
 }
 
+/// Asks X11's window manager never to give the bubble the focus, so clicking or dragging it leaves
+/// it where it was: with the capture panel, which closes on losing it, or what's being recorded.
+#[cfg(not(windows))]
+fn never_focused(window: u32) -> Result<(), Box<dyn std::error::Error>> {
+    use x11rb::properties::WmHints;
+    use x11rb::wrapper::ConnectionExt as _;
+    let (conn, _) = x11rb::connect(None)?;
+    let mut hints = WmHints::get(&conn, window)?.reply()?.unwrap_or_default();
+    hints.input = Some(false);
+    hints.set(&conn, window)?;
+    conn.sync()?;
+    Ok(())
+}
+
 /// Takes away what Windows draws around a window without a title bar: winit leaves it the styles
 /// of one with a frame and keeps a pixel of frame along the top, for which Windows draws a shadow
 /// under the whole window (seen through around the circle, and recorded), a border and round corners.
+/// And it never takes the focus, so clicking or dragging it leaves it where it was: with the capture
+/// panel, which closes on losing it, or what's being recorded.
 #[cfg(windows)]
 fn without_a_frame(window: &impl raw_window_handle::HasWindowHandle) {
     use raw_window_handle::RawWindowHandle;
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND};
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_NCCALCSIZE};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, MA_NOACTIVATE, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_MOUSEACTIVATE, WM_NCCALCSIZE,
+        WM_STYLECHANGING, WS_EX_NOACTIVATE,
+    };
 
-    /// All of the window is the picture's, with no frame at all.
+    /// All of the window is the picture's, with no frame at all, and clicks don't activate it.
     unsafe extern "system" fn all_client(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
-        if message == WM_NCCALCSIZE && wparam != 0 {
-            return 0;
+        match message {
+            WM_NCCALCSIZE if wparam != 0 => return 0,
+            WM_MOUSEACTIVATE => return MA_NOACTIVATE as LRESULT,
+            // winit sets the styles it wants when it changes one (showing the window, say).
+            WM_STYLECHANGING if wparam as i32 == GWL_EXSTYLE => unsafe { (*(lparam as *mut STYLESTRUCT)).styleNew |= WS_EX_NOACTIVATE },
+            _ => {}
         }
         unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
     }
@@ -292,6 +352,7 @@ fn without_a_frame(window: &impl raw_window_handle::HasWindowHandle) {
     // 4-byte values Windows reads for them.
     unsafe {
         SetWindowSubclass(hwnd, Some(all_client), 1, 0);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_NOACTIVATE as isize);
         DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE as u32, (&raw const corners).cast(), 4);
         DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR as u32, (&raw const border).cast(), 4);
         // Has the frame worked out again, without it.
@@ -334,6 +395,13 @@ pub struct CameraBubble {
     speak: bool,
     /// How far the mouse wheel has turned over it, in notches, towards the next size.
     wheel: f32,
+    /// It's been dragged, so where it is now is remembered (see `remember`).
+    dragged: bool,
+    /// Where it was last seen (as `options::RECORD_CAMERA_PLACE` has it), and since when (egui's
+    /// time, in seconds).
+    seen: Option<((i32, i32), f64)>,
+    /// What was remembered last.
+    remembered: Option<(i32, i32)>,
 }
 
 impl CameraBubble {
@@ -342,7 +410,7 @@ impl CameraBubble {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let place = launch.corner.map_or(Place::Free, |(x, y)| Place::Corner(Pos2::new(x as f32, y as f32)));
-        CameraBubble { size: Size::read(&env), env, events, picture: None, failed: None, launch, place, asked: None, said: Vec::new(), speak, wheel: 0.0 }
+        CameraBubble { size: Size::read(&env), env, events, picture: None, failed: None, launch, place, asked: None, said: Vec::new(), speak, wheel: 0.0, dragged: false, seen: None, remembered: None }
     }
 
     fn say(&mut self, line: String) {
@@ -385,6 +453,22 @@ impl CameraBubble {
         }
         self.size = size;
         self.env.set_setting(options::RECORD_CAMERA_SIZE.name, Size::ALL.iter().position(|s| *s == size).unwrap_or(1) as u32);
+    }
+
+    /// Remembers where it is, with its bottom right at `bottom_right` (in points) at egui's time
+    /// `now`, once it's stayed there a moment (a drag moves it in many steps), for the next bubble.
+    fn remember(&mut self, bottom_right: Pos2, pixels_per_point: f32, now: f64) {
+        let corner = (bottom_right + Vec2::splat(MARGIN)) * pixels_per_point;
+        let corner = (corner.x.round() as i32, corner.y.round() as i32);
+        match self.seen {
+            Some((seen, since)) if seen == corner => {
+                if now - since >= SETTLED && self.remembered != Some(corner) {
+                    self.env.set_text_setting(options::RECORD_CAMERA_PLACE, &format!("{},{}", corner.0, corner.1));
+                    self.remembered = Some(corner);
+                }
+            }
+            _ => self.seen = Some((corner, now)),
+        }
     }
 
     /// A size bigger for each notch the mouse wheel turns up, and smaller for each down. A touchpad's
@@ -516,8 +600,14 @@ impl eframe::App for CameraBubble {
         let behind = ui.interact(circle, ui.id().with("bubble"), Sense::click_and_drag());
         if behind.drag_started() {
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-            // It stays where it's put.
+            // It stays where it's put, which is remembered.
             self.place = Place::Free;
+            self.dragged = true;
+        }
+        // For the capture panel, which mustn't close when the focus goes to the bubble (see
+        // `Bubble::touched`).
+        if ctx.input(|i| i.pointer.any_pressed() || i.pointer.any_released()) {
+            self.say("touched".into());
         }
         self.paint(ui, circle);
         if self.launch.recording {
@@ -528,6 +618,15 @@ impl eframe::App for CameraBubble {
             self.controls(ui, circle);
         }
         self.fit(&ctx);
+        if self.dragged {
+            let (outer, now) = ctx.input(|i| (i.viewport().outer_rect, i.time));
+            if let Some(outer) = outer {
+                self.remember(outer.max, ctx.pixels_per_point(), now);
+                if self.remembered != self.seen.map(|(at, _)| at) {
+                    ctx.request_repaint_after(Duration::from_secs_f64(SETTLED));
+                }
+            }
+        }
     }
 }
 
@@ -553,6 +652,8 @@ impl Drop for Process {
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 struct Said {
     shown: bool,
+    /// When it was last clicked or let go of.
+    touched: Option<Instant>,
     notes: Vec<String>,
     failed: Option<String>,
 }
@@ -561,6 +662,8 @@ impl Said {
     fn hear(&mut self, line: &str) {
         if line == "shown" {
             self.shown = true;
+        } else if line == "touched" {
+            self.touched = Some(Instant::now());
         } else if let Some(note) = line.strip_prefix("note: ") {
             self.notes.push(note.into());
         } else if let Some(why) = line.strip_prefix("failed: ") {
@@ -585,6 +688,11 @@ impl Said {
 impl Bubble {
     /// Shows the bubble as `launch` says.
     pub fn start(launch: &Launch) -> Bubble {
+        Bubble::start_with(launch, None)
+    }
+
+    /// Shows it as `launch` says, repainting `ctx` each time it says something (see `touched`).
+    pub fn start_with(launch: &Launch, ctx: Option<egui::Context>) -> Bubble {
         let said = Arc::new(Mutex::new(Said::default()));
         let mut command = command(launch);
         // And if the recorder goes without closing it (killed, say), it goes too.
@@ -602,6 +710,9 @@ impl Bubble {
             let reading = std::thread::spawn(move || {
                 for line in BufReader::new(out).lines().map_while(Result::ok) {
                     hearing.lock().unwrap().hear(line.trim());
+                    if let Some(ctx) = &ctx {
+                        ctx.request_repaint();
+                    }
                 }
             });
             (Process(child), reading)
@@ -645,6 +756,22 @@ impl Bubble {
     pub fn ended(&mut self) -> bool {
         self.process.as_mut().is_ok_and(|(process, _)| process.0.try_wait().ok().flatten().is_some())
     }
+
+    /// When it was last clicked or let go of: the focus may have gone to it.
+    pub fn touched(&self) -> Option<Instant> {
+        self.said.lock().unwrap().touched
+    }
+
+    /// One that isn't shown, for the sandbox.
+    pub fn stand_in() -> Bubble {
+        Bubble { process: Err(String::new()), said: Default::default() }
+    }
+
+    /// As if it had been clicked.
+    #[cfg(test)]
+    pub fn touch(&self) {
+        self.said.lock().unwrap().hear("touched");
+    }
 }
 
 /// RSnip, to show the bubble as `launch` says.
@@ -672,7 +799,7 @@ fn command(launch: &Launch) -> Command {
 
 #[cfg(test)]
 pub(super) mod tests {
-    use std::time::{Duration, Instant};
+
 
     use egui_kittest::kittest::Queryable;
     use egui_kittest::Harness;
@@ -708,15 +835,57 @@ pub(super) mod tests {
     fn reads_what_it_was_asked() {
         let args = |text: &str| text.split_whitespace().map(String::from).collect::<Vec<_>>();
         assert_eq!(Launch::parse(&[]), Launch::default(), "the first camera, where the desktop puts it");
-        let full = Launch { device: Some("/dev/video2".into()), corner: Some((-1200, 840)), recording: true };
+        let full = Launch { device: Some("/dev/video2".into()), corner: Some((-1200, 840)), area: None, recording: true };
         assert_eq!(Launch::parse(&args("/dev/video2 --at -1200,840 --recording")), full);
         assert_eq!(Launch::parse(&args("--recording --at -1200,840 /dev/video2")), full, "in any order");
         assert_eq!(Launch::parse(&full.args()), full);
         assert_eq!(Launch::parse(&args("--at nowhere --junk")), Launch::default());
         // Windows' ids are long, and have no spaces, but its names do.
-        let windows = Launch { device: Some(r"\\?\usb#vid_046d&pid_085e&mi_00#7&1a2b3c4d&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\global".into()), corner: None, recording: false };
+        let windows = Launch { device: Some(r"\\?\usb#vid_046d&pid_085e&mi_00#7&1a2b3c4d&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\global".into()), corner: None, area: None, recording: false };
         assert_eq!(Launch::parse(&windows.args()), windows);
         assert_eq!(Launch { device: Some(String::new()), ..Launch::default() }.args(), Vec::<String>::new(), "empty is the first one");
+        let area = Launch::in_area(None, [-1920, 0, -400, 900]);
+        assert_eq!(area.args(), args("--at -400,900 --area -1920,0,-400,900 --recording"));
+        assert_eq!(Launch::parse(&area.args()), area);
+    }
+
+    #[test]
+    fn goes_where_it_was_last_dragged_when_thats_in_what_is_recorded() {
+        let area = Launch::in_area(None, [100, 50, 1300, 850]);
+        assert_eq!(area.place(None), Some((1300, 850)), "by the corner to begin with");
+        assert_eq!(area.place(Some("400,300")), Some((400, 300)));
+        assert_eq!(area.place(Some("1300,850")), Some((1300, 850)), "the edges are in it");
+        assert_eq!(area.place(Some("1500,300")), Some((1300, 850)), "not in it");
+        assert_eq!(area.place(Some("nowhere")), Some((1300, 850)));
+        // By itself, it goes where it's asked.
+        let alone = Launch { corner: Some((900, 700)), ..Launch::default() };
+        assert_eq!(alone.place(Some("400,300")), Some((900, 700)));
+    }
+
+    #[test]
+    fn remembers_where_its_dragged_once_it_stays_there() {
+        let mut h = bubble("bubble-remembers", |_| {});
+        let remembered = |h: &Harness<CameraBubble>| h.state().env.text_setting(options::RECORD_CAMERA_PLACE);
+        let bubble = h.state_mut();
+        // Its bottom right at 500, 400 points, at 1.5 pixels a point: and the margin.
+        bubble.remember(Pos2::new(500.0, 400.0), 1.5, 10.0);
+        bubble.remember(Pos2::new(510.0, 400.0), 1.5, 10.2);
+        bubble.remember(Pos2::new(510.0, 400.0), 1.5, 10.4);
+        assert_eq!(remembered(&h), None, "still moving");
+        h.state_mut().remember(Pos2::new(510.0, 400.0), 1.5, 10.8);
+        assert_eq!(remembered(&h).as_deref(), Some("789,624"));
+    }
+
+    #[test]
+    fn says_when_its_touched() {
+        let mut h = bubble("bubble-touched", |_| {});
+        h.drag_at(Pos2::new(60.0, 60.0));
+        h.step();
+        assert!(h.state().said.contains(&"touched".to_string()), "{:?}", h.state().said);
+        let mut said = Said::default();
+        said.hear("touched");
+        assert!(said.touched.is_some());
+        assert_eq!(said.note(false), None, "nothing to tell about the recording");
     }
 
     #[test]
@@ -747,7 +916,7 @@ pub(super) mod tests {
     }
 
     fn recording(device: Option<&str>) -> Launch {
-        Launch { device: device.map(String::from), corner: Some((1200, 800)), recording: true }
+        Launch { device: device.map(String::from), corner: Some((1200, 800)), area: None, recording: true }
     }
 
     /// Starts the bubble with `FAKE` saying `fake`. The variable is the same for each, so each
@@ -786,7 +955,7 @@ pub(super) mod tests {
         let mut env = Env::sandbox(gallery::sandbox_dir(name));
         setup(&mut env);
         let size = window_size(Size::read(&env));
-        let launch = Launch { device: None, corner: Some((1200, 800)), recording: false };
+        let launch = Launch { device: None, corner: Some((1200, 800)), area: None, recording: false };
         let mut h = Harness::builder().with_size(size).build_eframe(move |cc| {
             let events = env.open_camera(None, &cc.egui_ctx);
             CameraBubble::new(&cc.egui_ctx, env, events, launch, false)

@@ -149,7 +149,7 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
     let started = ready_rx.recv().map_err(|_| "The recording didn't start".to_string())??;
     let windows = unsafe { [frame_window(area), bar_window(main, area, started)] };
     // By the area's bottom right, in it.
-    let camera = format.camera.map(|device| Bubble::start(&Launch { device, corner: Some((area.right, area.bottom)), recording: true }));
+    let camera = format.camera.map(|device| Bubble::start(&Launch::in_area(device, [area.left, area.top, area.right, area.bottom])));
     Ok(Recording { stop, thread, windows, camera })
 }
 
