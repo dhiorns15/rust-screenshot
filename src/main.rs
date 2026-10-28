@@ -2,7 +2,7 @@
 //!
 //! On Windows it's the full app (see `win_main.rs`). Elsewhere it has the screenshot library and
 //! editor, `rsnip [file]`, and takes screenshots and recordings from the background icon (see
-//! `gallery::background`), but not scrolling captures or pins.
+//! `gallery::background`), with scrolling captures on X11, but not pins.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -16,6 +16,7 @@ mod options;
 mod push;
 mod secrets;
 mod shortcuts;
+mod stitch;
 mod update;
 
 #[cfg(windows)]
@@ -80,6 +81,7 @@ fn action(args: &[String]) -> Action {
         "--full" => Some(gallery::CaptureMode::Full),
         "--text" => Some(gallery::CaptureMode::Text),
         "--last" => Some(gallery::CaptureMode::Last),
+        "--scroll" => Some(gallery::CaptureMode::Scroll),
         _ => None,
     });
     match (delay, mode) {
@@ -138,7 +140,7 @@ mod tests {
         assert_eq!(action("shot.png"), Action::Library(Some("shot.png".into())));
         assert_eq!(action("--gallery"), Action::Library(None));
         assert_eq!(action("--gallery /home/a/RSnip/shot.png"), Action::Library(Some(PathBuf::from("/home/a/RSnip/shot.png"))));
-        assert_eq!(action("--scroll"), Action::Library(None), "unknown flags are ignored");
+        assert_eq!(action("--pin"), Action::Library(None), "unknown flags are ignored");
     }
 
     #[test]
@@ -148,13 +150,16 @@ mod tests {
         assert_eq!(action("--capture"), capture(CaptureMode::Region, 0), "as on Windows");
         assert_eq!(action("--text"), capture(CaptureMode::Text, 0));
         assert_eq!(action("--last"), capture(CaptureMode::Last, 0));
+        assert_eq!(action("--scroll"), capture(CaptureMode::Scroll, 0));
         assert_eq!(action("--text --full"), capture(CaptureMode::Text, 0), "the first one named");
+        assert_eq!(action("--scroll --region"), capture(CaptureMode::Scroll, 0));
     }
 
     #[test]
     fn a_delay_means_a_region_in_that_many_seconds() {
         assert_eq!(action("--delay 5"), capture(CaptureMode::Region, 5));
         assert_eq!(action("--full --delay 5"), capture(CaptureMode::Region, 5), "as on Windows");
+        assert_eq!(action("--scroll --delay 5"), capture(CaptureMode::Region, 5));
         assert_eq!(action("--delay 0"), capture(CaptureMode::Region, 1));
         assert_eq!(action("--delay 600"), capture(CaptureMode::Region, 60));
         // Without a number it's not a delay.

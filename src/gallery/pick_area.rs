@@ -1,6 +1,6 @@
 //! Picking the part of the screen to record or capture, on Linux: a full-screen window showing a
-//! frame of the screen to drag a rectangle on. `rsnip --pick-area <frame.png> [capture|text]` prints
-//! the area in the frame's pixels as "x y width height", or nothing if it was cancelled.
+//! frame of the screen to drag a rectangle on. `rsnip --pick-area <frame.png> [capture|text|scroll]`
+//! prints the area in the frame's pixels as "x y width height", or nothing if it was cancelled.
 //!
 //! The area is measured on the frame as shown, so it's right whichever screen the window opens on.
 
@@ -22,6 +22,8 @@ pub enum Purpose {
     Capture,
     /// Copying the text in it.
     Text,
+    /// A scrolling capture of what's in it.
+    Scroll,
 }
 
 impl Purpose {
@@ -30,6 +32,7 @@ impl Purpose {
         match name {
             Some("capture") => Purpose::Capture,
             Some("text") => Purpose::Text,
+            Some("scroll") => Purpose::Scroll,
             _ => Purpose::Record,
         }
     }
@@ -39,6 +42,7 @@ impl Purpose {
             Purpose::Record => "record",
             Purpose::Capture => "capture",
             Purpose::Text => "text",
+            Purpose::Scroll => "scroll",
         }
     }
 
@@ -48,6 +52,7 @@ impl Purpose {
             Purpose::Record => "the area to record",
             Purpose::Capture => "the area to capture",
             Purpose::Text => "the text to copy",
+            Purpose::Scroll => "the part that scrolls",
         }
     }
 }
@@ -189,9 +194,9 @@ mod tests {
 
     #[test]
     fn says_what_its_for() {
-        assert_eq!(["record", "capture", "text", "junk"].map(|n| Purpose::parse(Some(n))), [Purpose::Record, Purpose::Capture, Purpose::Text, Purpose::Record]);
+        assert_eq!(["record", "capture", "text", "scroll", "junk"].map(|n| Purpose::parse(Some(n))), [Purpose::Record, Purpose::Capture, Purpose::Text, Purpose::Scroll, Purpose::Record]);
         assert_eq!(Purpose::parse(None), Purpose::Record, "as it was before screenshots");
-        for p in [Purpose::Record, Purpose::Capture, Purpose::Text] {
+        for p in [Purpose::Record, Purpose::Capture, Purpose::Text, Purpose::Scroll] {
             assert_eq!(Purpose::parse(Some(p.name())), p);
         }
     }

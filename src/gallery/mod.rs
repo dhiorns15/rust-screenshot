@@ -21,6 +21,8 @@ mod portal;
 mod recorder;
 #[cfg(not(windows))]
 mod screenshot;
+#[cfg(not(windows))]
+mod scroll;
 #[cfg(test)]
 mod capture_panel_tests;
 #[cfg(test)]

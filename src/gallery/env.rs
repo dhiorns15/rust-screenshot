@@ -36,6 +36,8 @@ pub struct Env {
     pub check_updates: bool,
     /// This system has the tray app, with its capture, shortcut and startup options (Windows).
     pub tray_app: bool,
+    /// Scrolling captures can be taken: on Windows, and on Linux on an X11 desktop.
+    pub scroll_capture: bool,
     /// This build's version (a fixed one in the sandbox, so snapshots survive version bumps).
     pub version: Version,
     /// The player plays recordings' sound through the speakers (not in the sandbox).
@@ -207,6 +209,7 @@ impl Env {
             request_file: request_file(),
             check_updates: cfg!(not(windows)) && crate::options::CHECK_UPDATES.read(platform::setting),
             tray_app: cfg!(windows),
+            scroll_capture: scrolls(),
             version: Version::current(),
             play_sound: true,
             ocr: platform::ocr(),
@@ -238,6 +241,7 @@ impl Env {
             dir,
             check_updates: false,
             tray_app: cfg!(windows),
+            scroll_capture: cfg!(windows),
             version: Version::new(1, 2, 3),
             play_sound: false,
             ocr: Some(ocr),
@@ -933,6 +937,15 @@ pub fn request_file() -> PathBuf {
     return platform::runtime_dir().join("gallery-request.txt");
     #[cfg(windows)]
     return std::env::temp_dir().join("rsnip-gallery-request.txt");
+}
+
+/// Whether a window can be scrolled and captured here: on Windows, and on an X11 desktop (on
+/// Wayland an app can't scroll another's windows).
+fn scrolls() -> bool {
+    #[cfg(not(windows))]
+    return super::screenshot::x11();
+    #[cfg(windows)]
+    return true;
 }
 
 #[cfg(test)]

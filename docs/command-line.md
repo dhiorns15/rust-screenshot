@@ -30,6 +30,7 @@ rsnip --full           capture the whole screen
 rsnip --delay N        pick an area to capture in N seconds
 rsnip --text           select an area and copy the text in it (needs Tesseract)
 rsnip --last           capture the same area as last time
+rsnip --scroll         drag over what scrolls, scroll it and capture its whole length (X11 only)
 rsnip --gallery [file] open the library, optionally with a file selected
 rsnip --update         check for a newer version and install it (.deb and .rpm installs)
 rsnip --settings       open the Settings window

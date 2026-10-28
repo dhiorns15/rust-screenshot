@@ -1,9 +1,10 @@
 //! RSnip in the background on Linux: an icon in the top bar or panel (a StatusNotifierItem, which
-//! Ubuntu's GNOME, KDE and most panels show) for recording the screen and opening the library,
-//! Settings and the screenshots folder, that stays when the library is closed. `rsnip --tray` runs
-//! it, and the library starts it (see `platform::start_tray`); `rsnip --tray-quit` or Settings stops
-//! it. `rsnip --record` asks it to record, and `rsnip --region` and the like to take a screenshot
-//! (see `screenshot`), starting it, without an icon if need be.
+//! Ubuntu's GNOME, KDE and most panels show) for recording the screen, scrolling captures (on X11)
+//! and opening the library, Settings and the screenshots folder, that stays when the library is
+//! closed. `rsnip --tray` runs it, and the library starts it (see `platform::start_tray`);
+//! `rsnip --tray-quit` or Settings stops it. `rsnip --record` asks it to record, and
+//! `rsnip --region` and the like to take a screenshot (see `screenshot`), starting it, without an
+//! icon if need be.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -147,7 +148,7 @@ pub fn run(first: Option<Command>) {
     let shown = Arc::new(AtomicBool::new(true));
     // The panel's tray may come after RSnip when you sign in (GNOME's AppIndicator extension, say),
     // or go and come back: the icon goes in it whenever it's there.
-    let mut icon = match (Icon { tx: tx.clone(), recording: false, shown: shown.clone() }).assume_sni_available(true).spawn() {
+    let mut icon = match (Icon { tx: tx.clone(), recording: false, shown: shown.clone(), scroll: screenshot::x11() }).assume_sni_available(true).spawn() {
         Ok(handle) => Some(handle),
         Err(e) if first.is_none() => {
             eprintln!("RSnip can't show an icon on this desktop ({e}). On GNOME, the AppIndicator extension adds them.");
@@ -351,6 +352,8 @@ struct Icon {
     recording: bool,
     /// It's in the panel's tray: the tray (its StatusNotifierWatcher) is there and took it.
     shown: Arc<AtomicBool>,
+    /// Scrolling captures can be taken (on X11).
+    scroll: bool,
 }
 
 impl Icon {
@@ -399,7 +402,11 @@ impl ksni::Tray for Icon {
         let record = if self.recording {
             vec![Icon::item("Stop recording", Command::StopRecording)]
         } else {
-            vec![Icon::item("Record screen or window…", Command::RecordScreen), Icon::item("Record an area…", Command::RecordArea)]
+            let mut items = vec![Icon::item("Record screen or window…", Command::RecordScreen), Icon::item("Record an area…", Command::RecordArea)];
+            if self.scroll {
+                items.push(Icon::item("Scrolling capture…", Command::Capture(Capture { mode: screenshot::Mode::Scroll, delay: 0 })));
+            }
+            items
         };
         record
             .into_iter()
@@ -451,14 +458,42 @@ mod tests {
 
     #[test]
     fn requests_round_trip() {
-        let captures = [Mode::Full, Mode::Region, Mode::Text, Mode::Last].map(|mode| Command::Capture(Capture { mode, delay: 0 }));
+        let captures = [Mode::Full, Mode::Region, Mode::Text, Mode::Last, Mode::Scroll].map(|mode| Command::Capture(Capture { mode, delay: 0 }));
         for c in COMMANDS.into_iter().chain(captures).chain([Command::Capture(Capture { mode: Mode::Region, delay: 5 })]) {
             assert_eq!(Command::parse(&c.name()), Some(c));
         }
         assert_eq!(Command::parse("capture region 5"), Some(Command::Capture(Capture { mode: Mode::Region, delay: 5 })));
         assert_eq!(Command::parse("capture full"), Some(Command::Capture(Capture { mode: Mode::Full, delay: 0 })), "no delay");
-        for junk in ["junk", "capture", "capture scroll", "capture region soon", "capture region 5 6"] {
+        assert_eq!(Command::parse("capture scroll"), Some(Command::Capture(Capture { mode: Mode::Scroll, delay: 0 })));
+        for junk in ["junk", "capture", "capture scrolling", "capture region soon", "capture region 5 6"] {
             assert_eq!(Command::parse(junk), None, "{junk}");
         }
+    }
+
+    /// The menu's items, and what each asks for.
+    fn menu(recording: bool, scroll: bool) -> Vec<(String, Option<Command>)> {
+        let (tx, rx) = channel();
+        let mut icon = Icon { tx, recording, shown: Arc::new(AtomicBool::new(true)), scroll };
+        let items = ksni::Tray::menu(&icon);
+        items
+            .into_iter()
+            .filter_map(|item| match item {
+                MenuItem::Standard(item) => {
+                    (item.activate)(&mut icon);
+                    Some((item.label, rx.try_recv().ok()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_menu_has_a_scrolling_capture_on_x11() {
+        let scroll = Command::Capture(Capture { mode: Mode::Scroll, delay: 0 });
+        let items = menu(false, true);
+        assert_eq!(items[..3], [("Record screen or window…".into(), Some(Command::RecordScreen)), ("Record an area…".into(), Some(Command::RecordArea)), ("Scrolling capture…".into(), Some(scroll))]);
+        assert!(!menu(false, false).iter().any(|(_, c)| *c == Some(scroll)), "not on Wayland");
+        assert_eq!(menu(true, true)[0], ("Stop recording".into(), Some(Command::StopRecording)));
+        assert!(!menu(true, true).iter().any(|(_, c)| *c == Some(scroll)), "not while recording");
     }
 }

@@ -215,12 +215,13 @@ impl ImageSelection {
         }
     }
 
-    fn help(self) -> &'static str {
+    fn help(self, env: &Env) -> &'static str {
         match self {
             ImageSelection::Region => "Drag over what to capture.",
             ImageSelection::Full => "Every screen, at once.",
             ImageSelection::Last => "The same area as last time.",
-            ImageSelection::Scrolling => "Pick a window, and RSnip scrolls it for you.",
+            ImageSelection::Scrolling if env.tray_app => "Pick a window, and RSnip scrolls it for you.",
+            ImageSelection::Scrolling => "Drag over what scrolls, and RSnip scrolls it for you.",
             ImageSelection::Text => "Drag over text to copy it.",
         }
     }
@@ -247,9 +248,9 @@ impl ImageSelection {
         }
     }
 
-    /// The ones this system can take (only Windows scrolls a window).
+    /// The ones this system can take (Windows and X11 scroll a window, Wayland doesn't).
     fn available(env: &Env) -> Vec<ImageSelection> {
-        ImageSelection::ALL.into_iter().filter(|s| *s != ImageSelection::Scrolling || env.tray_app).collect()
+        ImageSelection::ALL.into_iter().filter(|s| *s != ImageSelection::Scrolling || env.scroll_capture).collect()
     }
 
     /// The one remembered, unless this system can't do it.
@@ -543,7 +544,7 @@ impl CapturePanel {
                 self.env.set_setting(options::CAPTURE_PANEL_IMAGE.name, ImageSelection::ALL.iter().position(|s| *s == pick).unwrap_or(0) as u32);
             }
         });
-        ui.label(RichText::new(chosen.help()).size(12.0).color(theme::palette(ui).muted));
+        ui.label(RichText::new(chosen.help(&self.env)).size(12.0).color(theme::palette(ui).muted));
     }
 
     fn image_switches(&mut self, ui: &mut Ui) {

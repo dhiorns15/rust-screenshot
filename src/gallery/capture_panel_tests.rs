@@ -18,6 +18,7 @@ use crate::options;
 fn panel(name: &str, setup: impl FnOnce(&mut Env)) -> Harness<'static, CapturePanel> {
     let mut env = Env::sandbox(tests::sandbox_dir(name));
     env.tray_app = true;
+    env.scroll_capture = true;
     setup(&mut env);
     // Tall, so everything shows; the real window is as high as its content.
     let mut h = Harness::builder().with_size(Vec2::new(WIDTH, 800.0)).build_eframe(move |cc| CapturePanel::new(&cc.egui_ctx, env, None, Default::default()));
@@ -25,10 +26,11 @@ fn panel(name: &str, setup: impl FnOnce(&mut Env)) -> Harness<'static, CapturePa
     h
 }
 
-/// The panel as Linux has it.
+/// The panel as Linux has it, on Wayland unless `setup` says it's X11.
 fn linux_panel(name: &str, setup: impl FnOnce(&mut Env)) -> Harness<'static, CapturePanel> {
     panel(name, |env| {
         env.tray_app = false;
+        env.scroll_capture = false;
         setup(env);
     })
 }
@@ -133,11 +135,11 @@ fn the_selections_are_chosen_from_drop_downs_and_remembered() {
 }
 
 #[test]
-fn only_windows_scrolls_and_only_linux_picks_a_screen_or_window() {
+fn wayland_does_not_scroll_and_only_linux_picks_a_screen_or_window() {
     let mut h = linux_panel("panel-linux-lists", |_| {});
     open_list(&mut h, "Region");
     assert!(h.query_by_label("Full screen").is_some());
-    assert!(h.query_by_label("Scrolling").is_none());
+    assert!(h.query_by_label("Scrolling").is_none(), "not on Wayland");
     click(&mut h, "Text");
     click(&mut h, "Video");
     open_list(&mut h, "Area");
@@ -154,6 +156,15 @@ fn only_windows_scrolls_and_only_linux_picks_a_screen_or_window() {
     h.key_press(Key::Enter);
     settle(&mut h);
     assert_eq!(launched(&h), Some("--region"));
+
+    // On X11 it scrolls, as on Windows.
+    let mut h = linux_panel("panel-x11-lists", |env| env.scroll_capture = true);
+    open_list(&mut h, "Region");
+    click(&mut h, "Scrolling");
+    assert_eq!(setting(&h, options::CAPTURE_PANEL_IMAGE), 3);
+    assert!(h.query_by_label("Drag over what scrolls, and RSnip scrolls it for you.").is_some());
+    click(&mut h, "Capture");
+    assert_eq!(launched(&h), Some("--scroll"));
 }
 
 #[test]
@@ -171,7 +182,7 @@ fn capture_closes_and_asks_for_what_is_chosen() {
     assert!(h.state().closing);
     assert_eq!(launched(&h), Some("--record"));
 
-    // Linux: no scrolling, and a screen or window to record.
+    // Linux on Wayland: no scrolling, and a screen or window to record.
     for (index, flag) in [(0, "--region"), (1, "--full"), (2, "--last"), (4, "--text")] {
         let mut h = linux_panel("panel-capture-linux", |env| env.set_setting(options::CAPTURE_PANEL_IMAGE.name, index));
         click(&mut h, "Capture");
@@ -660,6 +671,7 @@ mod snapshots {
     fn rendered(name: &str, setup: impl FnOnce(&mut Env)) -> Harness<'static, CapturePanel> {
         let mut env = Env::sandbox(tests::sandbox_dir(name));
         env.tray_app = true;
+        env.scroll_capture = true;
         setup(&mut env);
         let mut h = Harness::builder()
             .with_size(Vec2::new(WIDTH, 800.0))
@@ -685,6 +697,18 @@ mod snapshots {
         let _gpu = tests::gpu();
         let mut h = rendered("snap-panel-image", |_| {});
         snapshot(&mut h, "capture_panel_image");
+    }
+
+    /// Linux on X11, with a scrolling capture chosen.
+    #[test]
+    fn scrolling_on_x11() {
+        let _gpu = tests::gpu();
+        let mut h = rendered("snap-panel-scrolling", |env| {
+            env.tray_app = false;
+            env.scroll_capture = true;
+            env.set_setting(options::CAPTURE_PANEL_IMAGE.name, 3);
+        });
+        snapshot(&mut h, "capture_panel_scrolling_x11");
     }
 
     #[test]

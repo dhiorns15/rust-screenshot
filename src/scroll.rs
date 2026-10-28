@@ -10,7 +10,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::capture::{capture_rect, pump_messages_for, Image};
-use crate::stitch::{Step, Stitcher};
+use crate::stitch::{Frame, Step, Stitcher};
 
 const MAX_FRAMES: usize = 60;
 const MAX_HEIGHT: usize = 30_000;
@@ -32,8 +32,8 @@ pub fn capture(area: RECT, window: Option<HWND>) -> Option<Image> {
         // Clear any earlier Esc press, so only one during the capture stops it.
         GetAsyncKeyState(VK_ESCAPE as i32);
 
-        let first = capture_rect(area)?;
-        let height = first.height as usize;
+        let first = capture_rect(area).map(as_frame)?;
+        let height = first.height;
         let mut stitcher = Stitcher::new(&first);
         let mut notches = 1;
         for _ in 0..MAX_FRAMES {
@@ -42,7 +42,7 @@ pub fn capture(area: RECT, window: Option<HWND>) -> Option<Image> {
             }
             wheel(-notches);
             settle();
-            let Some(frame) = capture_rect(area) else { break };
+            let Some(frame) = capture_rect(area).map(as_frame) else { break };
             match stitcher.push(&frame) {
                 // Scroll further per step while each step reveals little, keeping plenty of overlap.
                 Step::Added(d) => {
@@ -57,8 +57,14 @@ pub fn capture(area: RECT, window: Option<HWND>) -> Option<Image> {
             }
         }
         SetCursorPos(saved.x, saved.y);
-        Some(stitcher.finish())
+        let out = stitcher.finish();
+        Some(Image { width: out.width as i32, height: out.height as i32, data: out.data })
     }
+}
+
+/// A capture as the stitcher takes it.
+fn as_frame(image: Image) -> Frame {
+    Frame { width: image.width as usize, height: image.height as usize, data: image.data }
 }
 
 /// Lets the window scroll and repaint before the next capture.

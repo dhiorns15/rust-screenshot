@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -726,6 +727,7 @@ fn desktop_icon_records_and_takes_screenshots() {
     let conn = Connection::session().unwrap();
     let title = |conn: &Connection| -> String { Proxy::new(conn, item.as_str(), "/StatusNotifierItem", "org.kde.StatusNotifierItem").unwrap().get_property("Title").unwrap() };
     assert_eq!(title(&conn), "RSnip");
+    assert!(menu(&conn, &item).iter().any(|(_, l)| l == "Scrolling capture…"), "on X11");
 
     click(&conn, &item, "Record screen or window…");
     wait_for(|| menu(&conn, &item).iter().any(|(_, l)| l == "Stop recording"), "the menu to offer Stop recording");
@@ -925,4 +927,134 @@ fn desktop_screenshots_are_saved_copied_and_told_of() {
     let empty = || std::fs::read_dir(&desktops).unwrap().count() == 0;
     wait_for(|| started.elapsed() > Duration::from_secs(7) && empty(), "the portal's late screenshot to be deleted");
     screenshot::forget_refusal();
+}
+
+/// The tall test page that `TallWindow` scrolls: its width and height, how high the window on it
+/// is and where it is on the screen, and how far one notch of the mouse wheel scrolls it.
+const PAGE: (u16, u16) = (200, 900);
+const VIEW: u16 = 200;
+const VIEW_AT: (i16, i16) = (120, 80);
+const NOTCH: u16 = 40;
+
+/// The tall test page as a picture, every row of it different.
+fn tall_page() -> image::RgbaImage {
+    image::RgbaImage::from_fn(PAGE.0.into(), PAGE.1.into(), |x, y| image::Rgba([(y % 256) as u8, (y / 256 * 60 + x / 4) as u8, (x * 5 % 256) as u8, 255]))
+}
+
+/// A window on the X server showing part of the tall test page, which the mouse wheel scrolls as a
+/// browser's would, until dropped. After `esc_after` notches it presses Esc, as someone stopping a
+/// scrolling capture would.
+struct TallWindow {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl TallWindow {
+    fn show(esc_after: Option<usize>) -> TallWindow {
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::xproto::{ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask, ImageFormat, WindowClass, KEY_PRESS_EVENT, KEY_RELEASE_EVENT};
+        use x11rb::protocol::xtest::ConnectionExt as _;
+        use x11rb::protocol::Event;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let (shown, drawn) = channel();
+        let thread = std::thread::spawn(move || {
+            let (conn, number) = x11rb::connect(None).unwrap();
+            let screen = &conn.setup().roots[number];
+            let (root, depth) = (screen.root, screen.root_depth);
+            let window = conn.generate_id().unwrap();
+            let events = CreateWindowAux::new().event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS).override_redirect(1);
+            conn.create_window(depth, window, root, VIEW_AT.0, VIEW_AT.1, PAGE.0, VIEW, 0, WindowClass::INPUT_OUTPUT, screen.root_visual, &events).unwrap();
+            let gc = conn.generate_id().unwrap();
+            conn.create_gc(gc, window, &CreateGCAux::new()).unwrap();
+            conn.map_window(window).unwrap();
+            conn.flush().unwrap();
+            // As the X server has pixels: blue first, four bytes each.
+            let pixels: Vec<u8> = tall_page().pixels().flat_map(|p| [p[2], p[1], p[0], 0]).collect();
+            let row = usize::from(PAGE.0) * 4;
+            let draw = |offset: u16| {
+                let rows = &pixels[usize::from(offset) * row..usize::from(offset + VIEW) * row];
+                conn.put_image(ImageFormat::Z_PIXMAP, window, gc, PAGE.0, VIEW, 0, 0, 0, depth, rows).unwrap();
+                // Drawn before anyone looks.
+                conn.get_input_focus().unwrap().reply().unwrap();
+            };
+            let (mut offset, mut notches) = (0, 0);
+            while !stopped.load(Ordering::Relaxed) {
+                while let Some(event) = conn.poll_for_event().unwrap() {
+                    match event {
+                        Event::Expose(_) => {
+                            draw(offset);
+                            let _ = shown.send(());
+                        }
+                        Event::ButtonPress(press) if press.detail == 5 => {
+                            offset = (offset + NOTCH).min(PAGE.1 - VIEW);
+                            draw(offset);
+                            notches += 1;
+                            if esc_after == Some(notches) {
+                                let esc = super::scroll::escape_key(&conn).expect("a key for Esc");
+                                for kind in [KEY_PRESS_EVENT, KEY_RELEASE_EVENT] {
+                                    conn.xtest_fake_input(kind, esc, x11rb::CURRENT_TIME, root, 0, 0, 0).unwrap();
+                                }
+                                conn.flush().unwrap();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        drawn.recv_timeout(Duration::from_secs(20)).expect("the tall window to show");
+        TallWindow { stop, thread: Some(thread) }
+    }
+}
+
+impl Drop for TallWindow {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Where the X server's pointer is.
+fn pointer() -> (i16, i16) {
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    let (conn, number) = x11rb::connect(None).unwrap();
+    let root = x11rb::connection::Connection::setup(&conn).roots[number].root;
+    let at = conn.query_pointer(root).unwrap().reply().unwrap();
+    (at.root_x, at.root_y)
+}
+
+#[test]
+#[ignore = "needs desktop services: run ci/desktop-test.sh"]
+fn desktop_scrolls_a_window_to_its_end_and_stitches_it() {
+    let x = XServer::start(77);
+    let area = Area { x: VIEW_AT.0 as u32, y: VIEW_AT.1 as u32, width: PAGE.0.into(), height: VIEW.into() };
+    let was = pointer();
+    {
+        let _window = TallWindow::show(None);
+        let image = super::scroll::capture(area).expect("a scrolling capture");
+        assert_eq!(image.dimensions(), (PAGE.0.into(), PAGE.1.into()), "all of the page");
+        assert!(image == tall_page(), "the page as it is, each part once");
+        assert_eq!(pointer(), was, "the pointer is put back");
+    }
+
+    // Esc stops it, keeping what it has: a notch, then two.
+    {
+        let _window = TallWindow::show(Some(3));
+        let image = super::scroll::capture(area).expect("a scrolling capture");
+        let height = u32::from(VIEW + 3 * NOTCH);
+        assert_eq!(image.dimensions(), (PAGE.0.into(), height));
+        assert!(image == image::imageops::crop_imm(&tall_page(), 0, 0, PAGE.0.into(), height).to_image());
+        assert_eq!(pointer(), was);
+    }
+
+    // On Wayland it says why not.
+    drop(x);
+    let (notifications, _shell) = notifications();
+    assert!(!screenshot::take(Capture { mode: Mode::Scroll, delay: 0 }));
+    let shown = notifications.shown.lock().unwrap().clone();
+    assert_eq!(shown.iter().map(|(title, _)| title.as_str()).collect::<Vec<_>>(), ["Scrolling capture needs an X11 session"]);
 }

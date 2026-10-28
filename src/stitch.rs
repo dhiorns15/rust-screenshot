@@ -5,7 +5,13 @@
 //! the offset at which the remaining rows line up best. The rows that scrolled into view are then
 //! appended above the footer.
 
-use crate::capture::Image;
+/// A frame of the area that scrolls: four bytes a pixel (in any channel order, the same in every
+/// frame), top-down rows, no padding.
+pub struct Frame {
+    pub width: usize,
+    pub height: usize,
+    pub data: Vec<u8>,
+}
 
 pub enum Step {
     /// The frame scrolled by this many pixels and its new rows were added.
@@ -31,9 +37,9 @@ struct Row {
     plain: bool,
 }
 
-fn rows(img: &Image) -> Vec<Row> {
+fn rows(img: &Frame) -> Vec<Row> {
     img.data
-        .chunks_exact(img.width as usize * 4)
+        .chunks_exact(img.width * 4)
         .map(|row| {
             // FNV-1a
             let hash = row.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
@@ -44,8 +50,8 @@ fn rows(img: &Image) -> Vec<Row> {
 }
 
 impl Stitcher {
-    pub fn new(first: &Image) -> Stitcher {
-        Stitcher { width: first.width as usize, height: first.height as usize, out: first.data.clone(), prev: rows(first) }
+    pub fn new(first: &Frame) -> Stitcher {
+        Stitcher { width: first.width, height: first.height, out: first.data.clone(), prev: rows(first) }
     }
 
     /// Height of the result so far.
@@ -53,8 +59,8 @@ impl Stitcher {
         self.out.len() / (self.width * 4)
     }
 
-    pub fn push(&mut self, frame: &Image) -> Step {
-        if frame.width as usize != self.width || frame.height as usize != self.height {
+    pub fn push(&mut self, frame: &Frame) -> Step {
+        if frame.width != self.width || frame.height != self.height {
             return Step::Lost;
         }
         let next = rows(frame);
@@ -103,9 +109,9 @@ impl Stitcher {
         Step::Added(d)
     }
 
-    pub fn finish(self) -> Image {
-        let height = self.height() as i32;
-        Image { width: self.width as i32, height, data: self.out }
+    pub fn finish(self) -> Frame {
+        let height = self.height();
+        Frame { width: self.width, height, data: self.out }
     }
 }
 
@@ -125,7 +131,7 @@ mod tests {
     }
 
     /// What the window shows when scrolled to `offset`, with optional sticky header/footer.
-    fn frame(page: &[[u8; 4]], width: usize, offset: usize, height: usize, header: usize, footer: usize) -> Image {
+    fn frame(page: &[[u8; 4]], width: usize, offset: usize, height: usize, header: usize, footer: usize) -> Frame {
         let mut data = Vec::new();
         for y in 0..height {
             let row: Vec<u8> = if y < header {
@@ -137,7 +143,7 @@ mod tests {
             };
             data.extend(row);
         }
-        Image { width: width as i32, height: height as i32, data }
+        Frame { width, height, data }
     }
 
     fn stitch(header: usize, footer: usize) {

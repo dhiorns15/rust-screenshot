@@ -30,6 +30,19 @@ without asking, or take a while to), RSnip reads the screen itself on an X11 des
 asks you to pick the screen to share, as for recording. RSnip's icon takes it, starting if it isn't running, so
 that the copy stays on the clipboard.
 
+### Scrolling capture
+
+On an X11 desktop (on Ubuntu, *Ubuntu on Xorg*, chosen under the gear on the sign-in screen, and
+usually what xrdp gives you), *Scrolling capture…* in the icon's menu, *Scrolling* in the capture
+panel, or `rsnip --scroll` captures a page or document longer than the screen. Drag over the part
+that scrolls (Enter takes the whole screen): RSnip moves the mouse pointer there, turns the mouse
+wheel until the page stops moving, and stitches what it saw into one tall image, with a sticky
+header or footer once. It then goes on like any screenshot: copied, saved and opened in the editor
+as Settings says. Esc stops it early, keeping what it has; it also stops after 60 steps or 30,000
+pixels. Keep the mouse still meanwhile, as the wheel scrolls whatever is under the pointer, which
+goes back where it was at the end. On Wayland an app can't scroll another app's windows, so it isn't
+offered there, and `rsnip --scroll` says it needs an X11 session.
+
 ## Recording on Linux
 
 From RSnip's icon in the top bar or panel, choose *Record an area…* or
@@ -88,8 +101,8 @@ be missing.
 
 ## The icon in the top bar or panel
 
-Closing the library leaves RSnip's icon in the top bar or panel, for recording and opening the
-library, Settings or the screenshots folder again. Clicking it (or *Capture panel…* in its menu) opens a small window
+Closing the library leaves RSnip's icon in the top bar or panel, for recording, scrolling captures
+(on X11) and opening the library, Settings or the screenshots folder again. Clicking it (or *Capture panel…* in its menu) opens a small window
 to take a screenshot or start a recording with the options that matter for it (the format and whether it has sound, say), which its pin keeps open when you click elsewhere (Capture still closes it, so it is not in the picture). Your desktop places it each time it opens; drag it by any empty part to move it. On X11 it stays above other windows and out of the dock and Alt+Tab. While recording, clicking it stops the recording; *Open library* and *Quit RSnip* in its menu open the library and stop RSnip. Ubuntu, KDE and most panels show
 it; on plain GNOME (e.g. Fedora) it needs the
 [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/). If the

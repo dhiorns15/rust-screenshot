@@ -38,7 +38,7 @@ command line or a desktop shortcut, with a few things Windows-only (see
 - **Updates** itself when you want it to: it says when a new version is out, and an installed copy
   can download, check and install it. [Settings](docs/settings.md)
 - **Windows and Linux**: Windows has everything; Linux has the library and editor, screenshots and
-  recording. Scrolling capture, pinning and dragging files out are Windows-only.
+  recording, and scrolling capture on X11. Pinning and dragging files out are Windows-only.
   [RSnip on Linux](docs/linux.md)
 
 ## Download

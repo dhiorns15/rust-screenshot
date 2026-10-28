@@ -27,7 +27,6 @@ mod record;
 mod prompt;
 mod scroll;
 mod settings;
-mod stitch;
 mod tray;
 mod util;
 

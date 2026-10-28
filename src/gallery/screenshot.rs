@@ -1,6 +1,6 @@
-//! Screenshots on Linux: `rsnip --full`, `--region`, `--text` and `--last`, as on Windows. The
-//! desktop's screenshot portal takes the screenshot (see `portal::screenshot`; `grab` for when it
-//! won't), RSnip's own picker
+//! Screenshots on Linux: `rsnip --full`, `--region`, `--text`, `--last` and (on X11) `--scroll`, as
+//! on Windows. The desktop's screenshot portal takes the screenshot (see `portal::screenshot`;
+//! `grab` for when it won't), RSnip's own picker
 //! (see `pick_area`) chooses the part of it, and the result is copied, saved and opened in the
 //! editor as Settings says. The background icon's process does it all (see `background`): on Linux
 //! the clipboard only holds what was copied for as long as the process that copied it lives.
@@ -34,10 +34,12 @@ pub enum Mode {
     Text,
     /// The region picked last time.
     Last,
+    /// A region scrolled to its end, as one tall image (X11 only; see `scroll`).
+    Scroll,
 }
 
 impl Mode {
-    const ALL: [Mode; 4] = [Mode::Full, Mode::Region, Mode::Text, Mode::Last];
+    const ALL: [Mode; 5] = [Mode::Full, Mode::Region, Mode::Text, Mode::Last, Mode::Scroll];
 
     fn name(self) -> &'static str {
         match self {
@@ -45,8 +47,15 @@ impl Mode {
             Mode::Region => "region",
             Mode::Text => "text",
             Mode::Last => "last",
+            Mode::Scroll => "scroll",
         }
     }
+}
+
+/// Whether this is an X11 session, where RSnip can read the screen and scroll windows itself (on
+/// Wayland only the desktop can).
+pub fn x11() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some()
 }
 
 /// A screenshot to take, after `delay` seconds (0 for none).
@@ -85,6 +94,10 @@ pub fn take(capture: Capture) -> bool {
                 return false;
             }
         },
+        Mode::Scroll if !x11() => {
+            notify("Scrolling capture needs an X11 session", "On Wayland, apps can't scroll other apps' windows. Sign in to an X11 session to use it: on Ubuntu, Ubuntu on Xorg, under the gear on the sign-in screen.");
+            return false;
+        }
         _ => None,
     };
     std::thread::sleep(Duration::from_secs(capture.delay.into()));
@@ -112,6 +125,9 @@ pub fn take(capture: Capture) -> bool {
 /// The screenshot, and the part of it `mode` wants, picked if need be; `None` if the desktop
 /// declined or the picker was cancelled.
 fn shoot(mode: Mode) -> Result<Option<RgbaImage>, String> {
+    if mode == Mode::Scroll {
+        return scrolled();
+    }
     let Some(screen) = grab()? else { return Ok(None) };
     let size = (screen.width(), screen.height());
     let last = if mode == Mode::Last { last_area(platform::text_setting(LAST_AREA).as_deref(), size) } else { None };
@@ -129,12 +145,21 @@ fn shoot(mode: Mode) -> Result<Option<RgbaImage>, String> {
     Ok(Some(image::imageops::crop_imm(&screen, area.x, area.y, area.width, area.height).to_image()))
 }
 
+/// A scrolling capture: the part that scrolls is picked on the screen as the X server has it, where
+/// it's then scrolled and read (see `scroll`); `None` if the picker was cancelled.
+fn scrolled() -> Result<Option<RgbaImage>, String> {
+    let screen = from_x_server().map_err(|e| format!("RSnip {e}"))?;
+    let size = (screen.width(), screen.height());
+    let Some(area) = pick(&screen, Purpose::Scroll)?.filter(|a| inside(*a, size)) else { return Ok(None) };
+    super::scroll::capture(area).map(Some)
+}
+
 /// All of the screen, from the screenshot portal; `None` if it was declined. The portal can refuse
 /// without asking (Ubuntu 24.04's GNOME does, for an app started from its menu, and can take a
 /// minute to), so then it's read from the X server on an X11 desktop, or taken from a screen the
 /// desktop's picker shares, as for recording. Once it has refused it isn't asked again.
 fn grab() -> Result<Option<RgbaImage>, String> {
-    let x11 = std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some();
+    let x11 = x11();
     let refused = if REFUSED.load(Ordering::Relaxed) {
         "it refused before".to_string()
     } else {
@@ -187,23 +212,28 @@ pub fn forget_refusal() {
 /// aren't there).
 fn from_x_server() -> Result<RgbaImage, String> {
     use x11rb::connection::Connection as _;
-    use x11rb::protocol::xproto::{ConnectionExt as _, ImageFormat, ImageOrder};
     let failed = |e: &dyn std::fmt::Display| format!("couldn't read the screen: {e}");
     let (conn, number) = x11rb::connect(None).map_err(|e| failed(&e))?;
     let screen = &conn.setup().roots[number];
-    let (width, height) = (screen.width_in_pixels, screen.height_in_pixels);
-    let image = conn.get_image(ImageFormat::Z_PIXMAP, screen.root, 0, 0, width, height, !0).map_err(|e| failed(&e))?.reply().map_err(|e| failed(&e))?;
+    read_x_area(&conn, screen.root, (0, 0), (screen.width_in_pixels, screen.height_in_pixels)).map_err(|e| failed(&e))
+}
+
+/// The part of `window` (the root window, for the screen) at `at` of `size`, as the X server has it.
+pub(super) fn read_x_area(conn: &impl x11rb::connection::Connection, window: u32, at: (i16, i16), size: (u16, u16)) -> Result<RgbaImage, String> {
+    use x11rb::protocol::xproto::{ConnectionExt as _, ImageFormat, ImageOrder};
+    let (width, height) = size;
+    let image = conn.get_image(ImageFormat::Z_PIXMAP, window, at.0, at.1, width, height, !0).map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?;
     // As every desktop's X server has it: 24-bit colour, four bytes a pixel, blue first.
     let pixels = usize::from(width) * usize::from(height);
     if !matches!(image.depth, 24 | 32) || conn.setup().image_byte_order != ImageOrder::LSB_FIRST || image.data.len() != pixels * 4 {
-        return Err(failed(&format!("{}-bit colour isn't supported", image.depth)));
+        return Err(format!("{}-bit colour isn't supported", image.depth));
     }
     let mut rgba = image.data;
     for pixel in rgba.chunks_exact_mut(4) {
         pixel.swap(0, 2);
         pixel[3] = 255;
     }
-    RgbaImage::from_raw(width.into(), height.into(), rgba).ok_or_else(|| failed(&"the wrong number of pixels"))
+    RgbaImage::from_raw(width.into(), height.into(), rgba).ok_or_else(|| "the wrong number of pixels".into())
 }
 
 /// The screenshot the portal saved. It's deleted: it was made for RSnip, and where the desktop

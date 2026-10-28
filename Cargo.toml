@@ -79,8 +79,9 @@ zbus = { version = "5", default-features = false, features = ["async-io", "block
 arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
 eframe = { version = "0.36", default-features = false, features = ["x11", "wayland"] }
 libc = "0.2"
-# Copying files to the clipboard in every format a file manager or chat reads (arboard has one).
-x11rb = "0.14"
+# Copying files to the clipboard in every format a file manager or chat reads (arboard has one),
+# and scrolling a window for a scrolling capture (XTEST's fake mouse wheel).
+x11rb = { version = "0.14", features = ["xtest"] }
 # The capture panel's X11 window, from eframe (which depends on it already).
 raw-window-handle = "0.6"
 trash = "5"
