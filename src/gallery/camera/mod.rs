@@ -360,6 +360,47 @@ fn without_a_frame(window: &impl raw_window_handle::HasWindowHandle) {
     }
 }
 
+/// Windows won't move a window that never takes the focus by its title bar, which is how
+/// `StartDrag` moves one, so on Windows the bubble follows the mouse pointer itself while dragged.
+/// winit has the mouse captured meanwhile, so it hears the pointer off the window too.
+#[cfg(windows)]
+mod follow {
+    use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
+
+    /// Where a drag started: the pointer's and the window's top left, in pixels.
+    pub struct Drag {
+        hwnd: HWND,
+        pointer: POINT,
+        window: POINT,
+    }
+
+    impl Drag {
+        /// None without a window (in tests), which is then asked to `StartDrag`.
+        pub fn start(frame: &eframe::Frame) -> Option<Drag> {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            let RawWindowHandle::Win32(handle) = frame.window_handle().ok()?.as_raw() else { return None };
+            let hwnd = handle.hwnd.get() as HWND;
+            let (mut pointer, mut rect) = (POINT { x: 0, y: 0 }, RECT { left: 0, top: 0, right: 0, bottom: 0 });
+            // SAFETY: the window is this thread's, and both are written to what's passed.
+            let found = unsafe { GetCursorPos(&mut pointer) != 0 && GetWindowRect(hwnd, &mut rect) != 0 };
+            found.then_some(Drag { hwnd, pointer, window: POINT { x: rect.left, y: rect.top } })
+        }
+
+        /// Moves the window as far as the pointer has moved since the drag started.
+        pub fn follow(&self) {
+            let mut now = POINT { x: 0, y: 0 };
+            // SAFETY: as in `start`.
+            unsafe {
+                if GetCursorPos(&mut now) != 0 {
+                    let (x, y) = (self.window.x + now.x - self.pointer.x, self.window.y + now.y - self.pointer.y);
+                    SetWindowPos(self.hwnd, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+            }
+        }
+    }
+}
+
 /// Writes a line on standard output, where the recorder reads it.
 fn say(line: &str) {
     let mut out = std::io::stdout().lock();
@@ -402,6 +443,9 @@ pub struct CameraBubble {
     seen: Option<((i32, i32), f64)>,
     /// What was remembered last.
     remembered: Option<(i32, i32)>,
+    /// Being dragged, on Windows (see `follow`).
+    #[cfg(windows)]
+    drag: Option<follow::Drag>,
 }
 
 impl CameraBubble {
@@ -410,7 +454,7 @@ impl CameraBubble {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let place = launch.corner.map_or(Place::Free, |(x, y)| Place::Corner(Pos2::new(x as f32, y as f32)));
-        CameraBubble { size: Size::read(&env), env, events, picture: None, failed: None, launch, place, asked: None, said: Vec::new(), speak, wheel: 0.0, dragged: false, seen: None, remembered: None }
+        CameraBubble { size: Size::read(&env), env, events, picture: None, failed: None, launch, place, asked: None, said: Vec::new(), speak, wheel: 0.0, dragged: false, seen: None, remembered: None, #[cfg(windows)] drag: None }
     }
 
     fn say(&mut self, line: String) {
@@ -491,6 +535,19 @@ impl CameraBubble {
             self.wheel = 0.0;
             self.resize(ctx, Size::ALL[next]);
         }
+    }
+
+    /// Whether it follows the pointer itself for the drag just started (see `follow`), rather than
+    /// the desktop moving it.
+    #[cfg(windows)]
+    fn moves_itself(&mut self, frame: &eframe::Frame) -> bool {
+        self.drag = follow::Drag::start(frame);
+        self.drag.is_some()
+    }
+
+    #[cfg(not(windows))]
+    fn moves_itself(&mut self, _frame: &eframe::Frame) -> bool {
+        false
     }
 
     /// Asks the window to be the bubble's size, and where it should be, when that changes.
@@ -586,7 +643,7 @@ impl eframe::App for CameraBubble {
         [0.0; 4]
     }
 
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.take_events(&ctx);
         // For a recording it says why and goes, rather than being recorded saying so.
@@ -599,10 +656,20 @@ impl eframe::App for CameraBubble {
         // First, so the buttons drawn over it take their own clicks.
         let behind = ui.interact(circle, ui.id().with("bubble"), Sense::click_and_drag());
         if behind.drag_started() {
-            ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+            if !self.moves_itself(frame) {
+                ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+            }
             // It stays where it's put, which is remembered.
             self.place = Place::Free;
             self.dragged = true;
+        }
+        #[cfg(windows)]
+        if behind.dragged() {
+            if let Some(drag) = &self.drag {
+                drag.follow();
+            }
+        } else {
+            self.drag = None;
         }
         // For the capture panel, which mustn't close when the focus goes to the bubble (see
         // `Bubble::touched`).
