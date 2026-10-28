@@ -12,6 +12,7 @@ mod google_drive;
 pub mod history;
 mod immich;
 mod oauth;
+mod onedrive;
 mod photoprism;
 mod s3;
 mod sftp;
@@ -142,6 +143,15 @@ pub enum Kind {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         folder_id: String,
     },
+    /// A folder in RSnip's own folder of the user's OneDrive (`Apps/RSnip`), through RSnip's own
+    /// Microsoft app. Secret: the refresh token, as signing in gave it or as Microsoft last
+    /// replaced it (see `Saved`).
+    OneDrive {
+        /// In the app's folder; made if it isn't there.
+        folder: String,
+        #[serde(default = "default_true")]
+        share_link: bool,
+    },
     /// Any HTTP upload API, described as ShareX's custom uploaders are (see `custom`). Secret, if it
     /// needs one: a token, put wherever `{secret}` is written.
     Custom {
@@ -187,7 +197,7 @@ fn default_true() -> bool {
 
 impl Kind {
     /// An empty one of each kind, in the order they're offered.
-    pub const ALL: [fn() -> Kind; 12] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::smb, Kind::ftps, Kind::dropbox, Kind::google_drive, Kind::discord, Kind::slack, Kind::immich, Kind::photoprism, Kind::custom];
+    pub const ALL: [fn() -> Kind; 13] = [Kind::sftp, Kind::webdav, Kind::s3, Kind::smb, Kind::ftps, Kind::dropbox, Kind::google_drive, Kind::onedrive, Kind::discord, Kind::slack, Kind::immich, Kind::photoprism, Kind::custom];
 
     pub fn sftp() -> Kind {
         Kind::Sftp { host: String::new(), port: default_port(), user: String::new(), folder: String::new(), public_url: String::new() }
@@ -236,6 +246,10 @@ impl Kind {
         Kind::GoogleDrive { folder: "Screenshots".into(), share_link: true, folder_id: String::new() }
     }
 
+    pub fn onedrive() -> Kind {
+        Kind::OneDrive { folder: "Screenshots".into(), share_link: true }
+    }
+
     pub fn smb() -> Kind {
         Kind::Smb { share: String::new(), folder: String::new(), user: String::new(), public_url: String::new() }
     }
@@ -264,6 +278,7 @@ impl Kind {
             Kind::Smb { .. } => "SMB share",
             Kind::Dropbox { .. } => "Dropbox",
             Kind::GoogleDrive { .. } => "Google Drive",
+            Kind::OneDrive { .. } => "OneDrive",
             Kind::Custom { .. } => "Custom uploader",
         }
     }
@@ -280,7 +295,7 @@ impl Kind {
             Kind::PhotoPrism { .. } => Some("App password"),
             Kind::Ftps { .. } => Some("Password"),
             Kind::Smb { .. } => Some("Password"),
-            Kind::Dropbox { .. } | Kind::GoogleDrive { .. } => Some("Sign-in"),
+            Kind::Dropbox { .. } | Kind::GoogleDrive { .. } | Kind::OneDrive { .. } => Some("Sign-in"),
             Kind::Custom { .. } => Some("Token"),
         }
     }
@@ -303,7 +318,7 @@ impl Kind {
     pub fn sign_in(&self) -> Option<SignIn> {
         match self {
             Kind::Dropbox { .. } => Some(SignIn::PasteCode),
-            Kind::GoogleDrive { .. } => Some(SignIn::ShowCode),
+            Kind::GoogleDrive { .. } | Kind::OneDrive { .. } => Some(SignIn::ShowCode),
             _ => None,
         }
     }
@@ -347,6 +362,7 @@ impl Kind {
             Kind::PhotoPrism { server, album } => address(server).into_iter().chain([album.clone()]).collect(),
             Kind::Dropbox { app_key, folder, .. } => vec![app_key.clone(), folder.clone()],
             Kind::GoogleDrive { folder, folder_id, .. } => vec![folder.clone(), folder_id.clone()],
+            Kind::OneDrive { folder, .. } => vec![folder.clone()],
             Kind::Custom { url, .. } => address(url).into(),
         };
         words.into_iter().map(|w| w.trim().to_owned()).filter(|w| !w.is_empty()).collect()
@@ -380,6 +396,10 @@ impl Kind {
             Kind::GoogleDrive { folder, .. } => {
                 let folder = folder.trim();
                 if folder.is_empty() { "My Drive".to_owned() } else { folder.to_owned() }
+            }
+            Kind::OneDrive { folder, .. } => {
+                let folder = folder.trim().trim_matches(['/', '\\']);
+                if folder.is_empty() { "Apps/RSnip".to_owned() } else { format!("Apps/RSnip/{folder}") }
             }
             // Without the query, which may carry a key.
             Kind::Custom { url, .. } => url.split('?').next().unwrap_or_default().to_owned(),
@@ -438,8 +458,9 @@ impl Destination {
                 smb::parse(share, "").is_none().then(|| smb::BAD_SHARE.to_owned()).or_else(|| public(public_url))
             }
             Kind::Dropbox { app_key, .. } => required(app_key, "the app key"),
-            // Signing in is the form's to check; no folder is the top of My Drive.
-            Kind::GoogleDrive { .. } => None,
+            // Signing in is the form's to check; no folder is the top of My Drive, or the app's
+            // own folder in OneDrive.
+            Kind::GoogleDrive { .. } | Kind::OneDrive { .. } => None,
             Kind::Custom { url, .. } => address(url, "the upload address").or_else(|| custom::problems(&uploader(&self.kind, ""))),
         }
     }
@@ -556,6 +577,7 @@ pub enum CodeEvent {
 pub fn can_sign_in(kind: &Kind) -> bool {
     match kind {
         Kind::GoogleDrive { .. } => google_drive::available(),
+        Kind::OneDrive { .. } => onedrive::available(),
         _ => true,
     }
 }
@@ -566,6 +588,7 @@ pub fn sign_in_with_code(kind: &Kind, cancelled: &AtomicBool, report: impl Fn(Co
     let shown = |code: &oauth::DeviceCode| report(CodeEvent::Code { user_code: code.user_code.clone(), verification_url: code.verification_url.clone() });
     let signed_in = match kind {
         Kind::GoogleDrive { .. } => google_drive::sign_in(cancelled, shown),
+        Kind::OneDrive { .. } => onedrive::sign_in(cancelled, shown),
         _ => Err(format!("{} isn't signed in to with a code", kind.name())),
     };
     report(match signed_in {
@@ -593,6 +616,7 @@ pub fn test(destination: &Destination, saved: &mut Saved) -> Result<String, Stri
         Kind::Smb { share, folder, user, .. } => smb::test(&smb::Share { share, folder, user, password: secret }),
         Kind::Dropbox { app_key, share_link, .. } => dropbox::test(app_key, saved, *share_link),
         Kind::GoogleDrive { .. } => google_drive::test(saved),
+        Kind::OneDrive { .. } => onedrive::test(saved),
         Kind::Custom { .. } => custom::test(&uploader(&destination.kind, secret)),
     }
 }
@@ -631,6 +655,7 @@ pub fn push(destination: &Destination, saved: &mut Saved, file: &Path) -> Result
         }
         Kind::Dropbox { app_key, folder, share_link } => dropbox::upload(app_key, saved, folder, *share_link, file),
         Kind::GoogleDrive { folder, share_link, folder_id } => google_drive::upload(saved, folder, folder_id, *share_link, file),
+        Kind::OneDrive { folder, share_link } => onedrive::upload(saved, folder, *share_link, file),
         Kind::Custom { .. } => custom::upload(&uploader(&destination.kind, secret), file),
     }
 }
@@ -865,6 +890,7 @@ mod tests {
             Kind::Smb { .. } => Kind::Smb { share: "\\\\nas\\shots".into(), folder: "rsnip".into(), user: String::new(), public_url: String::new() },
             Kind::Dropbox { .. } => Kind::Dropbox { app_key: "abc123".into(), folder: "/Screenshots".into(), share_link: false },
             Kind::GoogleDrive { .. } => Kind::GoogleDrive { folder: "Screenshots/RSnip".into(), share_link: true, folder_id: "1AbCfolder".into() },
+            Kind::OneDrive { .. } => Kind::OneDrive { folder: "Screenshots".into(), share_link: false },
             Kind::Custom { .. } => Kind::Custom {
                 url: "https://i.example.com/api/upload".into(),
                 method: "POST".into(),
@@ -938,6 +964,13 @@ mod tests {
         assert_eq!(remember(&remembered, "a", &found), None, "nothing new");
         assert_eq!(remember(&remembered, "gone", &found), None);
         assert_eq!(list[0].kind.private_words(), ["S", "F1"]);
+
+        assert_eq!(Destination::new(Kind::onedrive()).kind.target(), "Apps/RSnip/Screenshots");
+        let json = r#"{"id":"o","name":"x","kind":"OneDrive","folder":"/ ","auto":false,"auto_since":null}"#;
+        let onedrive: Destination = serde_json::from_str(json).unwrap();
+        assert_eq!((onedrive.kind.target().as_str(), onedrive.problems()), ("Apps/RSnip", None));
+        assert!(matches!(onedrive.kind, Kind::OneDrive { share_link: true, .. }));
+        assert_eq!(saved_secret_from(&onedrive, |_| Ok(None)).unwrap(), Err("Not signed in to OneDrive; choose Edit to sign in".into()));
 
         // Changed to another folder since: what was found is of the old one.
         let mut moved = Kind::GoogleDrive { folder: "Other".into(), share_link: true, folder_id: "F1".into() };
@@ -1080,6 +1113,7 @@ mod tests {
                 ("FTPS", Some("Password")),
                 ("Dropbox", Some("Sign-in")),
                 ("Google Drive", Some("Sign-in")),
+                ("OneDrive", Some("Sign-in")),
                 ("Discord", Some("Webhook URL")),
                 ("Slack", Some("Bot token")),
                 ("Immich", Some("API key")),
@@ -1094,7 +1128,7 @@ mod tests {
         for kind in every_kind() {
             let d = Destination::new(kind.clone());
             // Signing in is the form's to check.
-            let complete = matches!(kind, Kind::Discord { .. } | Kind::GoogleDrive { .. });
+            let complete = matches!(kind, Kind::Discord { .. } | Kind::GoogleDrive { .. } | Kind::OneDrive { .. });
             assert_eq!(d.problems().is_none(), complete, "{}", kind.name());
             assert_eq!(filled(kind.clone()).problems(), None, "{}", kind.name());
         }

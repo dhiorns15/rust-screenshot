@@ -7,7 +7,7 @@ edits to it are saved; what was there before isn't) or **By hand**: *Export → 
 editor and player, or *Push to* in the library's right-click menu, for everything selected. When
 the place gives a link, it's copied, and the item's right-click menu has *Copy link* for each place
 it went; an edited one pushed again to SFTP, WebDAV, S3, an SMB share or FTPS replaces the file
-there, while Dropbox, Google Drive, Discord, Slack, Immich and PhotoPrism get a new copy, and *Copy link* gives the newest. A push that fails by itself is
+there, while Dropbox, Google Drive, OneDrive, Discord, Slack, Immich and PhotoPrism get a new copy, and *Copy link* gives the newest. A push that fails by itself is
 tried again after a minute, five minutes and half an hour, then reported with a notification.
 *Recent pushes*, under the places, lists the last ten pushes, by hand and automatic, with what
 went wrong when one didn't, and a *Retry* on the latest failure of a file to a place.
@@ -23,6 +23,7 @@ went wrong when one didn't, and a *Retry* on the latest failure of a file to a p
 | FTPS | The server, user, password and folder; FTP over TLS only, and a NAS's self-signed certificate can be trusted by its fingerprint | With a public address for the folder |
 | Dropbox | A free Dropbox app of your own (its App key), and signing in to it from RSnip | A Dropbox link to the file |
 | Google Drive | Signing in to your Google account with a code, from any browser; RSnip sees only its own files | A Google Drive link anyone can open |
+| OneDrive | Signing in to your Microsoft account with a code, from any browser; RSnip reaches only its own folder, `Apps/RSnip` | A OneDrive link anyone can open (or anyone in your organisation) |
 | Discord | A channel's webhook address | The attachment |
 | Slack | A bot token from a Slack app of your own (`files:write`) and the channel's ID | The file in Slack |
 | Immich | The server's address and an API key (`asset.upload`, `user.read`) | The photo in Immich |
@@ -39,8 +40,8 @@ keyring to be unlocked.
 Give RSnip its own key, token or app password where the service has them, with no more than it
 needs, so it can be taken back without changing anything else.
 
-**Coming later:** OneDrive, Imgur (with albums) and Box (each needs RSnip registered with them),
-Microsoft Teams, Gyazo, Streamable and Synology Photos. Mattermost, Imgbb
+**Coming later:** Imgur (with albums) and Box (each needs RSnip registered with them), Microsoft
+Teams, Gyazo, Streamable and Synology Photos. Mattermost, Imgbb
 and Catbox if someone asks: [suggest a place](https://github.com/dhiorns15/rust-screenshot/issues/new?template=push_destination.yml),
 though many hosts with an upload API already work as a custom uploader.
 
@@ -61,6 +62,7 @@ the connection*: check that it's running and reachable from this computer, and t
 - [FTPS](#ftps)
 - [Dropbox](#dropbox)
 - [Google Drive](#google-drive)
+- [OneDrive](#onedrive)
 - [Discord](#discord)
 - [Slack](#slack)
 - [Immich](#immich)
@@ -262,6 +264,48 @@ register yourself, just sign in.
 - **Link:** the file's Google Drive page, which anyone with the link can open without signing in.
   A Google Workspace account may not be allowed links for people outside it: then the file still
   goes up, without a link.
+
+## OneDrive
+
+A folder in your OneDrive, through RSnip's own Microsoft app: nothing to make or register
+yourself, just sign in. A personal Microsoft account or a work or school one.
+
+- **Set up:** *Settings → Push to → Add… → OneDrive*:
+  1. Give the **Folder** (`Screenshots`, made if it isn't there; empty for RSnip's folder itself).
+     It's in RSnip's own folder in your OneDrive, `Apps/RSnip`, so the files land in
+     `Apps/RSnip/Screenshots`. Each OneDrive place is one folder; add more places for more folders.
+  2. Choose *Sign in to OneDrive*. RSnip shows a short code and a page,
+     [microsoft.com/devicelogin](https://microsoft.com/devicelogin): on this computer or any other
+     (a phone too), go to the page, enter the code, choose your account and accept. *Copy link*
+     and *Copy code* copy them. RSnip says *Waiting for you to sign in…* until you have, then
+     *Signed in as …*; choose *Save*. *Cancel sign-in* stops waiting. The code lasts 15 minutes.
+  3. *Share link* (on by default) makes a link to each file pushed, and copies it.
+- **What to expect:** RSnip asks only for `Files.ReadWrite.AppFolder` (its own folder,
+  `Apps/RSnip`, which OneDrive makes the first time), `User.Read` (your name, for *Test*) and
+  `offline_access` (to stay signed in). It can't see or change anything else in your OneDrive.
+  With a work or school account, your organisation may have to allow RSnip first; Microsoft's
+  page says so.
+- **Signs in with:** the OAuth device flow, as TVs and other apps without a browser of their own
+  do. RSnip keeps only the refresh token Microsoft gives, in the credential store with the other
+  secrets, and trades it for a short-lived access token at each push. Microsoft gives a new
+  refresh token each time, which RSnip keeps in place of the old one; one left unused for 90 days
+  expires, and then you sign in again. *Remove* forgets it. To take access back, remove RSnip at
+  [account.live.com/consent/Manage](https://account.live.com/consent/Manage) (a personal account)
+  or under *Apps* at [myapps.microsoft.com](https://myapps.microsoft.com) (work or school).
+- **Test:** signs in and asks whose OneDrive it is (*Connected as …*), changing nothing.
+- **Files:** one by that name already in the folder isn't replaced: OneDrive adds a number to the
+  new one (`Screenshot 1.png`). Over 4 MB (recordings) goes up in 10 MB pieces, picking up where
+  OneDrive says it got to.
+- **Errors:** *OneDrive signed RSnip out: sign in again in Settings → Push to*: access was taken
+  back, or the sign-in went unused for 90 days; choose *Edit → Sign in to OneDrive*. *Your OneDrive
+  is full*. *OneDrive says RSnip is sending too many requests*: wait a little. *You didn't allow
+  RSnip in OneDrive*, *The code expired before you signed in*: choose *Sign in to OneDrive* for a
+  new code. *OneDrive won't let RSnip do that*: sign in again, or your organisation may not allow
+  RSnip. *Signing in to OneDrive isn't available in this build of RSnip*: a copy built from the
+  source without RSnip's Microsoft app (see `MICROSOFT_CLIENT_ID` in `src/push/onedrive.rs`).
+- **Link:** a OneDrive link that opens the file for anyone who has it, without signing in. Where a
+  work or school organisation doesn't allow those, the link is for anyone in the organisation; if
+  neither can be made, the file still goes up, without a link.
 
 ## Discord
 

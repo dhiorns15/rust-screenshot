@@ -676,7 +676,7 @@ fn push_to_starts_empty() {
     open(&mut h, Section::Destinations);
     assert!(h.query_by_label("Nowhere yet. Add a place to push to.").is_some());
     click(&mut h, "Add…");
-    for kind in ["SFTP", "WebDAV", "S3-compatible", "SMB share", "FTPS", "Dropbox", "Google Drive", "Discord", "Slack", "Immich", "PhotoPrism", "Custom uploader", "Custom uploader from a ShareX file (.sxcu)…"] {
+    for kind in ["SFTP", "WebDAV", "S3-compatible", "SMB share", "FTPS", "Dropbox", "Google Drive", "OneDrive", "Discord", "Slack", "Immich", "PhotoPrism", "Custom uploader", "Custom uploader from a ShareX file (.sxcu)…"] {
         assert!(h.query_by_label(kind).is_some(), "{kind}");
     }
 }
@@ -1091,6 +1091,33 @@ fn a_build_without_rsnips_apps_says_signing_in_isnt_available() {
     assert!(!is_enabled(&h, "Sign in to Google Drive"));
     assert!(h.query_by_label("Signing in to Google Drive isn't available in this build of RSnip: it was made without RSnip's app for Google Drive").is_some());
     assert!(!is_enabled(&h, "Save"));
+    click(&mut h, "Cancel");
+    click(&mut h, "Add…");
+    click(&mut h, "OneDrive");
+    assert!(!is_enabled(&h, "Sign in to OneDrive"));
+    assert!(h.query_by_label("Signing in to OneDrive isn't available in this build of RSnip: it was made without RSnip's app for OneDrive").is_some());
+}
+
+#[test]
+fn onedrive_signs_in_with_a_code_shown_here_into_its_app_folder() {
+    let mut h = settings("settings-push-onedrive", |_| {});
+    start_code_sign_in(&mut h, "OneDrive");
+    assert!(h.query_by_label("Add OneDrive").is_some());
+    assert!(h.query_by_label_contains("RSnip can reach only its own folder in your OneDrive, Apps/RSnip").is_some());
+    assert!(h.query_by_label_contains("Sign in to OneDrive first").is_some());
+    click(&mut h, "Sign in to OneDrive");
+    assert!(matches!(h.state().env.sandboxed().code_sign_ins[0].0, Kind::OneDrive { .. }));
+    assert!(h.query_by_label("Asking OneDrive for a code…").is_some());
+    code_shown(&mut h, "https://microsoft.com/devicelogin");
+    let shown = h.get_by_role_and_label(eframe::egui::accesskit::Role::TextInput, "Go to").accesskit_node().value();
+    assert_eq!(shown.as_deref(), Some("https://microsoft.com/devicelogin"));
+    signed_in(&mut h, "M.R3_refresh", Some("dan@example.com"));
+    assert!(h.query_by_label("Signed in as dan@example.com. Save to keep it").is_some());
+    click(&mut h, "Save");
+    let saved = destinations(&h);
+    assert_eq!(saved[0].kind, Kind::OneDrive { folder: "Screenshots".into(), share_link: true });
+    assert_eq!(h.state().env.sandboxed().secrets.get(&saved[0].id).map(String::as_str), Some("M.R3_refresh"));
+    assert!(h.query_by_label_contains("OneDrive · Apps/RSnip/Screenshots").is_some());
 }
 
 #[test]
@@ -1325,6 +1352,17 @@ mod snapshots {
         click(&mut h, "Sign in to Google Drive");
         code_shown(&mut h, "https://www.google.com/device");
         snapshot(&mut h, Section::Destinations, "settings_push_google_drive");
+    }
+
+    #[test]
+    fn push_to_onedrive_form() {
+        let _gpu = super::super::tests::gpu();
+        let mut h = rendered("snap-settings-push-onedrive", |_| {});
+        start_code_sign_in(&mut h, "OneDrive");
+        click(&mut h, "Sign in to OneDrive");
+        code_shown(&mut h, "https://microsoft.com/devicelogin");
+        signed_in(&mut h, "M.R3_refresh", Some("Dan H"));
+        snapshot(&mut h, Section::Destinations, "settings_push_onedrive");
     }
 
     #[test]

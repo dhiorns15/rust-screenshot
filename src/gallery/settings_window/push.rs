@@ -251,6 +251,7 @@ fn fields(kind: &mut Kind) -> Vec<Field<'_>> {
             field("Folder", "/Screenshots, in the app's folder (or Dropbox, with full access)", folder),
         ],
         Kind::GoogleDrive { folder, .. } => vec![field("Folder", "Screenshots, in My Drive (made if it isn't there); empty for the top", folder)],
+        Kind::OneDrive { folder, .. } => vec![field("Folder", "Screenshots, in Apps/RSnip (made if it isn't there); empty for Apps/RSnip itself", folder)],
         Kind::Custom { url, method, file_field, fields, headers, link } => vec![
             field("Upload address", "https://i.example.com/api/upload", url),
             field("Method", "POST", method),
@@ -275,6 +276,7 @@ fn help(kind: &Kind) -> &'static str {
         Kind::Smb { .. } => "A Windows or Samba share, a NAS's say. On Linux it needs Samba's smbclient.",
         Kind::Dropbox { .. } => "Uses a free Dropbox app of your own, made as docs/destinations.md says: enter its App key, then sign in to Dropbox.",
         Kind::GoogleDrive { .. } => "Sign in with a code, on this computer or any other (a phone too). RSnip sees only the files and folders it puts in your Drive.",
+        Kind::OneDrive { .. } => "Sign in with a code, on this computer or any other (a phone too). RSnip can reach only its own folder in your OneDrive, Apps/RSnip.",
         Kind::Custom { .. } => "Any upload API, like ShareX's custom uploaders. {secret} is replaced by the token, {filename} by the file's name.",
     }
 }
@@ -813,7 +815,7 @@ fn poll_shown(form: &mut Form) {
 /// Whether pushes make links, for the kinds that can be told.
 fn share_link(kind: &mut Kind) -> Option<&mut bool> {
     match kind {
-        Kind::Dropbox { share_link, .. } | Kind::GoogleDrive { share_link, .. } => Some(share_link),
+        Kind::Dropbox { share_link, .. } | Kind::GoogleDrive { share_link, .. } | Kind::OneDrive { share_link, .. } => Some(share_link),
         _ => None,
     }
 }
