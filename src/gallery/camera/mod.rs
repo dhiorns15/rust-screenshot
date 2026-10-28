@@ -13,6 +13,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -41,6 +42,11 @@ const EDGE: f32 = 3.0;
 const BUTTON: f32 = 22.0;
 /// How long it stays put after being dragged before where it is is remembered, in seconds.
 const SETTLED: f64 = 0.5;
+/// How many pictures a recording's bubble times before it says how far behind they are (see `lag`).
+const TIMED: usize = 20;
+/// From painting a picture to its being on the screen: the window shows it at the next refresh,
+/// and the desktop at the one after, at 60 Hz.
+const PRESENTED: Duration = Duration::from_millis(25);
 
 /// How big the bubble is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -158,7 +164,8 @@ fn point(text: &str) -> Option<(i32, i32)> {
 
 /// What a camera sends.
 pub enum Event {
-    Picture(ColorImage),
+    /// A picture, and when the camera took it.
+    Picture(ColorImage, Instant),
     /// Something to tell the user (that the chosen camera wasn't there, so another is shown).
     Note(String),
     /// Why there are no pictures (any more), in a few words.
@@ -172,10 +179,16 @@ pub struct Sink {
 }
 
 impl Sink {
-    /// Passes a picture on, or drops it if the one before hasn't been taken yet. False once
-    /// nothing is looking.
+    /// Passes a picture that's just come on, or drops it if the one before hasn't been taken yet.
+    /// False once nothing is looking.
+    #[cfg_attr(windows, allow(dead_code))]
     pub fn picture(&self, image: ColorImage) -> bool {
-        let looking = !matches!(self.tx.try_send(Event::Picture(image)), Err(TrySendError::Disconnected(_)));
+        self.picture_taken(image, Instant::now())
+    }
+
+    /// The same, for a picture the camera took at `taken`.
+    pub fn picture_taken(&self, image: ColorImage, taken: Instant) -> bool {
+        let looking = !matches!(self.tx.try_send(Event::Picture(image, taken)), Err(TrySendError::Disconnected(_)));
         self.repaint();
         looking
     }
@@ -446,6 +459,10 @@ pub struct CameraBubble {
     /// Being dragged, on Windows (see `follow`).
     #[cfg(windows)]
     drag: Option<follow::Drag>,
+    /// When the camera took the picture that came last, until it's painted.
+    unpainted: Option<Instant>,
+    /// How far behind the pictures were on the screen, for a recording (see `lag`).
+    lags: Vec<Duration>,
 }
 
 impl CameraBubble {
@@ -454,7 +471,7 @@ impl CameraBubble {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let place = launch.corner.map_or(Place::Free, |(x, y)| Place::Corner(Pos2::new(x as f32, y as f32)));
-        CameraBubble { size: Size::read(&env), env, events, picture: None, failed: None, launch, place, asked: None, said: Vec::new(), speak, wheel: 0.0, dragged: false, seen: None, remembered: None, #[cfg(windows)] drag: None }
+        CameraBubble { size: Size::read(&env), env, events, picture: None, failed: None, launch, place, asked: None, said: Vec::new(), speak, wheel: 0.0, dragged: false, seen: None, remembered: None, #[cfg(windows)] drag: None, unpainted: None, lags: Vec::new() }
     }
 
     fn say(&mut self, line: String) {
@@ -468,13 +485,16 @@ impl CameraBubble {
     fn take_events(&mut self, ctx: &egui::Context) {
         loop {
             match self.events.try_recv() {
-                Ok(Event::Picture(image)) => match &mut self.picture {
-                    Some(picture) => picture.set(image, TextureOptions::LINEAR),
-                    None => {
-                        self.picture = Some(ctx.load_texture("camera", image, TextureOptions::LINEAR));
-                        self.say("shown".into());
+                Ok(Event::Picture(image, taken)) => {
+                    self.unpainted = Some(taken);
+                    match &mut self.picture {
+                        Some(picture) => picture.set(image, TextureOptions::LINEAR),
+                        None => {
+                            self.picture = Some(ctx.load_texture("camera", image, TextureOptions::LINEAR));
+                            self.say("shown".into());
+                        }
                     }
-                },
+                }
                 Ok(Event::Note(note)) => self.say(format!("note: {note}")),
                 Ok(Event::Failed(why)) => {
                     self.say(format!("failed: {why}"));
@@ -482,6 +502,21 @@ impl CameraBubble {
                 }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
+        }
+    }
+
+    /// Times the picture just painted: how long after the camera took it it's on the screen. Once
+    /// it has timed `TIMED`, it says the middle one (`lag: <ms>`), by which the recorder holds back
+    /// the microphone, so what's said is in step with the face saying it.
+    fn time_picture(&mut self) {
+        let Some(taken) = self.unpainted.take() else { return };
+        if self.lags.len() >= TIMED {
+            return;
+        }
+        self.lags.push(taken.elapsed() + PRESENTED);
+        if self.lags.len() == TIMED {
+            let lag = lag(&mut self.lags);
+            self.say(format!("lag: {}", lag.as_millis()));
         }
     }
 
@@ -621,6 +656,13 @@ impl CameraBubble {
     }
 }
 
+/// The middle of `lags`, which it sorts: a picture that took unusually long or short (the camera
+/// starting, say) doesn't count.
+fn lag(lags: &mut [Duration]) -> Duration {
+    lags.sort();
+    lags.get(lags.len() / 2).copied().unwrap_or_default()
+}
+
 /// A small round button on the picture, named `name`, with `glyph` drawn in it.
 fn round_button(ui: &mut Ui, at: Rect, name: &str, selected: bool, glyph: impl FnOnce(&egui::Painter, Color32)) -> egui::Response {
     let response = ui.interact(at, ui.id().with(name), Sense::click());
@@ -678,6 +720,9 @@ impl eframe::App for CameraBubble {
         }
         self.paint(ui, circle);
         if self.launch.recording {
+            if self.picture.is_some() {
+                self.time_picture();
+            }
             if behind.hovered() {
                 self.turn_wheel(&ctx);
             }
@@ -721,6 +766,8 @@ struct Said {
     shown: bool,
     /// When it was last clicked or let go of.
     touched: Option<Instant>,
+    /// How far behind the camera its pictures are on the screen.
+    lag: Option<Duration>,
     notes: Vec<String>,
     failed: Option<String>,
 }
@@ -731,6 +778,8 @@ impl Said {
             self.shown = true;
         } else if line == "touched" {
             self.touched = Some(Instant::now());
+        } else if let Some(ms) = line.strip_prefix("lag: ").and_then(|ms| ms.parse().ok()) {
+            self.lag = Some(Duration::from_millis(ms));
         } else if let Some(note) = line.strip_prefix("note: ") {
             self.notes.push(note.into());
         } else if let Some(why) = line.strip_prefix("failed: ") {
@@ -753,13 +802,26 @@ impl Said {
 }
 
 impl Bubble {
-    /// Shows the bubble as `launch` says.
+    /// Shows the bubble as `launch` says (Windows' recorder uses `start_for_sound`).
+    #[cfg_attr(windows, allow(dead_code))]
     pub fn start(launch: &Launch) -> Bubble {
         Bubble::start_with(launch, None)
     }
 
     /// Shows it as `launch` says, repainting `ctx` each time it says something (see `touched`).
     pub fn start_with(launch: &Launch, ctx: Option<egui::Context>) -> Bubble {
+        Bubble::spawn(launch, ctx, None)
+    }
+
+    /// Shows it for a recording with sound, setting `lag` to how far behind the camera its
+    /// pictures are, in milliseconds, once it knows: the recorder holds the microphone back that
+    /// much, so the voice is in step with the face.
+    #[cfg(windows)]
+    pub fn start_for_sound(launch: &Launch, lag: Arc<AtomicU32>) -> Bubble {
+        Bubble::spawn(launch, None, Some(lag))
+    }
+
+    fn spawn(launch: &Launch, ctx: Option<egui::Context>, lag: Option<Arc<AtomicU32>>) -> Bubble {
         let said = Arc::new(Mutex::new(Said::default()));
         let mut command = command(launch);
         // And if the recorder goes without closing it (killed, say), it goes too.
@@ -776,7 +838,12 @@ impl Bubble {
             let hearing = said.clone();
             let reading = std::thread::spawn(move || {
                 for line in BufReader::new(out).lines().map_while(Result::ok) {
-                    hearing.lock().unwrap().hear(line.trim());
+                    let mut said = hearing.lock().unwrap();
+                    said.hear(line.trim());
+                    if let (Some(lag), Some(heard)) = (&lag, said.lag) {
+                        lag.store(heard.as_millis() as u32, Ordering::Relaxed);
+                    }
+                    drop(said);
                     if let Some(ctx) = &ctx {
                         ctx.request_repaint();
                     }
@@ -989,10 +1056,47 @@ pub(super) mod tests {
     /// Starts the bubble with `FAKE` saying `fake`. The variable is the same for each, so each
     /// bubble sets it just before it starts, under a lock.
     fn fake_bubble(fake: &str, launch: &Launch) -> Bubble {
+        faked(fake, || Bubble::start(launch))
+    }
+
+    /// The same, started by `start`.
+    fn faked(fake: &str, start: impl FnOnce() -> Bubble) -> Bubble {
         static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
         let _lock = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
         std::env::set_var(FAKE, fake);
-        Bubble::start(launch)
+        start()
+    }
+
+    #[test]
+    fn says_how_far_behind_the_camera_its_pictures_are() {
+        let env = Env::sandbox(gallery::sandbox_dir("bubble-lag"));
+        let mut h = Harness::builder().with_size(window_size(Size::Medium)).build_eframe(move |cc| {
+            let events = env.open_camera(None, &cc.egui_ctx);
+            CameraBubble::new(&cc.egui_ctx, env, events, recording(None), false)
+        });
+        // Pictures the camera took 100 ms before they're painted.
+        for _ in 0..TIMED + 5 {
+            h.state_mut().unpainted = Some(Instant::now() - Duration::from_millis(100));
+            h.step();
+        }
+        let said: Vec<u64> = h.state().said.iter().filter_map(|line| line.strip_prefix("lag: ")?.parse().ok()).collect();
+        assert_eq!(said.len(), 1, "once: {:?}", h.state().said);
+        assert!((125..200).contains(&said[0]), "and the time it takes to show: {said:?}");
+
+        let ms = Duration::from_millis;
+        assert_eq!(lag(&mut [ms(900), ms(120), ms(5), ms(130), ms(125)]), ms(125), "the middle one");
+        let mut heard = Said::default();
+        heard.hear("lag: 140");
+        assert_eq!(heard.lag, Some(ms(140)));
+        assert_eq!(heard.note(false), None, "nothing to tell about the recording");
+        // What the recorder holds the microphone back by.
+        #[cfg(windows)]
+        {
+            let delay = Arc::new(AtomicU32::new(0));
+            let bubble = faked("shown|lag: 140", || Bubble::start_for_sound(&recording(None), Arc::clone(&delay)));
+            wait_for(|| delay.load(Ordering::Relaxed) == 140, "the bubble to say how far behind it is");
+            assert_eq!(bubble.stop(), None);
+        }
     }
 
     #[test]

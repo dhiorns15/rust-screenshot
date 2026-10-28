@@ -89,11 +89,13 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
     let working = crate::gallery::working_path(&path)?;
     let fps = format.fps();
     let stop = Arc::new(AtomicBool::new(false));
+    // The camera's bubble says how far behind it is, and the microphone is held back that much.
+    let microphone_delay = Arc::default();
     // The encoder lives on the recording thread (Media Foundation objects stay on the thread that
     // made them); it reports when it started, or why it didn't, so a failure shows straight away.
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let thread = {
-        let stop = stop.clone();
+        let (stop, microphone_delay) = (stop.clone(), Arc::clone(&microphone_delay));
         std::thread::spawn(move || {
             let mut notes = Vec::new();
             let mut hevc = format.hevc;
@@ -113,7 +115,7 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
                     })
                     .map(|e| Box::new(e) as _)
             };
-            let sources = audio::Sources { computer: format.sound.clone(), microphone: format.microphone.clone() };
+            let sources = audio::Sources { computer: format.sound.clone(), microphone: format.microphone.clone(), microphone_delay };
             let with_sound = !format.gif && sources.any();
             let mut encoder = open(with_sound, &mut hevc, &mut notes);
             // Time zero is when the encoder is ready (it can take a while), so neither the video
@@ -149,7 +151,7 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
     let started = ready_rx.recv().map_err(|_| "The recording didn't start".to_string())??;
     let windows = unsafe { [frame_window(area), bar_window(main, area, started)] };
     // By the area's bottom right, in it.
-    let camera = format.camera.map(|device| Bubble::start(&Launch::in_area(device, [area.left, area.top, area.right, area.bottom])));
+    let camera = format.camera.map(|device| Bubble::start_for_sound(&Launch::in_area(device, [area.left, area.top, area.right, area.bottom]), microphone_delay));
     Ok(Recording { stop, thread, windows, camera })
 }
 
@@ -389,7 +391,7 @@ mod tests {
     fn records_the_screen_with_sound() {
         let path = std::env::temp_dir().join(format!("rsnip-rec-sound-{}.mp4", std::process::id()));
         let started = Instant::now();
-        let sources = audio::Sources { computer: Some(None), microphone: None };
+        let sources = audio::Sources { computer: Some(None), ..Default::default() };
         let sound = match audio::Capture::start(&sources, audio::Clock::now()) {
             Ok(sound) => sound,
             // CI's machines may have no sound device, or no Media Foundation.

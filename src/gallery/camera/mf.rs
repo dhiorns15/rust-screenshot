@@ -4,12 +4,14 @@
 
 use std::ffi::c_void;
 use std::ptr::null_mut;
+use std::time::{Duration, Instant};
 
 use eframe::egui::ColorImage;
 use windows::core::{GUID, PWSTR};
 use windows::Win32::Foundation::E_ACCESSDENIED;
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED};
+use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 
 use super::{Sink, SIDE};
 use crate::gallery::platform::SoundDevice;
@@ -96,10 +98,12 @@ pub fn capture(device: Option<&str>, sink: &Sink) -> Result<(), String> {
 /// stops sending them.
 unsafe fn stream(source: &IMFMediaSource, sink: &Sink) -> windows::core::Result<Result<(), String>> {
     let mut attrs = None;
-    MFCreateAttributes(&mut attrs, 1)?;
+    MFCreateAttributes(&mut attrs, 2)?;
     let attrs = attrs.unwrap();
     // Converts whatever the camera sends to the RGB asked for below.
     attrs.SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1)?;
+    // Each picture as soon as it can be, rather than smoothly: it's to be in step with the sound.
+    attrs.SetUINT32(&MF_LOW_LATENCY, 1)?;
     let reader = MFCreateSourceReaderFromMediaSource(source, &attrs)?;
     let stream = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
     smallest_big_enough(&reader, stream);
@@ -119,15 +123,34 @@ unsafe fn stream(source: &IMFMediaSource, sink: &Sink) -> windows::core::Result<
             return Ok(Err("it stopped sending pictures".into()));
         }
         let Some(sample) = sample else { continue };
+        let when = sample.GetUINT64(&MFSampleExtension_DeviceTimestamp).ok().and_then(|at| taken(at as i64, counter())).unwrap_or_else(Instant::now);
         let buffer = sample.ConvertToContiguousBuffer()?;
         let (mut data, mut len) = (null_mut(), 0u32);
         buffer.Lock(&mut data, None, Some(&mut len))?;
         let picture = square(std::slice::from_raw_parts(data, len as usize), width, height, stride, SIDE);
         let _ = buffer.Unlock();
-        if !sink.picture(picture) {
+        if !sink.picture_taken(picture, when) {
             return Ok(Ok(()));
         }
     }
+}
+
+/// The performance counter now, in 100 ns units, as the camera stamps its pictures.
+fn counter() -> i64 {
+    let (mut count, mut frequency) = (0, 0);
+    unsafe {
+        let _ = QueryPerformanceCounter(&mut count);
+        let _ = QueryPerformanceFrequency(&mut frequency);
+    }
+    (count as i128 * 10_000_000 / frequency.max(1) as i128) as i64
+}
+
+/// When a picture the camera stamped `at` was taken, when it's `now` (both on the performance
+/// counter, in 100 ns units). None for a stamp that can't be right (more than a second old, or to
+/// come), from a camera that stamps its own way.
+fn taken(at: i64, now: i64) -> Option<Instant> {
+    let age = Duration::from_nanos(u64::try_from(now - at).ok()? * 100);
+    (age < Duration::from_secs(1)).then(|| Instant::now() - age)
 }
 
 /// Asks for the camera's smallest picture that's still big enough for the bubble, at 15 frames a
@@ -207,6 +230,15 @@ mod tests {
         // A short buffer leaves black rather than reading past its end.
         let short = square(&picture(8, 4)[..64], 8, 4, 32, 480);
         assert_eq!(short.pixels[15].to_array(), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn a_picture_was_taken_when_the_camera_stamped_it() {
+        let now = counter();
+        let when = taken(now - 1_200_000, now).expect("120 ms ago");
+        assert!((115..=200).contains(&when.elapsed().as_millis()), "{:?}", when.elapsed());
+        assert!(taken(now + 10_000, now).is_none(), "not to come");
+        assert!(taken(now - 20_000_000, now).is_none(), "not 2 s ago");
     }
 
     #[test]

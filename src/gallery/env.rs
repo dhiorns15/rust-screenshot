@@ -603,7 +603,7 @@ impl Env {
                 let (tx, rx) = sync_channel(2);
                 let _ = tx.send(match &s.camera_error {
                     Some(why) => super::camera::Event::Failed(why.clone()),
-                    None => super::camera::Event::Picture(super::camera::test_pattern(120)),
+                    None => super::camera::Event::Picture(super::camera::test_pattern(120), std::time::Instant::now()),
                 });
                 s.cameras_opened.push((device, tx));
                 rx

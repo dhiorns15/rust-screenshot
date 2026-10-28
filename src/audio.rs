@@ -5,7 +5,7 @@
 //! recording's sound on the default output (`Speaker`).
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -67,10 +67,15 @@ fn frames(t: i64) -> i64 {
 
 /// What to record: the computer's sound (from an output) and the microphone, each None for none,
 /// Some(None) for the default one, Some(Some(id)) for that device.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Sources {
     pub computer: Option<Option<String>>,
     pub microphone: Option<Option<String>>,
+    /// How far to hold the microphone back, in milliseconds: as far as the camera's bubble is
+    /// behind the camera, so the voice is in step with the face. It can change part way through
+    /// (it's known once the bubble has shown some pictures); the microphone then skips on, with
+    /// silence in between.
+    pub microphone_delay: Arc<AtomicU32>,
 }
 
 impl Sources {
@@ -213,6 +218,8 @@ struct Source {
     lane: usize,
     /// What the notes call it.
     what: &'static str,
+    /// How far its sound is held back, in milliseconds (see `Sources::microphone_delay`).
+    delay: Arc<AtomicU32>,
 }
 
 const COMPUTER: &str = "computer's sound";
@@ -221,7 +228,7 @@ const MICROPHONE: &str = "microphone";
 impl Source {
     /// Opens `device` (else the default output, for the computer's sound, or the default
     /// microphone) and starts it.
-    unsafe fn open(enumerator: &IMMDeviceEnumerator, what: &'static str, device: Option<&str>, lane: usize) -> windows::core::Result<Source> {
+    unsafe fn open(enumerator: &IMMDeviceEnumerator, what: &'static str, device: Option<&str>, lane: usize, delay: Arc<AtomicU32>) -> windows::core::Result<Source> {
         let loopback = what == COMPUTER;
         let device = match device {
             Some(id) => enumerator.GetDevice(&HSTRING::from(id))?,
@@ -245,7 +252,7 @@ impl Source {
         client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 10_000_000, 0, &format, None)?;
         let capture: IAudioCaptureClient = client.GetService()?;
         client.Start()?;
-        Ok(Source { client, capture, lane, what })
+        Ok(Source { client, capture, lane, what, delay })
     }
 
     /// Moves what has arrived into the mixer.
@@ -261,7 +268,8 @@ impl Source {
             }
             self.capture.ReleaseBuffer(count)?;
             // In 100 ns units on the performance counter, like the clock.
-            let at = (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0).then(|| frames(position as i64 - clock.0));
+            let delay = self.delay.load(Ordering::Relaxed) as i64 * 10_000;
+            let at = (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0).then(|| frames(position as i64 + delay - clock.0));
             mixer.push(self.lane, at, &samples, flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0);
         }
         Ok(())
@@ -299,11 +307,12 @@ fn run(sources: &Sources, clock: Clock, stop: &AtomicBool, ready: Sender<Result<
             Ok(enumerator) => {
                 let wanted = [(COMPUTER, sources.computer.clone()), (MICROPHONE, sources.microphone.clone())];
                 for (what, device) in wanted.into_iter().filter_map(|(what, device)| Some((what, device?))) {
-                    match Source::open(&enumerator, what, device.as_deref(), open.len()) {
+                    let delay = if what == MICROPHONE { sources.microphone_delay.clone() } else { Arc::default() };
+                    match Source::open(&enumerator, what, device.as_deref(), open.len(), delay.clone()) {
                         Ok(source) => open.push(source),
                         // An output that's gone (unplugged headphones, say): the default one plays
                         // what it played.
-                        Err(_) if what == COMPUTER && device.is_some() => match Source::open(&enumerator, what, None, open.len()) {
+                        Err(_) if what == COMPUTER && device.is_some() => match Source::open(&enumerator, what, None, open.len(), delay) {
                             Ok(source) => {
                                 notes.push("The chosen output isn't connected, so the default one's sound was recorded.".into());
                                 open.push(source);
@@ -568,7 +577,7 @@ mod tests {
 
     #[test]
     fn records_the_computers_sound_without_gaps() {
-        let sources = Sources { computer: Some(None), microphone: None };
+        let sources = Sources { computer: Some(None), ..Default::default() };
         let begun = Instant::now();
         let capture = match Capture::start(&sources, Clock::now()) {
             Ok(capture) => capture,

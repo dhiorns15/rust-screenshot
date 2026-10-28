@@ -68,6 +68,10 @@ the bottom right of the area. You can drag it while recording too. It shows no b
 they'd be in the video: turn the mouse wheel over it for a bigger or smaller one. Clicking or
 dragging it never takes the focus from the app you're recording.
 
+A camera's picture takes a moment to reach the screen (often a tenth of a second or more), so on
+Windows RSnip times it and holds the microphone back by as much, keeping your voice in step with
+your face. The computer's sound isn't held back: it goes with what's on the screen.
+
 If the camera can't be used (another app has it, or it's unplugged), the recording goes on without
 it and the "Recording saved" notification says why. On Windows the usual reason is the privacy
 setting: under *Settings → Privacy & security → Camera*, turn on *Let desktop apps access your

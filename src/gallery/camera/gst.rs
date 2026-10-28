@@ -222,7 +222,7 @@ mod tests {
         let mut red = 0;
         while red < 3 {
             match rx.recv_timeout(Duration::from_secs(20)).expect("a picture") {
-                super::super::Event::Picture(image) => {
+                super::super::Event::Picture(image, _) => {
                     assert_eq!(image.size, [SIDE, SIDE]);
                     let [r, g, b, a] = image.pixels[SIDE * SIDE / 2 + SIDE / 2].to_array();
                     assert!(r > 200 && g < 50 && b < 50 && a == 255, "red: {:?}", [r, g, b, a]);
