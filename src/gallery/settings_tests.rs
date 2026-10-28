@@ -918,7 +918,7 @@ fn dropbox_says_when_no_browser_opened_and_the_link_can_still_be_copied() {
 
 #[test]
 fn dropbox_says_when_the_code_is_refused_and_lets_it_be_tried_again() {
-    let mut h = settings("settings-push-dropbox-refused", |env| env.sandboxed().dropbox_token = Some(Err("Dropbox didn't accept that code".into())));
+    let mut h = settings("settings-push-dropbox-refused", |env| env.sandboxed().pasted_code_token = Some(Err("Dropbox didn't accept that code".into())));
     start_dropbox(&mut h);
     type_into(&mut h, "App key", "abc123");
     click(&mut h, "Sign in to Dropbox");
@@ -926,7 +926,7 @@ fn dropbox_says_when_the_code_is_refused_and_lets_it_be_tried_again() {
     click(&mut h, "Finish signing in");
     assert!(h.query_by_label("Dropbox didn't accept that code").is_some());
     assert!(!is_enabled(&h, "Save"));
-    h.state().env.sandboxed().dropbox_token = None;
+    h.state().env.sandboxed().pasted_code_token = None;
     click(&mut h, "Finish signing in");
     assert!(is_enabled(&h, "Save"));
     assert!(h.query_by_label("Dropbox didn't accept that code").is_none());

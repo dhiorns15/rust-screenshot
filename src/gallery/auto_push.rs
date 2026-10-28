@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::{clean_up, describer, library_files_with_times, platform, search};
+use super::{clean_up, describer, env, library_files_with_times, platform, search};
 use crate::push::{self, Destination};
 use crate::{options, secrets};
 
@@ -129,12 +129,13 @@ fn run_once(tries: &mut Tries, now: SystemTime, notify: &dyn Fn(&str, &str)) {
         }
         // Read once for all of them, from the keyring only if it's unlocked: a window asking for
         // its password, out of nowhere every minute, would be no good.
-        let secret = match push::saved_secret_from(destination, secrets::get_quietly) {
+        let mut saved = match push::saved_secret_from(destination, secrets::get_quietly) {
             Ok(secret) => {
                 if needs_secret {
                     tries.keyring_worked(&destination.id);
                 }
-                secret
+                // A refresh token replaced by one push is kept, and used by the next.
+                secret.map(|secret| env::kept(destination, secret))
             }
             Err(e) => {
                 // Said once (with a Retry in Recent pushes, which can unlock it), and tried again
@@ -151,7 +152,10 @@ fn run_once(tries: &mut Tries, now: SystemTime, notify: &dyn Fn(&str, &str)) {
             }
         };
         for file in due {
-            let result = secret.clone().and_then(|secret| push::push(destination, secret.as_deref(), &file));
+            let result = match &mut saved {
+                Ok(saved) => push::push(destination, saved, &file),
+                Err(e) => Err(e.clone()),
+            };
             let result = result.and_then(|link| search::record_push(&file, &destination.id, link));
             push::history::record(&push::history::file(), &push::history::Entry::new(destination, &file, true, result.clone().err()));
             match result {

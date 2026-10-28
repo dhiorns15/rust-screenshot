@@ -17,7 +17,7 @@ use super::platform;
 use super::system_info::Host;
 use super::words::Word;
 use crate::describe::{self, Described, Model, Provider, Service};
-use crate::push::Destination;
+use crate::push::{Destination, Saved};
 use crate::shortcuts::Action;
 use crate::update::{Release, Version};
 
@@ -170,8 +170,9 @@ pub struct Sandbox {
     pub test_result: Option<Result<String, String>>,
     /// The fingerprint an FTPS server's certificate has (`None`: a made-up one).
     pub certificate: Option<Result<String, String>>,
-    /// The refresh token Dropbox gives for a code (`None`: one made from the code).
-    pub dropbox_token: Option<Result<String, String>>,
+    /// The refresh token a code pasted back after signing in gives (Dropbox's; `None`: one made
+    /// from the code).
+    pub pasted_code_token: Option<Result<String, String>>,
     /// Files pushed, with the destination's name.
     pub pushed: Vec<(String, PathBuf)>,
     /// What pushing a file gives (`None`: a link ending in its name).
@@ -744,11 +745,15 @@ impl Env {
                 let (ctx, destination, history) = (ctx.clone(), destination.clone(), self.history_file.clone());
                 std::thread::spawn(move || {
                     // The keyring may ask to be unlocked first, here rather than on the UI thread.
-                    let secret = saved_secret(&destination, None);
+                    let mut saved = saved_secret(&destination, None);
                     for (i, file) in files.into_iter().enumerate() {
                         let _ = tx.send(PushEvent::Pushing(i));
                         ctx.request_repaint();
-                        let result = secret.clone().and_then(|secret| crate::push::push(&destination, secret.as_deref(), &file));
+                        // One sign-in for all of them, so a refresh token replaced by one push is the one the next uses.
+                        let result = match &mut saved {
+                            Ok(saved) => crate::push::push(&destination, saved, &file),
+                            Err(e) => Err(e.clone()),
+                        };
                         let _ = tx.send(outcome(&destination, &history, file, result));
                     }
                     let _ = tx.send(PushEvent::Done);
@@ -860,13 +865,14 @@ impl Env {
         rx
     }
 
-    /// Trades the code Dropbox showed at the end of signing in for the refresh token (see
-    /// `push::Pkce`); the answer arrives on the channel, and `ctx` repaints when it does.
-    pub fn finish_dropbox_sign_in(&self, ctx: &eframe::egui::Context, pkce: &crate::push::Pkce, app_key: &str, code: &str) -> Receiver<Result<String, String>> {
+    /// Trades the code the service showed at the end of signing in, pasted back, for the refresh
+    /// token (Dropbox's, see `push::Pkce`); the answer arrives on the channel, and `ctx` repaints
+    /// when it does.
+    pub fn finish_pasted_sign_in(&self, ctx: &eframe::egui::Context, pkce: &crate::push::Pkce, app_key: &str, code: &str) -> Receiver<Result<String, String>> {
         let (tx, rx) = channel();
         match &self.sandbox {
             Some(s) => {
-                let _ = tx.send(s.borrow().dropbox_token.clone().unwrap_or_else(|| Ok(format!("refresh-for-{}", code.trim()))));
+                let _ = tx.send(s.borrow().pasted_code_token.clone().unwrap_or_else(|| Ok(format!("refresh-for-{}", code.trim()))));
             }
             None => {
                 let (ctx, pkce, app_key, code) = (ctx.clone(), pkce.clone(), app_key.to_owned(), code.to_owned());
@@ -890,7 +896,7 @@ impl Env {
             None => {
                 let (ctx, destination) = (ctx.clone(), destination.clone());
                 std::thread::spawn(move || {
-                    let _ = tx.send(saved_secret(&destination, secret).and_then(|secret| crate::push::test(&destination, secret.as_deref())));
+                    let _ = tx.send(saved_secret(&destination, secret).and_then(|mut saved| crate::push::test(&destination, &mut saved)));
                     ctx.request_repaint();
                 });
             }
@@ -964,13 +970,20 @@ fn outcome(destination: &Destination, history: &Path, file: PathBuf, result: Res
     }
 }
 
-/// The secret to use with `destination`: the one given, else the one saved for it (which may
-/// wait for the keyring), or an error if it needs one and has none.
-fn saved_secret(destination: &Destination, given: Option<String>) -> Result<Option<String>, String> {
+/// The secret to use with `destination`: the one given (typed in and not saved yet, so nor is
+/// what replaces it), else the one saved for it (which may wait for the keyring), or an error if
+/// it needs one and has none.
+fn saved_secret(destination: &Destination, given: Option<String>) -> Result<Saved, String> {
     match given {
-        Some(secret) if destination.kind.secret_label().is_some() => Ok(Some(secret)),
-        _ => crate::push::saved_secret(destination),
+        Some(secret) if destination.kind.secret_label().is_some() => Ok(Saved::unsaved(Some(secret))),
+        _ => crate::push::saved_secret(destination).map(|secret| kept(destination, secret)),
     }
+}
+
+/// `secret`, read from the credential store for `destination`, with what replaces it kept there.
+pub fn kept(destination: &Destination, secret: Option<String>) -> Saved {
+    let (id, label) = (destination.id.clone(), destination.name.clone());
+    Saved::new(secret, move |new| crate::secrets::set(&id, &label, new))
 }
 
 /// The provider, with the key saved for it in the credential store (which may wait for the keyring

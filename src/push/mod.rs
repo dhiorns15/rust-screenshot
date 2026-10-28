@@ -151,6 +151,14 @@ pub enum Kind {
     },
 }
 
+/// How a kind is signed in to (see `Kind::sign_in`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SignIn {
+    /// The browser opens the service's page, which shows a code to paste back into RSnip
+    /// (Dropbox's, with PKCE).
+    PasteCode,
+}
+
 fn default_port() -> u16 {
     22
 }
@@ -270,6 +278,14 @@ impl Kind {
     /// password.
     pub fn secret_optional(&self) -> bool {
         matches!(self, Kind::Custom { .. } | Kind::Smb { .. })
+    }
+
+    /// How it's signed in to, for a kind whose secret comes of signing in rather than being typed.
+    pub fn sign_in(&self) -> Option<SignIn> {
+        match self {
+            Kind::Dropbox { .. } => Some(SignIn::PasteCode),
+            _ => None,
+        }
     }
 
     /// Its section in docs/destinations.md ("smb-share"), named as GitHub names a heading's anchor.
@@ -421,10 +437,48 @@ pub fn save(env: &Env, destinations: &[Destination]) {
     }
 }
 
-/// Checks that `destination` can be reached with `secret` (its password, key or webhook address),
-/// without changing anything there, and says what it found.
-pub fn test(destination: &Destination, secret: Option<&str>) -> Result<String, String> {
-    let secret = secret.unwrap_or_default();
+/// Keeps a secret, replacing the one there was.
+type Keep = dyn Fn(&str) -> Result<(), String> + Send;
+
+/// What's kept for a destination apart from its place in the list: its secret, as `push` and
+/// `test` use it. A service RSnip signs in to with OAuth may give a new refresh token in place of
+/// the one it was given (Microsoft does every time, and one left unused for 90 days expires), so
+/// the secret can be replaced: the new one is used from then on, and kept for next time.
+pub struct Saved {
+    secret: Option<String>,
+    /// Keeps a new secret where the old one was (the credential store).
+    keep: Box<Keep>,
+}
+
+impl Saved {
+    pub fn new(secret: Option<String>, keep: impl Fn(&str) -> Result<(), String> + Send + 'static) -> Saved {
+        Saved { secret, keep: Box::new(keep) }
+    }
+
+    /// A secret that isn't kept anywhere (one typed into the form and not saved yet), so nor is
+    /// what replaces it.
+    pub fn unsaved(secret: Option<String>) -> Saved {
+        Saved::new(secret, |_| Ok(()))
+    }
+
+    pub fn secret(&self) -> Option<&str> {
+        self.secret.as_deref()
+    }
+
+    /// Uses `secret` in place of the one there was, and keeps it. If it can't be kept (the
+    /// keyring went away), the push still goes, and the next one tries again: the one it replaced
+    /// works for a while yet.
+    pub fn replace(&mut self, secret: &str) {
+        self.secret = Some(secret.to_owned());
+        let _ = (self.keep)(secret);
+    }
+}
+
+/// Checks that `destination` can be reached with its secret (its password, key or webhook
+/// address), without changing anything there, and says what it found.
+pub fn test(destination: &Destination, saved: &mut Saved) -> Result<String, String> {
+    let secret = saved.secret().unwrap_or_default().to_owned();
+    let secret = secret.as_str();
     match &destination.kind {
         Kind::Sftp { host, port, user, folder, .. } => sftp::test(&sftp::Server { host, port: *port, user, folder }),
         Kind::WebDav { url, user, .. } => webdav::test(&webdav::Folder { url, user, password: secret }),
@@ -437,14 +491,15 @@ pub fn test(destination: &Destination, secret: Option<&str>) -> Result<String, S
         Kind::PhotoPrism { server, .. } => photoprism::test(server, secret),
         Kind::Ftps { host, port, user, folder, trusted, .. } => ftps::test(&ftps::Server { host, port: *port, user, password: secret, folder, trusted }),
         Kind::Smb { share, folder, user, .. } => smb::test(&smb::Share { share, folder, user, password: secret }),
-        Kind::Dropbox { app_key, share_link, .. } => dropbox::test(app_key, secret, *share_link),
+        Kind::Dropbox { app_key, share_link, .. } => dropbox::test(app_key, saved, *share_link),
         Kind::Custom { .. } => custom::test(&uploader(&destination.kind, secret)),
     }
 }
 
 /// Sends `file` to `destination`, with its secret; the link to it there, if there is one.
-pub fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Result<Option<String>, String> {
-    let secret = secret.unwrap_or_default();
+pub fn push(destination: &Destination, saved: &mut Saved, file: &Path) -> Result<Option<String>, String> {
+    let secret = saved.secret().unwrap_or_default().to_owned();
+    let secret = secret.as_str();
     let name = file.file_name().ok_or("Not a file")?.to_string_lossy().into_owned();
     match &destination.kind {
         Kind::Sftp { host, port, user, folder, public_url } => {
@@ -473,7 +528,7 @@ pub fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Res
             smb::put(&smb::Share { share, folder, user, password: secret }, &name, file)?;
             Ok(link(public_url, &name))
         }
-        Kind::Dropbox { app_key, folder, share_link } => dropbox::upload(app_key, secret, folder, *share_link, file),
+        Kind::Dropbox { app_key, folder, share_link } => dropbox::upload(app_key, saved, folder, *share_link, file),
         Kind::Custom { .. } => custom::upload(&uploader(&destination.kind, secret), file),
     }
 }
@@ -508,7 +563,7 @@ pub fn saved_secret_from(destination: &Destination, read: impl FnOnce(&str) -> R
     Ok(match read(&destination.id)? {
         Some(secret) => Ok(Some(secret)),
         None if destination.kind.secret_optional() => Ok(None),
-        None if matches!(destination.kind, Kind::Dropbox { .. }) => Err("Not signed in to Dropbox; choose Edit to sign in".into()),
+        None if destination.kind.sign_in().is_some() => Err(format!("Not signed in to {}; choose Edit to sign in", destination.kind.name())),
         None => Err(format!("No {} is saved; choose Edit to enter it", label.to_lowercase())),
     })
 }
@@ -539,6 +594,33 @@ mod tests {
 
     fn every_kind() -> Vec<Kind> {
         Kind::ALL.iter().map(|make| make()).collect()
+    }
+
+    /// `push`, with a secret that isn't kept anywhere.
+    fn push(destination: &Destination, secret: Option<&str>, file: &Path) -> Result<Option<String>, String> {
+        super::push(destination, &mut Saved::unsaved(secret.map(str::to_owned)), file)
+    }
+
+    /// `test`, likewise.
+    fn test(destination: &Destination, secret: Option<&str>) -> Result<String, String> {
+        super::test(destination, &mut Saved::unsaved(secret.map(str::to_owned)))
+    }
+
+    #[test]
+    fn a_replaced_secret_is_used_and_kept() {
+        let kept = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let into = kept.clone();
+        let mut saved = Saved::new(Some("R-1".into()), move |new| {
+            into.lock().unwrap().push(new.to_owned());
+            Err("The keyring went away".into())
+        });
+        assert_eq!(saved.secret(), Some("R-1"));
+        saved.replace("R-2");
+        assert_eq!(saved.secret(), Some("R-2"), "used from now on, even when it couldn't be kept");
+        assert_eq!(*kept.lock().unwrap(), ["R-2"]);
+        let mut unsaved = Saved::unsaved(None);
+        unsaved.replace("R-3");
+        assert_eq!(unsaved.secret(), Some("R-3"));
     }
 
     /// A screenshot to push, with a space in its name.
@@ -731,6 +813,8 @@ mod tests {
         assert_eq!((new.kind.target().as_str(), new.problems().as_deref()), ("/Screenshots", Some("Enter the app key")));
         assert_eq!(Destination::new(Kind::Dropbox { app_key: "k".into(), folder: " ".into(), share_link: true }).kind.target(), "/");
         assert_eq!(d.kind.private_words(), ["k", "/S"]);
+        let missing = saved_secret_from(&d, |_| Ok(None)).unwrap();
+        assert_eq!(missing, Err("Not signed in to Dropbox; choose Edit to sign in".into()));
     }
 
     /// Against real servers, as ci/test-destinations.sh starts them: rclone's S3 and WebDAV at

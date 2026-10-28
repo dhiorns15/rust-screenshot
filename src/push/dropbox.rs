@@ -8,7 +8,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
-use super::oauth;
+use super::{oauth, Saved};
 use crate::http::{self, Body, Response};
 
 pub(super) const API: &str = "https://api.dropboxapi.com";
@@ -29,19 +29,32 @@ struct Service<'a> {
 
 const LIVE: Service = Service { api: API, content: CONTENT, single_max: SINGLE_MAX, chunk: CHUNK };
 
+/// Signing in to the user's own app at `api`, whose key is `app_key`.
+pub(super) fn provider<'a>(api: &str, app_key: &'a str) -> oauth::Provider<'a> {
+    oauth::Provider {
+        name: "Dropbox",
+        token_url: format!("{api}/oauth2/token"),
+        device_url: String::new(),
+        client_id: app_key.trim(),
+        client_secret: "",
+        scope: "",
+        unknown_client: "Dropbox doesn't know this app key: check it against the app's Settings page on dropbox.com/developers",
+    }
+}
+
 /// Checks the sign-in, and says whose Dropbox it is; and, if pushes make links, that the app may.
-pub fn test(app_key: &str, refresh_token: &str, share_link: bool) -> Result<String, String> {
-    test_at(&LIVE, app_key, refresh_token, share_link)
+pub fn test(app_key: &str, saved: &mut Saved, share_link: bool) -> Result<String, String> {
+    test_at(&LIVE, app_key, saved, share_link)
 }
 
 /// Uploads `file` into `folder`, named as it is (or with a number added if one by that name is
 /// there already); the link to it, if `share_link`.
-pub fn upload(app_key: &str, refresh_token: &str, folder: &str, share_link: bool, file: &Path) -> Result<Option<String>, String> {
-    upload_at(&LIVE, app_key, refresh_token, folder, share_link, file)
+pub fn upload(app_key: &str, saved: &mut Saved, folder: &str, share_link: bool, file: &Path) -> Result<Option<String>, String> {
+    upload_at(&LIVE, app_key, saved, folder, share_link, file)
 }
 
-fn test_at(service: &Service, app_key: &str, refresh_token: &str, share_link: bool) -> Result<String, String> {
-    let (token, scopes) = oauth::refresh_with_scopes(service.api, app_key, refresh_token)?;
+fn test_at(service: &Service, app_key: &str, saved: &mut Saved, share_link: bool) -> Result<String, String> {
+    let oauth::Access { token, scope: scopes } = oauth::refresh(&provider(service.api, app_key), saved)?;
     // A push would put the file there and then find it can't make the link, so it's said now.
     if share_link && scopes.is_some_and(|s| !s.split_whitespace().any(|s| s == "sharing.write")) {
         return Err("The Dropbox app can't make links: turn on sharing.write under Permissions in the app's page at dropbox.com/developers (and choose Submit), then sign in again. Or turn off Share link".into());
@@ -54,10 +67,10 @@ fn test_at(service: &Service, app_key: &str, refresh_token: &str, share_link: bo
     })
 }
 
-fn upload_at(service: &Service, app_key: &str, refresh_token: &str, folder: &str, share_link: bool, file: &Path) -> Result<Option<String>, String> {
+fn upload_at(service: &Service, app_key: &str, saved: &mut Saved, folder: &str, share_link: bool, file: &Path) -> Result<Option<String>, String> {
     let name = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
     let size = std::fs::metadata(file).map_err(|e| format!("Couldn't read {name}: {e}"))?.len();
-    let token = oauth::refresh(service.api, app_key, refresh_token)?;
+    let token = oauth::refresh(&provider(service.api, app_key), saved)?.token;
     let path = path_of(folder, &name);
     let saved = if size <= service.single_max {
         let arg = json!({ "path": path, "mode": "add", "autorename": true, "mute": true });
@@ -272,6 +285,11 @@ mod tests {
         path
     }
 
+    /// A sign-in with the refresh token `refresh`.
+    fn token(refresh: &str) -> Saved {
+        Saved::unsaved(Some(refresh.to_owned()))
+    }
+
     fn at(server: &str) -> Service<'_> {
         Service { api: server, content: server, single_max: SINGLE_MAX, chunk: CHUNK }
     }
@@ -286,7 +304,7 @@ mod tests {
         let linked = r#"{".tag":"file","url":"https://www.dropbox.com/scl/fi/x/b.png?rlkey=k&dl=0","name":"b (1).png"}"#;
         let (server, requests) = serve_each(vec![("200 OK", "", TOKEN_REPLY.into()), ("200 OK", "", saved.into()), ("200 OK", "", linked.into())]);
         let png = file("Ünï b.png", b"png bytes");
-        let link = upload_at(&at(&server), "key1", "R-1", " /Screenshots/ ", true, &png);
+        let link = upload_at(&at(&server), "key1", &mut token("R-1"), " /Screenshots/ ", true, &png);
         assert_eq!(link, Ok(Some("https://www.dropbox.com/scl/fi/x/b.png?rlkey=k&dl=0".into())));
 
         let requests = requests.join().unwrap();
@@ -315,7 +333,7 @@ mod tests {
     #[test]
     fn without_a_link_it_only_uploads_and_the_top_folder_is_a_slash() {
         let (server, requests) = serve_each(vec![("200 OK", "", TOKEN_REPLY.into()), ("200 OK", "", r#"{"name":"a.png"}"#.into())]);
-        assert_eq!(upload_at(&at(&server), "key1", "R", "", false, &file("top.png", b"x")), Ok(None));
+        assert_eq!(upload_at(&at(&server), "key1", &mut token("R"), "", false, &file("top.png", b"x")), Ok(None));
         let requests = requests.join().unwrap();
         assert_eq!(requests.len(), 2, "no link asked for");
         let parsed: Value = serde_json::from_str(requests[1].header("Dropbox-API-Arg").unwrap()).unwrap();
@@ -327,12 +345,12 @@ mod tests {
         let saved = r#"{"path_display":"/S/a.png"}"#;
         let exists = r#"{"error_summary":"shared_link_already_exists/..","error":{".tag":"shared_link_already_exists","shared_link_already_exists":{".tag":"metadata","metadata":{".tag":"file","url":"https://www.dropbox.com/s/old/a.png?dl=0","name":"a.png"}}}}"#;
         let (server, _) = serve_each(vec![("200 OK", "", TOKEN_REPLY.into()), ("200 OK", "", saved.into()), ("409 Conflict", "", exists.into())]);
-        assert_eq!(upload_at(&at(&server), "key1", "R", "S", true, &file("exists.png", b"x")), Ok(Some("https://www.dropbox.com/s/old/a.png?dl=0".into())));
+        assert_eq!(upload_at(&at(&server), "key1", &mut token("R"), "S", true, &file("exists.png", b"x")), Ok(Some("https://www.dropbox.com/s/old/a.png?dl=0".into())));
 
         // Without its address there's no link to hand back, but the file is up, so the push did its job.
         let bare = r#"{"error_summary":"shared_link_already_exists/..","error":{".tag":"shared_link_already_exists"}}"#;
         let (server, _) = serve_each(vec![("200 OK", "", TOKEN_REPLY.into()), ("200 OK", "", saved.into()), ("409 Conflict", "", bare.into())]);
-        assert_eq!(upload_at(&at(&server), "key1", "R", "S", true, &file("bare.png", b"x")), Ok(None));
+        assert_eq!(upload_at(&at(&server), "key1", &mut token("R"), "S", true, &file("bare.png", b"x")), Ok(None));
     }
 
     #[test]
@@ -352,7 +370,7 @@ mod tests {
         ];
         let (server, requests) = serve_each(replies);
         let small = Service { api: &server, content: &server, single_max: 10, chunk: 10 };
-        assert_eq!(upload_at(&small, "key1", "R", "Rec", true, &big), Ok(Some("https://www.dropbox.com/s/b?dl=0".into())));
+        assert_eq!(upload_at(&small, "key1", &mut token("R"), "Rec", true, &big), Ok(Some("https://www.dropbox.com/s/b?dl=0".into())));
 
         let requests = requests.join().unwrap();
         let args: Vec<Value> = requests[1..6].iter().map(|r| serde_json::from_str(r.header("Dropbox-API-Arg").unwrap()).unwrap()).collect();
@@ -390,7 +408,7 @@ mod tests {
     fn says_whose_dropbox_it_is() {
         let account = r#"{"account_id":"dbid:1","name":{"given_name":"Dan","surname":"H","display_name":"Dan H"},"email":"d@example.com"}"#;
         let (server, requests) = serve_each(vec![("200 OK", "", TOKEN_REPLY.into()), ("200 OK", "", account.into())]);
-        assert_eq!(test_at(&at(&server), "key1", "R", false), Ok("Connected as Dan H".into()));
+        assert_eq!(test_at(&at(&server), "key1", &mut token("R"), false), Ok("Connected as Dan H".into()));
         let call = &requests.join().unwrap()[1];
         assert_eq!((call.method.as_str(), call.path.as_str()), ("POST", "/2/users/get_current_account"));
         assert_eq!(call.header("Authorization"), Some("Bearer sl.ACCESS"));
@@ -399,7 +417,7 @@ mod tests {
         assert_eq!((call.header("Content-Length"), call.header("Transfer-Encoding")), (Some("0"), None), "sent whole, not in chunks");
 
         let (server, _) = serve_each(vec![("200 OK", "", TOKEN_REPLY.into()), ("200 OK", "", r#"{"email":"d@example.com"}"#.into())]);
-        assert_eq!(test_at(&at(&server), "key1", "R", false), Ok("Connected as d@example.com".into()));
+        assert_eq!(test_at(&at(&server), "key1", &mut token("R"), false), Ok("Connected as d@example.com".into()));
     }
 
     #[test]
@@ -407,13 +425,13 @@ mod tests {
         let account = r#"{"name":{"display_name":"Dan H"}}"#;
         let scoped = |scope: &str| format!(r#"{{"access_token":"sl.ACCESS","token_type":"bearer","expires_in":14400,"scope":"{scope}"}}"#);
         let (server, _) = serve_each(vec![("200 OK", "", scoped("account_info.read files.content.write"))]);
-        let error = test_at(&at(&server), "key1", "R", true).unwrap_err();
+        let error = test_at(&at(&server), "key1", &mut token("R"), true).unwrap_err();
         assert!(error.starts_with("The Dropbox app can't make links: turn on sharing.write"), "{error}");
         // Without links it's fine, and so is an app that may make them.
         let (server, _) = serve_each(vec![("200 OK", "", scoped("account_info.read files.content.write")), ("200 OK", "", account.into())]);
-        assert_eq!(test_at(&at(&server), "key1", "R", false), Ok("Connected as Dan H".into()));
+        assert_eq!(test_at(&at(&server), "key1", &mut token("R"), false), Ok("Connected as Dan H".into()));
         let (server, _) = serve_each(vec![("200 OK", "", scoped("account_info.read files.content.write sharing.write")), ("200 OK", "", account.into())]);
-        assert_eq!(test_at(&at(&server), "key1", "R", true), Ok("Connected as Dan H".into()));
+        assert_eq!(test_at(&at(&server), "key1", &mut token("R"), true), Ok("Connected as Dan H".into()));
     }
 
     #[test]
@@ -421,11 +439,11 @@ mod tests {
         let refused = r#"{"error":"invalid_grant","error_description":"refresh token is malformed"}"#;
         let (server, _) = serve_each(vec![("400 Bad Request", "", refused.into())]);
         let message = "Dropbox signed RSnip out: sign in again in Settings → Push to";
-        assert_eq!(test_at(&at(&server), "key1", "R", false), Err(message.into()));
+        assert_eq!(test_at(&at(&server), "key1", &mut token("R"), false), Err(message.into()));
         // The access token is refused too (the app was removed from the account in between).
         let revoked = r#"{"error_summary":"invalid_access_token/...","error":{".tag":"invalid_access_token"}}"#;
         let (server, _) = serve_each(vec![("200 OK", "", TOKEN_REPLY.into()), ("401 Unauthorized", "", revoked.into())]);
-        assert_eq!(upload_at(&at(&server), "key1", "R", "", false, &file("revoked.png", b"x")), Err(message.into()));
+        assert_eq!(upload_at(&at(&server), "key1", &mut token("R"), "", false, &file("revoked.png", b"x")), Err(message.into()));
     }
 
     #[test]

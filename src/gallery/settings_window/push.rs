@@ -13,7 +13,7 @@ use super::{row, SettingsApp};
 use crate::gallery::env::{PickedFolder, PushEvent, TrayRequest};
 use crate::gallery::theme::{self, icon};
 use crate::push::history::{self, Entry};
-use crate::push::{self, Destination, Kind, Pkce};
+use crate::push::{self, Destination, Kind, Pkce, SignIn as SignInWay};
 
 type Answer<T> = Receiver<Result<T, String>>;
 
@@ -65,16 +65,34 @@ struct Form {
     /// An FTPS server's certificate being fetched, then its fingerprint, for the user to trust or not.
     fetching: Option<Answer<String>>,
     offered: Option<String>,
-    /// Signing in to Dropbox, for the kind that does.
+    /// Signing in, for the kinds that do.
     sign_in: SignIn,
 }
 
-/// Signing in to Dropbox: the browser is opened on its page, which shows a code to paste back. The
-/// refresh token that comes of it is kept as the form's `secret`, to be saved with the rest.
+/// Signing in, for a kind that does (see `Kind::sign_in`). The refresh token that comes of it is
+/// kept as the form's `secret`, to be saved with the rest.
 #[derive(Default)]
 struct SignIn {
-    /// Started: the browser was opened, and this is what the code is traded in with.
-    pkce: Option<Pkce>,
+    /// Signed in just now, for this app key (Dropbox's; empty for the others).
+    done: Option<String>,
+    /// When changing a destination, what its saved sign-in is for, as `done`.
+    saved_for: Option<String>,
+    /// Pasting a code back (Dropbox's), once started.
+    pasted: Option<PastedCode>,
+}
+
+impl SignIn {
+    /// What it's signed in for, just now or before, if it is.
+    fn signed_in_for(&self) -> Option<&str> {
+        self.done.as_deref().or(self.saved_for.as_deref())
+    }
+}
+
+/// Signing in by pasting a code back: the browser is opened on the service's page, which shows the
+/// code once RSnip is allowed.
+struct PastedCode {
+    /// What the code is traded in with.
+    pkce: Pkce,
     /// The page that was opened, shown to copy where no browser opens (over xrdp, say).
     url: String,
     /// Whether the browser opened, until it's known.
@@ -88,15 +106,11 @@ struct SignIn {
     /// The code as pasted.
     code: String,
     exchanging: Option<Answer<String>>,
-    /// Signed in just now.
-    done: bool,
-    /// The app key the saved sign-in is for, when changing a destination.
-    saved_for: Option<String>,
 }
 
-/// What was clicked in Dropbox's rows of the form.
+/// What was clicked in the sign-in rows of the form.
 #[derive(Default)]
-struct DropboxClicks {
+struct SignInClicks {
     sign_in: bool,
     finish: bool,
     copy: bool,
@@ -106,32 +120,39 @@ impl Form {
     fn new(destination: Destination, editing: bool) -> Form {
         let mut kind = destination.kind.clone();
         let port = kind.port_mut().map(|p| p.to_string()).unwrap_or_default();
-        let saved_for = match (&destination.kind, editing) {
-            (Kind::Dropbox { app_key, .. }, true) => Some(app_key.clone()),
-            _ => None,
-        };
+        let saved_for = (editing && kind.sign_in().is_some()).then(|| app_key(&kind).to_owned());
         let sign_in = SignIn { saved_for, ..SignIn::default() };
         Form { editing, destination, port, secret: String::new(), saving: None, error: None, fetching: None, offered: None, sign_in }
     }
 
     /// What must be fixed before it can be saved.
     fn problem(&self) -> Option<String> {
-        self.destination.problems().or_else(|| self.dropbox_problem()).or_else(|| {
+        self.destination.problems().or_else(|| self.sign_in_problem()).or_else(|| {
             let label = self.destination.kind.secret_label()?;
             let needed = !self.editing && !self.destination.kind.secret_optional();
             (needed && self.secret.is_empty()).then(|| format!("Enter the {}", lowercase_first(label)))
         })
     }
 
-    /// Dropbox needs to be signed in to, with the app key that's in the form.
-    fn dropbox_problem(&self) -> Option<String> {
-        let Kind::Dropbox { app_key, .. } = &self.destination.kind else { return None };
-        let signed_in_for = if self.sign_in.done { Some(&self.sign_in.app_key) } else { self.sign_in.saved_for.as_ref() };
-        match signed_in_for {
-            None => Some("Sign in to Dropbox first".into()),
-            Some(key) if key.trim() != app_key.trim() => Some("The app key has changed: sign in to Dropbox again".into()),
+    /// A kind that signs in needs to be signed in to (Dropbox with the app key that's in the form).
+    fn sign_in_problem(&self) -> Option<String> {
+        let kind = &self.destination.kind;
+        kind.sign_in()?;
+        let name = kind.name();
+        match self.sign_in.signed_in_for() {
+            None => Some(format!("Sign in to {name} first")),
+            Some(key) if key.trim() != app_key(kind).trim() => Some(format!("The app key has changed: sign in to {name} again")),
             Some(_) => None,
         }
+    }
+}
+
+/// The app a sign-in is for: Dropbox's key, of the user's own app; empty for the others, which
+/// sign in to RSnip's.
+fn app_key(kind: &Kind) -> &str {
+    match kind {
+        Kind::Dropbox { app_key, .. } => app_key,
+        _ => "",
     }
 }
 
@@ -408,20 +429,7 @@ impl SettingsApp {
             }
         }
         if let Some(form) = self.push.form.as_mut() {
-            if let Some(Ok(opened)) = form.sign_in.opening.as_ref().map(|rx| rx.try_recv()) {
-                form.sign_in.opening = None;
-                form.sign_in.unopened = opened.err();
-            }
-            if let Some(Ok(traded)) = form.sign_in.exchanging.as_ref().map(|rx| rx.try_recv()) {
-                form.sign_in.exchanging = None;
-                match traded {
-                    Ok(token) => {
-                        form.secret = token;
-                        form.sign_in = SignIn { app_key: std::mem::take(&mut form.sign_in.app_key), done: true, ..SignIn::default() };
-                    }
-                    Err(e) => form.error = Some(e),
-                }
-            }
+            poll_sign_in(form);
         }
         let saved = self.push.form.as_mut().and_then(|form| {
             let result = form.saving.as_ref()?.try_recv().ok()?;
@@ -566,21 +574,39 @@ impl SettingsApp {
         action
     }
 
-    /// Opens Dropbox's page to allow RSnip, or trades the code that page showed for the sign-in.
-    fn dropbox_click(&mut self, ctx: &egui::Context, form: &mut Form, clicks: &DropboxClicks) {
-        let Kind::Dropbox { app_key, .. } = &form.destination.kind else { return };
-        form.error = None;
+    /// Does what was clicked in the sign-in rows.
+    fn sign_in_click(&mut self, ctx: &egui::Context, form: &mut Form, clicks: &SignInClicks) {
+        if clicks.sign_in || clicks.finish {
+            form.error = None;
+        }
+        if let Some(SignInWay::PasteCode) = form.destination.kind.sign_in() {
+            self.pasted_click(ctx, form, clicks);
+        }
+    }
+
+    /// Opens the service's page to allow RSnip, or trades the code that page showed for the sign-in.
+    fn pasted_click(&mut self, ctx: &egui::Context, form: &mut Form, clicks: &SignInClicks) {
         if clicks.sign_in {
             match Pkce::new() {
                 Ok(pkce) => {
-                    let url = pkce.authorize_url(app_key);
+                    let key = app_key(&form.destination.kind).trim().to_owned();
+                    let url = pkce.authorize_url(&key);
                     let opening = Some(self.env.open_link(ctx, std::path::Path::new(&url)));
-                    form.sign_in = SignIn { pkce: Some(pkce), url, opening, app_key: app_key.trim().to_owned(), saved_for: form.sign_in.saved_for.take(), ..SignIn::default() };
+                    let pasted = PastedCode { pkce, url, opening, unopened: None, copied: false, app_key: key, code: String::new(), exchanging: None };
+                    form.sign_in = SignIn { pasted: Some(pasted), saved_for: form.sign_in.saved_for.take(), done: None };
                 }
                 Err(e) => form.error = Some(e),
             }
-        } else if let Some(pkce) = &form.sign_in.pkce {
-            form.sign_in.exchanging = Some(self.env.finish_dropbox_sign_in(ctx, pkce, &form.sign_in.app_key, &form.sign_in.code));
+        } else if let Some(pasted) = &mut form.sign_in.pasted {
+            if clicks.finish {
+                pasted.exchanging = Some(self.env.finish_pasted_sign_in(ctx, &pasted.pkce, &pasted.app_key, &pasted.code));
+            }
+            if clicks.copy {
+                match self.env.copy_text(&pasted.url) {
+                    Ok(()) => pasted.copied = true,
+                    Err(e) => form.error = Some(format!("Couldn't copy it: {e}")),
+                }
+            }
         }
     }
 
@@ -603,7 +629,7 @@ impl SettingsApp {
             ui.add_space(4.0);
             let busy = form.saving.is_some();
             let mut fetch = false;
-            let mut clicks = DropboxClicks::default();
+            let mut clicks = SignInClicks::default();
             ui.add_enabled_ui(!busy, |ui| {
                 egui::Grid::new("destination-form").num_columns(2).spacing([16.0, 8.0]).min_col_width(130.0).show(ui, |ui| {
                     text_row(ui, "Name", "", &mut form.destination.name, false);
@@ -620,8 +646,8 @@ impl SettingsApp {
                             text_row(ui, "Port", default_port, &mut form.port, false);
                         }
                     }
-                    if matches!(form.destination.kind, Kind::Dropbox { .. }) {
-                        clicks = dropbox_rows(ui, &mut form);
+                    if form.destination.kind.sign_in().is_some() {
+                        clicks = sign_in_rows(ui, &mut form);
                     } else if let Some(label) = form.destination.kind.secret_label() {
                         let hint = match (form.editing, form.destination.kind.secret_optional()) {
                             (true, _) => "Leave empty to keep the saved one",
@@ -647,15 +673,7 @@ impl SettingsApp {
             if let Some(port) = form.destination.kind.port_mut() {
                 *port = form.port.trim().parse().unwrap_or(0);
             }
-            if clicks.sign_in || clicks.finish {
-                self.dropbox_click(ui.ctx(), &mut form, &clicks);
-            }
-            if clicks.copy {
-                match self.env.copy_text(&form.sign_in.url) {
-                    Ok(()) => form.sign_in.copied = true,
-                    Err(e) => form.error = Some(format!("Couldn't copy it: {e}")),
-                }
-            }
+            self.sign_in_click(ui.ctx(), &mut form, &clicks);
             if let Some(e) = &form.error {
                 ui.label(RichText::new(e).color(error_color()));
             }
@@ -691,42 +709,81 @@ impl SettingsApp {
     }
 }
 
-/// Dropbox's rows of the form's grid: whether to make links, signing in, and the code to paste.
-fn dropbox_rows(ui: &mut Ui, form: &mut Form) -> DropboxClicks {
-    let mut clicks = DropboxClicks::default();
-    let muted = theme::palette(ui).muted;
-    let Kind::Dropbox { app_key, share_link, .. } = &mut form.destination.kind else { return clicks };
-    ui.label("Share link");
-    ui.horizontal(|ui| {
-        theme::switch(ui, share_link, "Share link");
-        ui.label(RichText::new("Copy a link to each push, as other places do").small().color(muted));
-    });
-    ui.end_row();
+/// Takes in how signing in is going.
+fn poll_sign_in(form: &mut Form) {
+    let Some(pasted) = &mut form.sign_in.pasted else { return };
+    if let Some(Ok(opened)) = pasted.opening.as_ref().map(|rx| rx.try_recv()) {
+        pasted.opening = None;
+        pasted.unopened = opened.err();
+    }
+    if let Some(Ok(traded)) = pasted.exchanging.as_ref().map(|rx| rx.try_recv()) {
+        pasted.exchanging = None;
+        match traded {
+            Ok(token) => {
+                form.secret = token;
+                let done = Some(std::mem::take(&mut pasted.app_key));
+                form.sign_in = SignIn { done, ..SignIn::default() };
+            }
+            Err(e) => form.error = Some(e),
+        }
+    }
+}
 
+/// Whether pushes make links, for the kinds that can be told.
+fn share_link(kind: &mut Kind) -> Option<&mut bool> {
+    match kind {
+        Kind::Dropbox { share_link, .. } => Some(share_link),
+        _ => None,
+    }
+}
+
+/// The rows of the form's grid for a kind that signs in: whether to make links, and signing in.
+fn sign_in_rows(ui: &mut Ui, form: &mut Form) -> SignInClicks {
+    let muted = theme::palette(ui).muted;
+    if let Some(share_link) = share_link(&mut form.destination.kind) {
+        ui.label("Share link");
+        ui.horizontal(|ui| {
+            theme::switch(ui, share_link, "Share link");
+            ui.label(RichText::new("Copy a link to each push, as other places do").small().color(muted));
+        });
+        ui.end_row();
+    }
+    match form.destination.kind.sign_in() {
+        Some(SignInWay::PasteCode) => pasted_rows(ui, form),
+        None => SignInClicks::default(),
+    }
+}
+
+/// Signing in by pasting a code back, and the code to paste.
+fn pasted_rows(ui: &mut Ui, form: &mut Form) -> SignInClicks {
+    let mut clicks = SignInClicks::default();
+    let muted = theme::palette(ui).muted;
+    let name = form.destination.kind.name();
+    let has_key = !app_key(&form.destination.kind).trim().is_empty();
     let sign_in = &mut form.sign_in;
-    let status = match (sign_in.done, sign_in.saved_for.is_some()) {
-        (true, _) => "Signed in. Save to keep it",
-        (false, true) => "Signed in. Sign in again only to use another account or after changing the app's permissions",
-        (false, false) if sign_in.pkce.is_some() => "Allow RSnip in the browser, then paste the code Dropbox shows below",
-        (false, false) => "Not signed in yet",
+    let status = match (sign_in.done.is_some(), sign_in.saved_for.is_some()) {
+        (true, _) => "Signed in. Save to keep it".to_owned(),
+        (false, true) => "Signed in. Sign in again only to use another account or after changing the app's permissions".to_owned(),
+        (false, false) if sign_in.pasted.is_some() => format!("Allow RSnip in the browser, then paste the code {name} shows below"),
+        (false, false) => "Not signed in yet".to_owned(),
     };
-    ui.label("Dropbox");
+    ui.label(name);
     ui.vertical(|ui| {
-        let ready = !app_key.trim().is_empty() && sign_in.exchanging.is_none();
-        clicks.sign_in = ui.add_enabled(ready, egui::Button::new("Sign in to Dropbox")).on_disabled_hover_text("Enter the app key first").clicked();
+        let ready = has_key && sign_in.pasted.as_ref().is_none_or(|p| p.exchanging.is_none());
+        clicks.sign_in = ui.add_enabled(ready, egui::Button::new(format!("Sign in to {name}"))).on_disabled_hover_text("Enter the app key first").clicked();
         ui.label(RichText::new(status).small().color(muted));
     });
     ui.end_row();
 
-    if sign_in.pkce.is_some() {
+    if let Some(pasted) = &mut sign_in.pasted {
         // The page to allow RSnip, for when no browser opened: xdg-open can't always find one.
         let text = ui.label("Sign-in link");
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut sign_in.url.as_str()).desired_width(220.0)).labelled_by(text.id);
+                ui.add(egui::TextEdit::singleline(&mut pasted.url.as_str()).desired_width(220.0)).labelled_by(text.id);
                 clicks.copy = ui.button("Copy link").clicked();
             });
-            let note = match (&sign_in.unopened, sign_in.copied) {
+            let note = match (&pasted.unopened, pasted.copied) {
                 (_, true) => RichText::new("Copied: paste it into a browser's address bar").color(muted),
                 (Some(e), false) => RichText::new(format!("The browser didn't open ({e}): copy this link into one")).color(error_color()),
                 (None, false) => RichText::new("If no browser opened, copy this link into one").color(muted),
@@ -735,11 +792,11 @@ fn dropbox_rows(ui: &mut Ui, form: &mut Form) -> DropboxClicks {
         });
         ui.end_row();
 
-        let text = ui.label("Code from Dropbox");
+        let text = ui.label(format!("Code from {name}"));
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut sign_in.code).desired_width(220.0)).labelled_by(text.id);
-            let exchanging = sign_in.exchanging.is_some();
-            let ready = !sign_in.code.trim().is_empty() && !exchanging;
+            ui.add(egui::TextEdit::singleline(&mut pasted.code).desired_width(220.0)).labelled_by(text.id);
+            let exchanging = pasted.exchanging.is_some();
+            let ready = !pasted.code.trim().is_empty() && !exchanging;
             clicks.finish = ui.add_enabled(ready, egui::Button::new(if exchanging { "Signing in…" } else { "Finish signing in" })).clicked();
         });
         ui.end_row();
