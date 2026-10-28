@@ -259,8 +259,8 @@ register yourself, just sign in.
   RSnip in Google Drive*, *The code expired before you signed in*: choose *Sign in to Google Drive*
   for a new code. *Your organisation doesn't let RSnip use Google Drive*: a Google Workspace
   administrator has to allow it. *Signing in to Google Drive isn't available in this build of
-  RSnip*: a copy built from the source without RSnip's Google app (see `GOOGLE_CLIENT_ID` in
-  `src/push/google_drive.rs`).
+  RSnip*: a copy built from the source, which doesn't have RSnip's Google app (see
+  `GOOGLE_CLIENT_ID` in `src/push/google_drive.rs`). The downloads from the releases page do.
 - **Link:** the file's Google Drive page, which anyone with the link can open without signing in.
   A Google Workspace account may not be allowed links for people outside it: then the file still
   goes up, without a link.
@@ -302,7 +302,8 @@ yourself, just sign in. A personal Microsoft account or a work or school one.
   RSnip in OneDrive*, *The code expired before you signed in*: choose *Sign in to OneDrive* for a
   new code. *OneDrive won't let RSnip do that*: sign in again, or your organisation may not allow
   RSnip. *Signing in to OneDrive isn't available in this build of RSnip*: a copy built from the
-  source without RSnip's Microsoft app (see `MICROSOFT_CLIENT_ID` in `src/push/onedrive.rs`).
+  source, which doesn't have RSnip's Microsoft app (see `MICROSOFT_CLIENT_ID` in
+  `src/push/onedrive.rs`). The downloads from the releases page do.
 - **Link:** a OneDrive link that opens the file for anyone who has it, without signing in. Where a
   work or school organisation doesn't allow those, the link is for anyone in the organisation; if
   neither can be made, the file still goes up, without a link.

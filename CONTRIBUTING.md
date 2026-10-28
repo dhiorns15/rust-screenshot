@@ -145,6 +145,13 @@ workflow builds, tests and publishes everything. Its notes list every commit sin
 release, one line each with a link (`ci/release-notes.sh`), so write commit subjects that make sense
 to users reading them there.
 
+Signing in to Google Drive and OneDrive goes through RSnip's own Google and Microsoft apps. Their
+IDs (and Google's client secret) aren't in the source: the release workflow builds with them from
+the repository's Actions secrets `RSNIP_GOOGLE_CLIENT_ID`, `RSNIP_GOOGLE_CLIENT_SECRET` and
+`RSNIP_MICROSOFT_CLIENT_ID`. Other builds say signing in isn't available; to try it in a build of
+your own, register your own apps (the comments on those constants in `src/push/google_drive.rs`
+and `src/push/onedrive.rs` say what kind) and set those variables before `cargo build`.
+
 To try a release on real machines before users get it, tag a release candidate of the bumped
 version first. Builds from the release workflow know their tag (`RSNIP_VERSION`), so a candidate
 reports `0.5.3-rc1`, and people who turn on *Settings → Updates → Get release candidates* are

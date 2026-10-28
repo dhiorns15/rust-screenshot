@@ -16,8 +16,9 @@ use crate::http::{self, Body, Response};
 
 /// RSnip's Microsoft app: the Application (client) ID of its Entra app registration (for any
 /// Entra ID tenant and personal Microsoft accounts, with public client flows allowed). It has no
-/// secret. Empty: this build can't sign in to OneDrive.
-pub const MICROSOFT_CLIENT_ID: &str = "";
+/// secret. Given to the release build like Google's (`RSNIP_MICROSOFT_CLIENT_ID`). Empty: this
+/// build can't sign in to OneDrive.
+pub const MICROSOFT_CLIENT_ID: &str = super::google_drive::built_with(option_env!("RSNIP_MICROSOFT_CLIENT_ID"));
 
 /// For work and school accounts, and personal ones.
 const LOGIN: &str = "https://login.microsoftonline.com/common/oauth2/v2.0";

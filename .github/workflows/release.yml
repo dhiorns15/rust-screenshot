@@ -10,6 +10,11 @@ permissions:
 env:
   # The version builds report, release candidates included (see update::Version::current).
   RSNIP_VERSION: ${{ github.ref_name }}
+  # RSnip's own Google and Microsoft apps, for signing in to Google Drive and OneDrive. They're
+  # Actions secrets rather than in the source, so builds from the source and forks don't use them.
+  RSNIP_GOOGLE_CLIENT_ID: ${{ secrets.RSNIP_GOOGLE_CLIENT_ID }}
+  RSNIP_GOOGLE_CLIENT_SECRET: ${{ secrets.RSNIP_GOOGLE_CLIENT_SECRET }}
+  RSNIP_MICROSOFT_CLIENT_ID: ${{ secrets.RSNIP_MICROSOFT_CLIENT_ID }}
 
 jobs:
   release:

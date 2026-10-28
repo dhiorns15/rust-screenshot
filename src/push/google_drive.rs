@@ -17,9 +17,20 @@ use crate::http::{self, Body, Part, Response};
 /// RSnip's Google app: the ID and secret of its OAuth client (of the "TVs and Limited Input
 /// devices" type), from the Clients page of its project in the Google Cloud console. Google calls
 /// the second a secret, but an installed app can't keep one and it isn't treated as one; it has to
-/// be sent all the same. Empty: this build can't sign in to Google Drive.
-pub const GOOGLE_CLIENT_ID: &str = "";
-pub const GOOGLE_CLIENT_SECRET: &str = "";
+/// be sent all the same. They're kept out of the source and given to the release build
+/// (`RSNIP_GOOGLE_CLIENT_ID` and `RSNIP_GOOGLE_CLIENT_SECRET`, from the repository's Actions
+/// secrets), so copies built from the source and forks don't use RSnip's app. Empty: this build
+/// can't sign in to Google Drive.
+pub const GOOGLE_CLIENT_ID: &str = built_with(option_env!("RSNIP_GOOGLE_CLIENT_ID"));
+pub const GOOGLE_CLIENT_SECRET: &str = built_with(option_env!("RSNIP_GOOGLE_CLIENT_SECRET"));
+
+/// A value given when RSnip was built, or empty.
+pub(super) const fn built_with(value: Option<&'static str>) -> &'static str {
+    match value {
+        Some(value) => value,
+        None => "",
+    }
+}
 
 const OAUTH: &str = "https://oauth2.googleapis.com";
 const API: &str = "https://www.googleapis.com";
