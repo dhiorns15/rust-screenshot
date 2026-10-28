@@ -391,6 +391,10 @@ fn the_gallery_leaves_the_keys_to_a_text_box() {
     assert!(h.state().selected.is_empty(), "the arrows and Ctrl+A were for the search box");
 }
 
+/// Tall enough for all six under four headings: two and three days ago can be this week, earlier
+/// this month or last month, depending on the day the tests run.
+const TALL: Vec2 = Vec2::new(SIZE.x, SIZE.y + 400.0);
+
 /// The gallery of `fixtures` and a recording, with Screenshot 2 and Screenshot 10 from earlier
 /// days, and files of different sizes: b is noise and c is big, so the sizes are all different.
 fn sortable(name: &str, setup: impl FnOnce(&Env) + 'static) -> Harness<'static, App> {
@@ -410,7 +414,7 @@ fn sortable(name: &str, setup: impl FnOnce(&Env) + 'static) -> Harness<'static, 
     let env = Env::sandbox(dir);
     env.set_setting(Page::SETTING, Page::Gallery.to_setting());
     setup(&env);
-    let mut h = Harness::builder().with_size(SIZE).with_step_dt(1.0 / 60.0).build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
+    let mut h = Harness::builder().with_size(TALL).with_step_dt(1.0 / 60.0).build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
     settle(&mut h);
     h
 }
