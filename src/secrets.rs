@@ -79,47 +79,65 @@ mod imp {
         }
     }
 
+    /// The user name a credential is saved under: "RSnip" for a secret in one credential (as every
+    /// one was before secrets were split), else "RSnip <parts> <set>", the same on each part of one
+    /// `set`, so that parts of two different saves are never read as one secret (see `get`).
+    pub(super) fn user_name(parts: usize, set: u64) -> String {
+        if parts == 1 { "RSnip".to_owned() } else { format!("RSnip {parts} {set}") }
+    }
+
+    /// How many parts a credential saved under `user` says its secret has.
+    pub(super) fn parts_of(user: &str) -> usize {
+        user.strip_prefix("RSnip ").and_then(|rest| rest.split(' ').next()?.parse().ok()).unwrap_or(1)
+    }
+
     /// Credential Manager never asks anything, so `_ask` makes no difference.
     pub fn get(id: &str, _ask: bool) -> Result<Option<String>, String> {
-        let Some(mut bytes) = read(&target(id, 0))? else { return Ok(None) };
-        for n in 1..MAX_PARTS {
+        let Some((mut bytes, user)) = read(&target(id, 0))? else { return Ok(None) };
+        for n in 1..parts_of(&user).clamp(1, MAX_PARTS) {
             match read(&target(id, n))? {
-                Some(part) => bytes.extend(part),
-                None => break,
+                Some((part, same)) if same == user => bytes.extend(part),
+                // A save that didn't finish, or two mixed: not a secret any service would take.
+                _ => return Err("The saved password is damaged: save it (or sign in) again".to_owned()),
             }
         }
         String::from_utf8(bytes).map(Some).map_err(|_| "The saved password isn't text".to_owned())
     }
 
-    /// What the credential `name` holds, if there is one.
-    fn read(name: &[u16]) -> Result<Option<Vec<u8>>, String> {
+    /// What the credential `name` holds, and the user name it's under, if there is one.
+    fn read(name: &[u16]) -> Result<Option<(Vec<u8>, String)>, String> {
         let mut found: *mut CREDENTIALW = null_mut();
         if unsafe { CredReadW(name.as_ptr(), CRED_TYPE_GENERIC, 0, &mut found) } == 0 {
             return if unsafe { GetLastError() } == ERROR_NOT_FOUND { Ok(None) } else { Err(failed("read the saved password")) };
         }
         let credential = Credential(found);
-        let (blob, size) = unsafe { ((*credential.0).CredentialBlob, (*credential.0).CredentialBlobSize as usize) };
+        let (blob, size, user) = unsafe { ((*credential.0).CredentialBlob, (*credential.0).CredentialBlobSize as usize, (*credential.0).UserName) };
         let bytes: &[u8] = if blob.is_null() { &[] } else { unsafe { std::slice::from_raw_parts(blob, size) } };
-        Ok(Some(bytes.to_vec()))
+        let user = if user.is_null() { String::new() } else { unsafe { crate::util::from_wide_ptr(user) }.to_string_lossy().into_owned() };
+        Ok(Some((bytes.to_vec(), user)))
     }
 
     /// Saves `secret` in as many credentials as it needs, and removes the parts a longer one before
-    /// it left.
+    /// it left. The first part (the one `get` starts from) goes last, so that until the whole new
+    /// secret is there the old one still reads back whole, and a save that fails half way loses
+    /// nothing.
     pub fn set(id: &str, label: &str, secret: &str) -> Result<(), String> {
         let parts = super::split(secret, MAX_SECRET);
         if parts.len() > MAX_PARTS {
             return Err(format!("That's too long to save in Windows' Credential Manager (the limit is {} bytes)", MAX_SECRET * MAX_PARTS));
         }
-        for (n, part) in parts.iter().enumerate() {
-            write(&target(id, n), label, part)?;
+        let set = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+        let user = user_name(parts.len(), set);
+        for (n, part) in parts.iter().enumerate().rev() {
+            write(&target(id, n), label, &user, part)?;
         }
         (parts.len()..MAX_PARTS).try_for_each(|n| remove(&target(id, n)))
     }
 
-    /// Saves `secret` as the credential `name`, replacing any.
-    fn write(name: &[u16], label: &str, secret: &str) -> Result<(), String> {
+    /// Saves `secret` as the credential `name`, under `user`, replacing any.
+    fn write(name: &[u16], label: &str, user: &str, secret: &str) -> Result<(), String> {
         let comment = wide(&label.chars().take(MAX_COMMENT).collect::<String>());
-        let user = wide("RSnip");
+        let user = wide(user);
         let credential = CREDENTIALW {
             Flags: 0,
             Type: CRED_TYPE_GENERIC,
@@ -357,12 +375,25 @@ mod tests {
         // Longer than one credential holds on Windows, then shorter again.
         let long = format!("{}ü{}", "a".repeat(2559), "b".repeat(5000));
         set(&id, "A test", &long).unwrap();
-        assert_eq!(get(&id), Ok(Some(long)), "kept whole");
+        assert_eq!(get(&id), Ok(Some(long.clone())), "kept whole");
+        let longer = format!("{long}{}", "c".repeat(3000));
+        set(&id, "A test", &longer).unwrap();
+        assert_eq!(get(&id), Ok(Some(longer)), "replaced whole");
         set(&id, "A test", "short").unwrap();
         assert_eq!(get(&id), Ok(Some("short".to_owned())), "with none of the longer one's parts");
         delete(&id).unwrap();
         assert_eq!(get(&id), Ok(None), "gone");
         delete(&id).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn each_part_says_how_many_there_are() {
+        assert_eq!(imp::user_name(1, 7), "RSnip", "as a secret saved whole always was");
+        assert_eq!(imp::user_name(3, 7), "RSnip 3 7");
+        assert_eq!(imp::parts_of("RSnip"), 1);
+        assert_eq!(imp::parts_of("RSnip 3 7"), 3);
+        assert_eq!(imp::parts_of("someone else"), 1);
     }
 
     #[test]
