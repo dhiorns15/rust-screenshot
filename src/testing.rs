@@ -1,4 +1,7 @@
-//! Help for the tests: saying when one is skipped.
+//! Help for the tests: saying when one is skipped, and taking turns on the sound device.
+
+#[cfg(windows)]
+use std::sync::{Mutex, MutexGuard};
 
 /// Says a test was skipped, and why, on stderr and, where `RSNIP_SKIPS` names a file, on a line
 /// added to it (CI shows that file). `cargo test` hides the stderr of a test that passes, so
@@ -14,4 +17,13 @@ pub fn skipped(why: impl std::fmt::Display) {
             let _ = writeln!(file, "{line}");
         }
     }
+}
+
+/// Tests that use the sound device (recording from it, or playing through it) take turns, so
+/// their timings don't suffer from each other's. Hold it for the test. Only the Windows tests
+/// use the device from the test itself (on Linux the recorder and player are other programs).
+#[cfg(windows)]
+pub fn sound_device() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }

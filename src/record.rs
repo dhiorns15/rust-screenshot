@@ -626,6 +626,7 @@ mod tests {
     /// The sound made while paused is left out too, so the sound and the video stay together.
     #[test]
     fn leaves_a_pause_out_of_the_sound() {
+let _device = crate::testing::sound_device();
         let path = std::env::temp_dir().join(format!("rsnip-rec-pause-sound-{}.mp4", std::process::id()));
         let encoder = match Mp4::with_sound(&path, 64, 48, 30, false, true) {
             Ok(mp4) => Box::new(mp4),
@@ -746,6 +747,7 @@ mod tests {
     /// the MP4 has both, about as long as each other.
     #[test]
     fn records_the_screen_with_sound() {
+let _device = crate::testing::sound_device();
         let path = std::env::temp_dir().join(format!("rsnip-rec-sound-{}.mp4", std::process::id()));
         let started = Instant::now();
         let sources = audio::Sources { computer: Some(None), ..Default::default() };

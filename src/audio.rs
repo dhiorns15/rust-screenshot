@@ -630,6 +630,7 @@ mod tests {
 
     #[test]
     fn records_the_computers_sound_without_gaps() {
+let _device = crate::testing::sound_device();
         let sources = Sources { computer: Some(None), ..Default::default() };
         let begun = Instant::now();
         let capture = match Capture::start(&sources, Clock::now()) {

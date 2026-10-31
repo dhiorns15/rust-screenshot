@@ -867,6 +867,7 @@ pub mod tests {
     #[cfg(windows)]
     #[test]
     fn plays_windows_recordings_sound() {
+let _device = crate::testing::sound_device();
         if let Err(e) = crate::audio::Speaker::open(48_000, 2) {
             // CI's machines may have no sound device.
             return crate::testing::skipped(e);
