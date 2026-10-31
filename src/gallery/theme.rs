@@ -238,7 +238,7 @@ impl IconButton {
             return Vec2::new(if self.narrow { 26.0 } else { 30.0 }, 28.0);
         }
         let caption = ui.painter().layout_no_wrap(self.label.to_owned(), egui::FontId::proportional(CAPTION), Color32::WHITE);
-        Vec2::new((caption.size().x + 10.0).max(40.0).ceil(), 44.0)
+        Vec2::new((caption.size().x + 8.0).max(36.0).ceil(), 44.0)
     }
 }
 
