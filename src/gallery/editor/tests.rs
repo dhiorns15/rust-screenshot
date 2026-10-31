@@ -4,10 +4,11 @@ use ab_glyph::FontVec;
 use eframe::egui::{self, Color32, Context, Event, FontId, Key, PointerButton, Pos2, RawInput, Rect, Vec2};
 use image::RgbaImage;
 
-use super::{Editor, Tool, ToolState, ANNOTATION_FONT};
+use super::{size_slider, Editor, Tool, ToolState, ANNOTATION_FONT, TEXT_SIZES};
 use crate::gallery::doc::{Doc, Shape};
 
-/// Drives the real editor UI headlessly, one egui frame at a time.
+/// Drives the real editor UI headlessly, one egui frame at a time, with the toolbar's Size
+/// slider above the canvas.
 struct Harness {
     ctx: Context,
     editor: Editor,
@@ -51,6 +52,13 @@ impl Harness {
         };
         let (editor, tools, font) = (&mut self.editor, &mut self.tools, self.font.as_ref());
         let mut output = self.ctx.run_ui(input, |ui| {
+            egui::Panel::top("size").show(ui, |ui| {
+                if tools.style_tool() == Tool::Text {
+                    ui.add(size_slider(tools.text_size_mut(), TEXT_SIZES));
+                } else if tools.uses_width() {
+                    ui.add(size_slider(tools.width_mut(), 1.0..=24.0));
+                }
+            });
             egui::CentralPanel::default().show(ui, |ui| editor.ui(ui, tools, font));
         });
         // Nothing renders here, so the texture uploads are dropped on purpose.
@@ -352,6 +360,47 @@ fn text_resizes_from_its_corner() {
             assert_eq!(*pos, Pos2::new(100.0, 100.0), "the opposite corner stays put");
         }
         _ => panic!("not text"),
+    }
+}
+
+/// The Size slider shows the selection's size in whole numbers but mustn't write it back
+/// rounded or clamped: that would be an edit, and a second undo step.
+#[test]
+fn the_size_slider_leaves_the_selections_odd_sizes_alone() {
+    let mut h = Harness::new();
+    h.click(100.0, 100.0);
+    h.type_text("Hi");
+    h.click(600.0, 350.0);
+    h.tools.tool = Tool::Select;
+    h.frame(vec![]);
+    let b = h.editor.doc.current().shapes[0].bounds(h.font.as_ref());
+    h.click(b.center().x, b.center().y);
+    drag(&mut h, (b.max.x, b.max.y), (b.max.x, b.max.y + b.height() * 0.55));
+    let size = |h: &Harness| match &h.editor.doc.current().shapes[0] {
+        Shape::Text { size, .. } => *size,
+        _ => panic!("not text"),
+    };
+    let resized = size(&h);
+    assert!(resized.fract() != 0.0, "a corner resize lands between whole sizes: {resized}");
+    let version = h.editor.doc.version;
+    h.frame(vec![]);
+    h.frame(vec![]);
+    assert_eq!(h.editor.doc.version, version, "showing the slider edited nothing");
+    assert_eq!(size(&h), resized);
+    h.editor.doc.undo();
+    assert_eq!(size(&h), 88.0, "the resize is one undo step");
+
+    // A step dragged smaller than the slider goes stays that small.
+    h.tools.tool = Tool::Step;
+    h.frame(vec![]);
+    h.click(400.0, 300.0);
+    let c = h.editor.doc.current().shapes[1].bounds(h.font.as_ref()).max;
+    drag(&mut h, (c.x, c.y), (c.x - 16.0, c.y - 16.0));
+    h.frame(vec![]);
+    h.frame(vec![]);
+    match &h.editor.doc.current().shapes[1] {
+        Shape::Step { diameter, .. } => assert!((*diameter - 20.0).abs() < 2.0, "diameter {diameter}"),
+        _ => panic!("not a step"),
     }
 }
 

@@ -21,7 +21,7 @@ use crop::{crop_grab, CropDrag, CropSelection};
 use preview::{preview, shape_from_drag, snap_45};
 use select::{Grab, Manip, Selection, PICK_SLACK};
 use text::PendingText;
-pub use tools::{Style, Tool, ToolState, ANNOTATION_FONT, GROUP_STARTS, PALETTE, PALETTE_NAMES, TEXT_SIZES, TOOLS};
+pub use tools::{size_slider, Style, Tool, ToolState, ANNOTATION_FONT, GROUP_STARTS, PALETTE, PALETTE_NAMES, TEXT_SIZES, TOOLS};
 
 struct Drag {
     start: Pos2,

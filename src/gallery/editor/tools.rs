@@ -1,6 +1,8 @@
 //! Tool definitions and the per-tool settings shown in the toolbar.
 
-use eframe::egui::{Color32, Key};
+use std::ops::RangeInclusive;
+
+use eframe::egui::{self, Color32, Key};
 
 use crate::gallery::doc::Shape;
 
@@ -63,7 +65,15 @@ pub const PALETTE: [Color32; 8] = [
 /// The swatches' names, for screen readers and tests.
 pub const PALETTE_NAMES: [&str; 8] = ["Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Black", "White"];
 
-pub const TEXT_SIZES: std::ops::RangeInclusive<f32> = 8.0..=300.0;
+pub const TEXT_SIZES: RangeInclusive<f32> = 8.0..=300.0;
+
+/// The toolbar's Size slider over `value`, in whole numbers. It only writes `value` when it's
+/// used: egui's default rewrites it every frame, clamped and rounded, which the editor would take
+/// for an edit of the selection (a text size from a corner resize is rarely whole, and a step can
+/// be dragged smaller than the slider goes).
+pub fn size_slider(value: &mut f32, range: RangeInclusive<f32>) -> egui::Slider<'_> {
+    egui::Slider::new(value, range).step_by(1.0).fixed_decimals(0).clamping(egui::SliderClamping::Edits)
+}
 
 /// The toolbar-editable properties of a selected annotation. Fields its kind doesn't have are unused.
 #[derive(Clone, Copy, PartialEq, Debug)]

@@ -1079,14 +1079,14 @@ impl App {
             }
             if self.tools.style_tool() == Tool::Text {
                 ui.label(RichText::new("Size").color(theme::palette(ui).muted));
-                ui.add(egui::Slider::new(self.tools.text_size_mut(), TEXT_SIZES).step_by(1.0).fixed_decimals(0))
+                ui.add(editor::size_slider(self.tools.text_size_mut(), TEXT_SIZES))
                     .on_hover_text("Text size. Or drag the handle on the selected text's corner.");
                 ui.add_space(4.0);
                 ui.checkbox(self.tools.shadow_mut(), "Shadow")
                     .on_hover_text("Drop shadow behind text, for readability on busy backgrounds");
             } else if self.tools.uses_width() {
                 ui.label(RichText::new("Size").color(theme::palette(ui).muted));
-                ui.add(egui::Slider::new(self.tools.width_mut(), 1.0..=24.0).step_by(1.0).fixed_decimals(0));
+                ui.add(editor::size_slider(self.tools.width_mut(), 1.0..=24.0));
             } else if self.tools.tool == Tool::CopyText {
                 self.copy_text_options(ui);
             } else if self.tools.tool == Tool::Redact {
