@@ -678,7 +678,7 @@ pub fn render(snapshot: &Snapshot, font: Option<&FontVec>) -> RgbaImage {
 }
 
 /// Calls `f(x, y, coverage)` for every pixel the laid-out text touches.
-fn glyph_coverage(font: &FontVec, pos: Pos2, text: &str, size: f32, mut f: impl FnMut(i32, i32, f32)) {
+fn glyph_coverage(font: &FontVec, pos: Pos2, text: &str, size: f32, mut f: impl FnMut(i64, i64, f32)) {
     let scale = PxScale::from(size);
     let scaled = font.as_scaled(scale);
     let mut baseline = pos.y + scaled.ascent();
@@ -694,7 +694,7 @@ fn glyph_coverage(font: &FontVec, pos: Pos2, text: &str, size: f32, mut f: impl 
             if let Some(outline) = font.outline_glyph(glyph) {
                 let bounds = outline.px_bounds();
                 outline.draw(|gx, gy, coverage| {
-                    f(bounds.min.x as i32 + gx as i32, bounds.min.y as i32 + gy as i32, coverage.clamp(0.0, 1.0))
+                    f(bounds.min.x as i64 + gx as i64, bounds.min.y as i64 + gy as i64, coverage.clamp(0.0, 1.0))
                 });
             }
             x += scaled.h_advance(glyph_id);
@@ -705,14 +705,14 @@ fn glyph_coverage(font: &FontVec, pos: Pos2, text: &str, size: f32, mut f: impl 
 }
 
 fn draw_text(pixmap: &mut Pixmap, font: &FontVec, pos: Pos2, text: &str, color: Color32, size: f32) {
-    let (w, h) = (pixmap.width() as i32, pixmap.height() as i32);
+    let (w, h) = (pixmap.width() as i64, pixmap.height() as i64);
     let data = pixmap.data_mut();
     let src = [color.r(), color.g(), color.b()];
     glyph_coverage(font, pos, text, size, |px, py, coverage| {
         if px < 0 || py < 0 || px >= w || py >= h {
             return;
         }
-        let i = ((py * w + px) * 4) as usize;
+        let i = (py as usize * w as usize + px as usize) * 4;
         let a = coverage * color.a() as f32 / 255.0;
         for c in 0..3 {
             data[i + c] = (src[c] as f32 * a + data[i + c] as f32 * (1.0 - a)).round() as u8;
@@ -728,46 +728,57 @@ fn draw_text_shadow(pixmap: &mut Pixmap, font: &FontVec, pos: Pos2, text: &str, 
     const BOOST: f32 = 2.0;
     let offset = (size * 0.06).max(1.5);
     let radius = ((size * 0.05).round() as isize).max(1);
-    let pad = radius as i32 * 3 + 2;
-    let extent = text_size(font, text, size);
-    let origin_x = (pos.x + offset).floor() as i32 - pad;
-    let origin_y = (pos.y + offset).floor() as i32 - pad;
-    let (rw, rh) = (extent.x.ceil() as i32 + 2 * pad + 2, extent.y.ceil() as i32 + 2 * pad + 2);
+    let pad = radius as i64 * 3 + 2;
+    let (w, h) = (pixmap.width() as i64, pixmap.height() as i64);
+    let shifted = pos + Vec2::splat(offset);
+    let Some((origin_x, origin_y, rw, rh)) = shadow_mask_rect(shifted, text_size(font, text, size), pad, w, h) else { return };
 
     // Coverage goes in the alpha channel so the existing 4-channel box blur can soften it.
-    let mut mask = vec![0u8; (rw * rh * 4) as usize];
-    glyph_coverage(font, pos + Vec2::splat(offset), text, size, |x, y, coverage| {
+    let mut mask = vec![0u8; rw * rh * 4];
+    glyph_coverage(font, shifted, text, size, |x, y, coverage| {
         let (mx, my) = (x - origin_x, y - origin_y);
-        if mx >= 0 && my >= 0 && mx < rw && my < rh {
-            let i = ((my * rw + mx) * 4 + 3) as usize;
+        if mx >= 0 && my >= 0 && mx < rw as i64 && my < rh as i64 {
+            let i = (my as usize * rw + mx as usize) * 4 + 3;
             mask[i] = mask[i].max((coverage * 255.0) as u8);
         }
     });
     for _ in 0..2 {
-        box_blur(&mut mask, rw as usize, rh as usize, 4, rw as usize * 4, radius);
-        box_blur(&mut mask, rh as usize, rw as usize, rw as usize * 4, 4, radius);
+        box_blur(&mut mask, rw, rh, 4, rw * 4, radius);
+        box_blur(&mut mask, rh, rw, rw * 4, 4, radius);
     }
 
-    let (w, h) = (pixmap.width() as i32, pixmap.height() as i32);
     let data = pixmap.data_mut();
     for my in 0..rh {
-        let y = origin_y + my;
+        let y = origin_y + my as i64;
         if y < 0 || y >= h {
             continue;
         }
         for mx in 0..rw {
-            let x = origin_x + mx;
-            let a = (mask[((my * rw + mx) * 4 + 3) as usize] as f32 / 255.0 * BOOST).min(1.0) * OPACITY;
+            let x = origin_x + mx as i64;
+            let a = (mask[(my * rw + mx) * 4 + 3] as f32 / 255.0 * BOOST).min(1.0) * OPACITY;
             if x < 0 || x >= w || a <= 0.0 {
                 continue;
             }
-            let i = ((y * w + x) * 4) as usize;
+            let i = (y as usize * w as usize + x as usize) * 4;
             for c in 0..3 {
                 data[i + c] = (data[i + c] as f32 * (1.0 - a)).round() as u8;
             }
             data[i + 3] = (255.0 * a + data[i + 3] as f32 * (1.0 - a)).round() as u8;
         }
     }
+}
+
+/// Where the shadow of text at `pos` (shadow offset included) with `extent` is blurred: its
+/// origin and size in pixels, `pad` wider all round for the blur to spread into. Beyond the
+/// `w`×`h` image it stops `pad` out, further than the blur reaches back from, so a long string
+/// at a huge size can't claim memory for pixels nobody sees. `None` when none of it lands.
+fn shadow_mask_rect(pos: Pos2, extent: Vec2, pad: i64, w: i64, h: i64) -> Option<(i64, i64, usize, usize)> {
+    let pad = pad as f64;
+    let x0 = (pos.x.floor() as f64 - pad).max(-pad);
+    let y0 = (pos.y.floor() as f64 - pad).max(-pad);
+    let x1 = (pos.x.floor() as f64 + extent.x.ceil() as f64 + pad + 2.0).min(w as f64 + pad);
+    let y1 = (pos.y.floor() as f64 + extent.y.ceil() as f64 + pad + 2.0).min(h as f64 + pad);
+    (x1 > x0 && y1 > y0).then_some((x0 as i64, y0 as i64, (x1 - x0) as usize, (y1 - y0) as usize))
 }
 
 /// Framing added to exported images; never part of the editable document.
@@ -985,6 +996,28 @@ mod tests {
         assert!(dark(0, 110) > 50, "the text is drawn");
         let white_in_step = (112..148).flat_map(|x| (12..48).map(move |y| (x, y))).filter(|&(x, y)| out.get_pixel(x, y).0[0] > 200).count();
         assert!(white_in_step > 20, "the step's number is drawn");
+    }
+
+    #[test]
+    fn text_shadow_only_rasterises_what_can_reach_the_image() {
+        // A long string at a huge size would otherwise want a mask far bigger than the image.
+        let (x, y, rw, rh) = shadow_mask_rect(Pos2::new(10.0, 10.0), Vec2::new(1.0e7, 400.0), 47, 200, 100).unwrap();
+        assert_eq!((x, y, rw, rh), (-37, -37, 284, 184));
+        // Text well inside keeps its padding all round.
+        assert_eq!(shadow_mask_rect(Pos2::new(50.0, 50.0), Vec2::new(20.0, 10.0), 5, 200, 100), Some((45, 45, 32, 22)));
+        // Off the image altogether, there's nothing to draw.
+        assert_eq!(shadow_mask_rect(Pos2::new(500.0, 50.0), Vec2::new(20.0, 10.0), 5, 200, 100), None);
+        assert_eq!(shadow_mask_rect(Pos2::new(f32::MAX, -f32::MAX), Vec2::new(20.0, 10.0), 5, 200, 100), None);
+
+        // And the pixels that are drawn come out the same as when the mask covered it all.
+        let Some(font) = load_font() else { return };
+        let base = RgbaImage::from_fn(50, 40, |x, y| image::Rgba([(x * 5) as u8, (y * 6) as u8, 100, 255]));
+        let text = |s: &str, size: f32| Shape::Text { pos: Pos2::new(-30.0, -200.0), text: s.into(), color: Color32::WHITE, size, shadow: true };
+        let render_one = |shape| render(&Snapshot { base: Arc::new(base.clone()), shapes: vec![shape] }, Some(&font));
+        let long = render_one(text(&"Wide ".repeat(100), 300.0));
+        let short = render_one(text("Wide Wide", 300.0));
+        assert!(*long == *short, "what's past the image's reach doesn't change it");
+        assert!(long.pixels().zip(base.pixels()).any(|(a, b)| a != b), "the shadow lands on it");
     }
 
     #[test]
