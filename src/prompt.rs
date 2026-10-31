@@ -36,13 +36,14 @@ pub unsafe fn register_class(hinstance: HINSTANCE) {
 
 pub unsafe fn show(owner: HWND, current: &str) {
     close();
+    // What's accepted is `shortcuts::usable`.
     let text = format!(
-        "Press the new screenshot shortcut\n\nCurrent: {current}\nEsc or click here to cancel"
+        "Press the new screenshot shortcut:\na key with Ctrl, Alt, Shift or Win,\nor PrtScn, Pause or an F-key on its own\n\nCurrent: {current}\nEsc or click here to cancel"
     );
     TEXT.with(|t| *t.borrow_mut() = text.encode_utf16().collect());
 
     let scale = GetDpiForSystem() as f32 / 96.0;
-    let (w, h) = ((380.0 * scale) as i32, (150.0 * scale) as i32);
+    let (w, h) = ((380.0 * scale) as i32, (180.0 * scale) as i32);
     let mut cursor: POINT = zeroed();
     GetCursorPos(&mut cursor);
     let mut info: MONITORINFO = zeroed();

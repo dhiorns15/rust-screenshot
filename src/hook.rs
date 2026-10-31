@@ -210,8 +210,13 @@ unsafe fn handle(vk: u32, down: bool) -> bool {
             if mods & (MOD_ALT | MOD_WIN) != 0 {
                 mask_menu_key();
             }
-            let packed = if vk == VK_ESCAPE as u32 && mods == 0 { 0 } else { Hotkey { vk, mods }.pack() };
-            post(main, WM_APP_HOTKEY_RECORDED, packed as usize);
+            let packed = Hotkey { vk, mods }.pack();
+            if vk == VK_ESCAPE as u32 && mods == 0 {
+                post(main, WM_APP_HOTKEY_RECORDED, 0);
+            } else if shortcuts::usable(packed) {
+                post(main, WM_APP_HOTKEY_RECORDED, packed as usize);
+            }
+            // Otherwise a bare key, which would be taken from every app: wait for a combination.
         }
         return true;
     }

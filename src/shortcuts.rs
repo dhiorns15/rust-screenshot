@@ -87,6 +87,14 @@ fn valid(v: u32) -> u32 {
     }
 }
 
+/// Whether a key can be a global shortcut: with a modifier, or one of the keys that do nothing on
+/// their own (Print Screen, Pause, the F-keys). A bare letter, Space or Enter would be taken from
+/// every app.
+pub fn usable(key: u32) -> bool {
+    let (vk, mods) = (key & 0xFFFF, key >> 16);
+    mods != 0 || matches!(vk, PRINT_SCREEN | 0x13 | 0x70..=0x87)
+}
+
 /// Gives `key` to `action`, taking it from whichever action had it (returned).
 pub fn assign(table: &mut Table, action: Action, key: u32) -> Option<Action> {
     let taken = (key != 0).then(|| table.iter().position(|&k| k == key)).flatten().filter(|&i| i != action.index());
@@ -184,6 +192,20 @@ mod tests {
         assert_eq!(assign(&mut table, Action::Full, 0), None, "clearing takes nothing");
         assert_eq!(table, [0; COUNT]);
         assert!(conflicts(&table).is_empty());
+    }
+
+    #[test]
+    fn a_bare_key_is_no_shortcut_unless_it_does_nothing_alone() {
+        assert!(usable(PRINT_SCREEN));
+        assert!(usable(SHIFT_PRTSCN));
+        assert!(usable(0x13), "Pause");
+        assert!(usable(0x7B), "F12");
+        assert!(usable(0x41 | 1 << 16), "Ctrl+A");
+        assert!(usable(0x20 | 8 << 16), "Win+Space");
+        assert!(!usable(0x41), "A");
+        assert!(!usable(0x20), "Space");
+        assert!(!usable(0x0D), "Enter");
+        assert!(!usable(0), "none");
     }
 
     #[test]
