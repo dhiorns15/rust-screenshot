@@ -536,6 +536,7 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             0
         }
         WM_DESTROY => {
+            finish_recording_before_exit();
             PostQuitMessage(0);
             0
         }
@@ -800,6 +801,20 @@ unsafe fn stop_recording(hwnd: HWND) {
             drop(unsafe { Box::from_raw(result) });
         }
     });
+}
+
+/// Exiting while recording: stops it and waits (not forever) for the file to be finished, so it's
+/// in the library rather than left half-written in the working folder.
+fn finish_recording_before_exit() {
+    let Some(recording) = RECORDING.with(|r| r.borrow_mut().take()) else { return };
+    let finishing = recording.stop();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !finishing.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if finishing.is_finished() {
+        let _ = finishing.join();
+    }
 }
 
 unsafe fn on_recorded(hwnd: HWND, result: Result<record::Recorded, String>) {
