@@ -93,7 +93,7 @@ impl Editor {
             self.selection = None;
         }
         let stale = self.selection.as_ref().is_some_and(|s| s.version != self.doc.version || s.index >= self.doc.current().shapes.len());
-        if stale || matches!(tools.tool, Tool::Text | Tool::Crop | Tool::CopyText) {
+        if stale || matches!(tools.tool, Tool::Text | Tool::Crop | Tool::CutOut | Tool::CopyText) {
             self.selection = None;
         }
         let Some(sel) = &mut self.selection else {

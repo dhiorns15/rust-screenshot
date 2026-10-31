@@ -17,7 +17,7 @@ use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Pos2, Rect, Sense,
 use super::doc::{render, Doc, Shape};
 use super::env::ReadWords;
 pub use copy_text::TextStatus;
-use crop::{crop_grab, CropDrag, CropSelection};
+use crop::{crop_grab, cut_strip, strip_pixels, CropDrag, CropSelection};
 use preview::{preview, shape_from_drag, snap_45};
 use select::{body_grab, Grab, Manip, Selection, PICK_SLACK};
 use text::PendingText;
@@ -152,13 +152,17 @@ impl Editor {
             };
             let to_screen = |p: Pos2| rect.min + p.to_vec2() * scale;
 
-            // A crop selection only lives while the Crop tool is active and the image is unchanged.
-            if tools.tool != Tool::Crop || self.crop.as_ref().is_some_and(|c| c.version != self.doc.version) {
+            // A crop selection (or strip to cut out) only lives while its tool is active and the
+            // image is unchanged.
+            let cutting = tools.tool == Tool::CutOut;
+            let stale = |c: &CropSelection| c.version != self.doc.version || c.cut.is_some() != cutting;
+            if !matches!(tools.tool, Tool::Crop | Tool::CutOut) || self.crop.as_ref().is_some_and(stale) {
                 self.crop = None;
                 self.crop_drag = None;
             }
+            let cut = self.crop.as_ref().and_then(|c| c.cut);
             let crop_screen = self.crop.as_ref().map(|c| Rect::from_two_pos(to_screen(c.rect.min), to_screen(c.rect.max)));
-            let crop_hover = crop_screen.zip(response.hover_pos()).and_then(|(r, p)| crop_grab(r, p));
+            let crop_hover = crop_screen.zip(response.hover_pos()).and_then(|(r, p)| crop_grab(r, p, cut));
 
             if response.hovered() {
                 let cursor = match (tools.tool, crop_hover) {
@@ -180,11 +184,11 @@ impl Editor {
             if response.drag_started() {
                 let press = ui.input(|i| i.pointer.press_origin());
                 let origin = press.map(to_img);
-                let on_crop = crop_screen.zip(press).and_then(|(r, p)| Some((crop_grab(r, p)?, p)));
+                let on_crop = crop_screen.zip(press).and_then(|(r, p)| Some((crop_grab(r, p, cut)?, p)));
                 let on_selection = press.and_then(|p| Some((self.selection_grab(p, to_screen, to_img, scale, font)?, p)));
                 if let (Some((edges, origin)), Some(sel)) = (on_crop, &self.crop) {
                     // Dragging the crop selection's edges or inside it adjusts it.
-                    self.crop_drag = Some(CropDrag { edges, start: sel.rect, origin });
+                    self.crop_drag = Some(CropDrag { edges, start: sel.rect, origin, cut: sel.cut });
                 } else if let (Some((grab, p)), Some(index)) = (on_selection, self.selection.as_ref().map(|s| s.index)) {
                     self.begin_manip(index, grab, p, true, font);
                 } else if tools.tool == Tool::Text {
@@ -312,7 +316,15 @@ impl Editor {
             let rect = Rect::from_two_pos(drag.start, drag.current);
             if rect.width() >= 2.0 && rect.height() >= 2.0 {
                 // Held until the user confirms it.
-                self.crop = Some(CropSelection { rect, version: self.doc.version });
+                self.crop = Some(CropSelection { rect, version: self.doc.version, cut: None });
+            }
+            return;
+        }
+        if tools.tool == Tool::CutOut {
+            let (axis, rect) = cut_strip(drag.start, drag.current, self.doc.size());
+            if strip_pixels(axis, rect) >= 2.0 {
+                // Held until the user confirms it, like a crop.
+                self.crop = Some(CropSelection { rect, version: self.doc.version, cut: Some(axis) });
             }
             return;
         }

@@ -36,6 +36,15 @@ pub enum Shape {
     Zoom { rect: Rect, inset: Rect, color: Color32, width: f32 },
 }
 
+/// Which way a strip cut out of the image runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Axis {
+    /// Across the full width: rows are removed.
+    Horizontal,
+    /// Down the full height: columns are removed.
+    Vertical,
+}
+
 /// Pixel size of the pixelate mosaic.
 const MOSAIC: usize = 12;
 
@@ -363,6 +372,32 @@ impl Doc {
         }
         let cropped = image::imageops::crop_imm(&rendered, x, y, w, h).to_image();
         self.push(Snapshot { base: Arc::new(cropped), shapes: Vec::new() });
+    }
+
+    /// Flattens the annotations and removes the strip from `from` to `to` along `axis` (rows for
+    /// `Horizontal`, columns for `Vertical`), joining what's either side; one undo step. Nothing
+    /// happens if the strip is empty or is the whole image.
+    pub fn cut_out(&mut self, axis: Axis, from: f32, to: f32, font: Option<&FontVec>) {
+        let rendered = render(self.current(), font);
+        let (w, h) = rendered.dimensions();
+        let len = match axis {
+            Axis::Horizontal => h,
+            Axis::Vertical => w,
+        };
+        let at = |v: f32| (v.round().max(0.0) as u32).min(len);
+        let (a, b) = (at(from.min(to)), at(from.max(to)));
+        if b <= a || b - a >= len {
+            return;
+        }
+        use image::imageops::{crop_imm, replace};
+        // The parts before and after the strip, and where the second one goes.
+        let (mut out, before, after, (x, y)) = match axis {
+            Axis::Horizontal => (RgbaImage::new(w, h - (b - a)), crop_imm(&rendered, 0, 0, w, a), crop_imm(&rendered, 0, b, w, h - b), (0, a)),
+            Axis::Vertical => (RgbaImage::new(w - (b - a), h), crop_imm(&rendered, 0, 0, a, h), crop_imm(&rendered, b, 0, w - b, h), (a, 0)),
+        };
+        replace(&mut out, &*before, 0, 0);
+        replace(&mut out, &*after, x as i64, y as i64);
+        self.push(Snapshot { base: Arc::new(out), shapes: Vec::new() });
     }
 
     pub fn can_undo(&self) -> bool {
@@ -1415,6 +1450,40 @@ mod tests {
         assert_eq!(above, Some([(p(0.0, 0.0), p(-30.0, -20.0)), (p(10.0, 0.0), p(-10.0, -20.0))]), "further above than to the left");
         assert_eq!(zoom_connectors(area, r(40.0, 15.0, 60.0, 35.0)).unwrap()[0].1, p(40.0, 15.0), "further right than below");
         assert_eq!(zoom_connectors(area, r(5.0, 5.0, 25.0, 25.0)), None, "overlapping");
+    }
+
+    #[test]
+    fn cutting_out_a_strip_joins_what_is_either_side() {
+        // Each row (or column) numbered in red, so the join can be checked pixel by pixel.
+        let rows = RgbaImage::from_fn(30, 20, |_, y| image::Rgba([y as u8, 0, 0, 255]));
+        let mut doc = Doc::from_image(rows.clone());
+        doc.add(Shape::Redact { rect: r(0.0, 0.0, 30.0, 2.0), color: Color32::from_rgb(0, 0, 255) });
+        doc.cut_out(Axis::Horizontal, 5.2, 11.6, None);
+        assert_eq!(doc.size(), Vec2::new(30.0, 13.0), "rows 5 to 11 are gone");
+        let base = &doc.current().base;
+        assert_eq!(base.get_pixel(3, 0).0, [0, 0, 255, 255], "annotations are flattened in");
+        assert_eq!((base.get_pixel(3, 4).0[0], base.get_pixel(3, 5).0[0], base.get_pixel(3, 12).0[0]), (4, 12, 19));
+        assert!(doc.current().shapes.is_empty());
+        doc.undo();
+        assert_eq!(doc.size(), Vec2::new(30.0, 20.0), "one undo step");
+        assert_eq!(doc.current().shapes.len(), 1);
+
+        let columns = RgbaImage::from_fn(30, 20, |x, _| image::Rgba([x as u8, 0, 0, 255]));
+        let mut doc = Doc::from_image(columns);
+        doc.cut_out(Axis::Vertical, 30.0, 25.0, None);
+        assert_eq!(doc.size(), Vec2::new(25.0, 20.0), "either way round, to the right edge");
+        assert_eq!(doc.current().base.get_pixel(24, 7).0[0], 24);
+        doc.cut_out(Axis::Vertical, 0.0, 10.0, None);
+        assert_eq!(doc.size(), Vec2::new(15.0, 20.0));
+        assert_eq!(doc.current().base.get_pixel(0, 7).0[0], 10);
+
+        // Nothing to cut, or nothing that would be left, changes nothing.
+        let version = doc.version;
+        doc.cut_out(Axis::Vertical, 4.0, 4.2, None);
+        doc.cut_out(Axis::Vertical, -10.0, 100.0, None);
+        doc.cut_out(Axis::Horizontal, 0.0, 20.0, None);
+        doc.cut_out(Axis::Horizontal, f32::NAN, 5.0, None);
+        assert_eq!((doc.version, doc.size()), (version, Vec2::new(15.0, 20.0)));
     }
 
     #[test]

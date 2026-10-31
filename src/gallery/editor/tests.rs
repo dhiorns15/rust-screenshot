@@ -5,7 +5,7 @@ use eframe::egui::{self, Color32, Context, Event, FontId, Key, PointerButton, Po
 use image::RgbaImage;
 
 use super::{size_slider, Editor, Tool, ToolState, ANNOTATION_FONT, TEXT_SIZES};
-use crate::gallery::doc::{Doc, Shape};
+use crate::gallery::doc::{Axis, Doc, Shape};
 
 /// Drives the real editor UI headlessly, one egui frame at a time, with the toolbar's Size
 /// slider above the canvas.
@@ -544,6 +544,51 @@ fn a_zooms_copy_moves_on_its_own_and_its_area_moves_both() {
     h.frame(vec![]);
     drag(&mut h, (300.0, 125.0), (350.0, 125.0));
     assert_eq!(zoom_rects(&h), (r(100.0, 100.0, 200.0, 150.0), r(266.0, 75.0, 466.0, 175.0)));
+}
+
+#[test]
+fn cut_out_removes_a_strip_once_confirmed() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Box;
+    drag(&mut h, (100.0, 50.0), (300.0, 350.0));
+    h.tools.tool = Tool::CutOut;
+    // Without the Size slider above it, the image settles a little higher.
+    h.frame(vec![]);
+    h.frame(vec![]);
+
+    // Mostly downwards: a strip across the whole image.
+    drag(&mut h, (400.0, 100.0), (410.0, 200.0));
+    let sel = h.editor.crop.as_ref().expect("a strip waiting to be confirmed");
+    assert_eq!((sel.cut, sel.rect), (Some(Axis::Horizontal), r(0.0, 100.0, 800.0, 200.0)));
+    assert_eq!(h.editor.doc.size(), Vec2::new(800.0, 400.0), "dragging alone shouldn't cut");
+    key(&mut h, Key::Escape);
+    assert!(h.editor.crop.is_none(), "Esc cancels");
+    assert_eq!(h.editor.doc.size(), Vec2::new(800.0, 400.0));
+
+    // Dragging its bottom edge down widens it; it still spans the image.
+    drag(&mut h, (400.0, 100.0), (410.0, 200.0));
+    drag(&mut h, (300.0, 200.0), (350.0, 250.0));
+    assert_eq!(h.editor.crop.as_ref().unwrap().rect, r(0.0, 100.0, 800.0, 250.0));
+    key(&mut h, Key::Enter);
+    assert_eq!(h.editor.doc.size(), Vec2::new(800.0, 250.0), "150 px taken out");
+    assert!(h.editor.doc.current().shapes.is_empty(), "the box is flattened into the image");
+    h.editor.doc.undo();
+    h.frame(vec![]);
+    assert_eq!(h.editor.doc.size(), Vec2::new(800.0, 400.0), "one undo step");
+    assert_eq!(h.editor.doc.current().shapes.len(), 1);
+
+    // Sideways: a strip down the image. Switching to Crop drops it.
+    drag(&mut h, (500.0, 100.0), (600.0, 110.0));
+    assert_eq!(h.editor.crop.as_ref().map(|s| (s.cut, s.rect)), Some((Some(Axis::Vertical), r(500.0, 0.0, 600.0, 400.0))));
+    h.tools.tool = Tool::Crop;
+    h.frame(vec![]);
+    assert!(h.editor.crop.is_none());
+
+    // A strip under 2 px is no strip.
+    h.tools.tool = Tool::CutOut;
+    h.frame(vec![]);
+    drag(&mut h, (500.0, 100.0), (500.0, 101.0));
+    assert!(h.editor.crop.is_none());
 }
 
 /// Random input for the panic hunt: xorshift, so a seed replays the same run.

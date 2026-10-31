@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke};
 
-use super::crop::{crop_shade, shade_outside};
+use super::crop::{crop_shade, cut_shade, cut_strip, shade_outside, strip_pixels};
 use super::text::{preview_font, shadow_offset};
 use super::{Drag, Tool, ToolState};
 use crate::gallery::doc::{arrow_geometry, ellipse_points, zoom_connectors, zoom_inset, Shape, SPOTLIGHT_DIM};
@@ -47,6 +47,10 @@ pub(super) fn preview(
         let r = Rect::from_two_pos(to_screen(drag.start), to_screen(drag.current));
         let size = Rect::from_two_pos(drag.start, drag.current).intersect(bounds).size();
         crop_shade(painter, r, canvas, size, false);
+    } else if tools.tool == Tool::CutOut {
+        let (axis, strip) = cut_strip(drag.start, drag.current, bounds.size());
+        let r = Rect::from_two_pos(to_screen(strip.min), to_screen(strip.max));
+        cut_shade(painter, r, canvas, axis, strip_pixels(axis, strip), false);
     } else if let Some(shape) = shape_from_drag(drag, tools, bounds) {
         paint_shape(painter, &shape, scale, to_screen, canvas, false, texture);
     }

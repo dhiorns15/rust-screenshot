@@ -28,6 +28,7 @@ annotation (colour, size, shadow, delete) and a hint on how to use it.
 | Pixelate | X | drag; mosaic over sensitive content |
 | Redact | R | drag; a solid box (black by default) that hides content for certain. *Auto-redact* reads the text in the screenshot and covers every email address, IP address, API key or token, card number and phone number it finds, in one undo step (it needs text reading, like Copy text) |
 | Crop | C | drag to select an area, adjust it by dragging its edges, corners or middle, then click *Crop* (or press Enter, or double-click inside it). *Cancel* or Esc discards it. Undoable |
+| Cut out | K | drag across a strip to remove it and close the gap: up or down for a strip across the image, sideways for one down it. Adjust it by dragging its edges or middle, then click *Cut out* (or press Enter, or double-click inside it). *Cancel* or Esc discards it. Like Crop, it flattens the annotations into the image. Undoable |
 
 ## Editing
 

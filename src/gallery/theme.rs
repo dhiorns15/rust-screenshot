@@ -193,6 +193,7 @@ pub fn tool_icon(tool: Tool) -> &'static str {
         Tool::Pixelate => icon::CHECKERBOARD,
         Tool::Redact => icon::EYE_SLASH,
         Tool::Crop => icon::CROP,
+        Tool::CutOut => icon::SCISSORS,
         Tool::CopyText => icon::TEXTBOX,
     }
 }
