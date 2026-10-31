@@ -488,9 +488,16 @@ fn hide(dir: &Path) {
     super::platform::hide(dir);
 }
 
-/// Raw font file, also handed to egui so the live text preview uses the same glyphs.
+/// Raw font file, also handed to egui so the live text preview uses the same glyphs: the
+/// system's, else the one egui ships, so text is never left out of what's saved or copied.
 pub fn load_font_bytes() -> Option<Vec<u8>> {
-    super::platform::font_bytes()
+    super::platform::font_bytes().or_else(bundled_font_bytes)
+}
+
+/// Ubuntu Light, which eframe bundles (its `default_fonts` feature).
+fn bundled_font_bytes() -> Option<Vec<u8>> {
+    let fonts = eframe::egui::FontDefinitions::default();
+    fonts.font_data.get("Ubuntu-Light").map(|data| data.font.to_vec())
 }
 
 /// Arrow geometry shared by the preview and the renderer: end of the shaft and the head triangle.
@@ -963,6 +970,21 @@ mod tests {
         assert_eq!(darkest(&render(&snapshot(false), Some(&font))), 255);
         let d = darkest(&render(&snapshot(true), Some(&font)));
         assert!(d < 128, "darkest shadow pixel {d}");
+    }
+
+    #[test]
+    fn text_renders_with_the_bundled_font_when_the_system_has_none() {
+        let font = FontVec::try_from_vec(bundled_font_bytes().expect("eframe bundles a font")).unwrap();
+        let white = RgbaImage::from_pixel(160, 60, image::Rgba([255, 255, 255, 255]));
+        let shapes = vec![
+            Shape::Text { pos: Pos2::new(8.0, 8.0), text: "Hi there".into(), color: Color32::BLACK, size: 32.0, shadow: false },
+            Shape::Step { center: Pos2::new(130.0, 30.0), number: 7, color: Color32::BLACK, diameter: 40.0 },
+        ];
+        let out = render(&Snapshot { base: Arc::new(white), shapes }, Some(&font));
+        let dark = |x0: u32, x1: u32| (x0..x1).flat_map(|x| (0..60).map(move |y| (x, y))).filter(|&(x, y)| out.get_pixel(x, y).0[0] < 128).count();
+        assert!(dark(0, 110) > 50, "the text is drawn");
+        let white_in_step = (112..148).flat_map(|x| (12..48).map(move |y| (x, y))).filter(|&(x, y)| out.get_pixel(x, y).0[0] > 200).count();
+        assert!(white_in_step > 20, "the step's number is drawn");
     }
 
     #[test]
