@@ -280,12 +280,25 @@ impl Page {
     }
 }
 
+/// A thumbnail on the GPU.
+struct Thumb {
+    /// The file's modified time it was made from; it's made again when that changes.
+    modified: SystemTime,
+    tex: TextureHandle,
+    /// When it was last drawn: the ones drawn longest ago go first when there are too many.
+    drawn: Instant,
+}
+
+/// How many thumbnails are kept on the GPU (the ones drawn most recently): each is some 350 KB,
+/// and a library of thousands needn't all be there at once. Many more than a screen shows.
+const KEEP_THUMBS: usize = 200;
+
 struct App {
     env: Env,
     entries: Vec<Entry>,
     last_scan: Instant,
     filter: String,
-    thumbs: HashMap<PathBuf, (SystemTime, TextureHandle)>,
+    thumbs: HashMap<PathBuf, Thumb>,
     /// Thumbnails asked for, as of the file's modified time.
     requested: HashMap<PathBuf, SystemTime>,
     thumb_tx: Sender<(PathBuf, SystemTime)>,
@@ -497,6 +510,14 @@ impl App {
         }
         self.metas.retain(|path, _| listed.contains(path.as_path()));
         self.meta_times.retain(|path, _| listed.contains(path.as_path()));
+        self.thumbs.retain(|path, _| listed.contains(path.as_path()));
+        self.requested.retain(|path, _| listed.contains(path.as_path()));
+        if self.thumbs.len() > KEEP_THUMBS {
+            let mut drawn: Vec<Instant> = self.thumbs.values().map(|t| t.drawn).collect();
+            drawn.sort_unstable();
+            let cutoff = drawn[drawn.len() - KEEP_THUMBS];
+            self.thumbs.retain(|_, t| t.drawn >= cutoff);
+        }
         for e in &entries {
             let changed = search::meta_path(&e.path).and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
             if !self.metas.contains_key(&e.path) || self.meta_times.get(&e.path) != Some(&changed) {
@@ -530,6 +551,24 @@ impl App {
 
     fn set_status(&mut self, text: impl Into<String>) {
         self.status = Some((text.into(), Instant::now()));
+    }
+
+    /// The thumbnail of the file at `path` as it was at `modified`, to draw now, if it's loaded
+    /// (so it's kept, see `KEEP_THUMBS`); else it's asked for, once for each version of the file
+    /// (one that can't be read is tried again only once it changes, not every frame).
+    fn thumb(&mut self, path: &Path, modified: SystemTime) -> Option<&TextureHandle> {
+        match self.thumbs.get_mut(path) {
+            Some(thumb) if thumb.modified == modified => {
+                thumb.drawn = Instant::now();
+                Some(&thumb.tex)
+            }
+            _ => {
+                if self.requested.insert(path.to_owned(), modified) != Some(modified) {
+                    let _ = self.thumb_tx.send((path.to_owned(), modified));
+                }
+                None
+            }
+        }
     }
 
     fn dirty(&self) -> bool {
@@ -748,8 +787,11 @@ impl App {
             // (a recording caught while it was still being written), not every frame.
             if let Some(thumb) = thumb {
                 self.requested.remove(&path);
-                let tex = ctx.load_texture(path.to_string_lossy(), thumb, TextureOptions::LINEAR);
-                self.thumbs.insert(path, (modified, tex));
+                // Unless it's no longer listed (the folder changed meanwhile).
+                if self.entries.iter().any(|e| e.path == path) {
+                    let tex = ctx.load_texture(path.to_string_lossy(), thumb, TextureOptions::LINEAR);
+                    self.thumbs.insert(path, Thumb { modified, tex, drawn: Instant::now() });
+                }
             }
         }
         if let Some(rx) = &self.read_rx {

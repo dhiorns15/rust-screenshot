@@ -499,22 +499,21 @@ impl App {
         }
 
         let thumb_area = Rect::from_min_size(rect.min + Vec2::new((rect.width() - thumb.x) / 2.0, 8.0), thumb);
-        match self.thumbs.get(&entry.path) {
-            Some((modified, tex)) if *modified == entry.modified => {
-                let fit = (thumb.x / tex.size_vec2().x).min(thumb.y / tex.size_vec2().y);
-                let r = Rect::from_center_size(thumb_area.center(), tex.size_vec2() * fit);
-                painter.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+        let (path, modified) = (entry.path.clone(), entry.modified);
+        match self.thumb(&path, modified).map(|tex| (tex.id(), tex.size_vec2())) {
+            Some((id, size)) => {
+                let fit = (thumb.x / size.x).min(thumb.y / size.y);
+                let r = Rect::from_center_size(thumb_area.center(), size * fit);
+                painter.image(id, r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
             }
-            _ => {
+            None => {
                 painter.rect_filled(thumb_area, 4.0, theme::palette(ui).raised);
-                if entry.video {
+                if self.entries[i].video {
                     painter.text(thumb_area.center(), Align2::CENTER_CENTER, "▶", egui::FontId::proportional(36.0), Color32::from_gray(170));
-                }
-                if self.requested.insert(entry.path.clone(), entry.modified) != Some(entry.modified) {
-                    let _ = self.thumb_tx.send((entry.path.clone(), entry.modified));
                 }
             }
         }
+        let entry = &self.entries[i];
         if entry.video {
             let ext = entry.path.extension().unwrap_or_default().to_string_lossy().to_uppercase();
             let badge = Rect::from_min_size(thumb_area.min + Vec2::new(6.0, 6.0), Vec2::new(34.0, 16.0));

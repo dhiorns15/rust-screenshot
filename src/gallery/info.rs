@@ -251,17 +251,11 @@ impl App {
         let width = ui.available_width();
         let (area, _) = ui.allocate_exact_size(Vec2::new(width, (width * 9.0 / 16.0).min(PREVIEW_HEIGHT)), Sense::hover());
         ui.painter().rect_filled(area, 6.0, theme::palette(ui).raised);
-        match self.thumbs.get(&entry.path) {
-            Some((modified, tex)) if *modified == entry.modified => {
-                let fit = (area.width() / tex.size_vec2().x).min(area.height() / tex.size_vec2().y);
-                let shown = Rect::from_center_size(area.center(), tex.size_vec2() * fit);
-                ui.painter().image(tex.id(), shown, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), egui::Color32::WHITE);
-            }
-            _ => {
-                if self.requested.insert(entry.path.clone(), entry.modified) != Some(entry.modified) {
-                    let _ = self.thumb_tx.send((entry.path.clone(), entry.modified));
-                }
-            }
+        let (path, modified) = (entry.path.clone(), entry.modified);
+        if let Some((id, size)) = self.thumb(&path, modified).map(|tex| (tex.id(), tex.size_vec2())) {
+            let fit = (area.width() / size.x).min(area.height() / size.y);
+            let shown = Rect::from_center_size(area.center(), size * fit);
+            ui.painter().image(id, shown, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), egui::Color32::WHITE);
         }
     }
 }

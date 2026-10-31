@@ -1581,6 +1581,50 @@ fn a_screenshot_deleted_elsewhere_doesnt_stay_open() {
     assert!(h.state().editor.as_ref().is_some_and(|e| e.doc.path == a));
 }
 
+/// Until the thumbnails of every listed file have loaded.
+fn wait_for_thumbs(h: &mut Harness<App>) {
+    for _ in 0..200 {
+        settle(h);
+        if h.state().thumbs.len() == h.state().entries.len() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("the thumbnails didn't load");
+}
+
+#[test]
+fn thumbnails_of_whats_gone_and_of_whats_long_unseen_are_let_go_of() {
+    let mut h = harness("kittest-thumbs");
+    wait_for_thumbs(&mut h);
+    assert_eq!(h.state().thumbs.len(), 3);
+    let c = h.state().entries.iter().find(|e| e.name == "Screenshot c").unwrap().path.clone();
+    std::fs::remove_file(&c).unwrap();
+    h.state_mut().rescan();
+    assert!(!h.state().thumbs.contains_key(&c), "deleted elsewhere: its thumbnail goes with it");
+    assert_eq!(h.state().thumbs.len(), 2);
+
+    // Far more than are kept, none drawn for a while: the ones drawn longest ago go, and the ones
+    // on screen stay (they're drawn each frame).
+    let ctx = h.ctx.clone();
+    let dir = h.state().env.dir.clone();
+    let stale = |n: usize| dir.join(format!("stale {n}.png"));
+    let long_ago = std::time::Instant::now() - Duration::from_secs(3600);
+    for n in 0..KEEP_THUMBS + 50 {
+        let tex = ctx.load_texture(format!("stale {n}"), egui::ColorImage::filled([2, 2], egui::Color32::BLACK), TextureOptions::LINEAR);
+        h.state_mut().thumbs.insert(stale(n), Thumb { modified: SystemTime::UNIX_EPOCH, tex, drawn: long_ago - Duration::from_secs(n as u64) });
+        // Listed, so the rescan doesn't let go of them for being gone.
+        std::fs::write(stale(n), b"").unwrap();
+    }
+    settle(&mut h);
+    h.state_mut().rescan();
+    let app = h.state();
+    assert_eq!(app.thumbs.len(), KEEP_THUMBS);
+    assert!(app.thumbs.contains_key(&app.entries.iter().find(|e| e.name == "Screenshot a").unwrap().path), "still drawn");
+    assert!(!app.thumbs.contains_key(&stale(249)) && !app.thumbs.contains_key(&stale(200)), "the oldest went");
+    assert!(app.thumbs.contains_key(&stale(0)));
+}
+
 #[test]
 fn cancelling_the_close_an_update_asked_for_forgets_the_restart() {
     let mut h = harness("kittest-restart-cancelled");
@@ -1603,6 +1647,7 @@ fn cancelling_the_close_an_update_asked_for_forgets_the_restart() {
 #[test]
 fn a_folder_that_cant_be_read_lists_nothing_rather_than_the_last_one() {
     let mut h = harness("kittest-folder-gone");
+    wait_for_thumbs(&mut h);
     // Changed in Settings to one that isn't there yet.
     let gone = h.state().env.dir.join("not-yet");
     h.state().env.set_text_setting(crate::options::SAVE_FOLDER, &gone.to_string_lossy());
@@ -1612,7 +1657,7 @@ fn a_folder_that_cant_be_read_lists_nothing_rather_than_the_last_one() {
     assert!(h.state().entries.is_empty(), "the old folder's files aren't what's there");
     assert!(!shows(&h, "Screenshot a") && shows(&h, "No screenshots yet. Press your capture hotkey to take one."));
     assert!(h.state().status.as_ref().is_some_and(|(s, _)| s.starts_with("Can't read ")), "{:?}", h.state().status);
-    assert!(h.state().metas.is_empty(), "nothing of them is kept");
+    assert!(h.state().metas.is_empty() && h.state().thumbs.is_empty(), "nothing of them is kept");
 
     // Once it's made (a first screenshot saved there), it's read as usual.
     std::fs::create_dir_all(&gone).unwrap();
