@@ -19,9 +19,13 @@ pub struct Image {
 }
 
 impl Image {
+    /// The part of the image in `r`: empty if none of `r` is on it.
     pub fn crop(&self, r: RECT) -> Image {
         let r = intersect(&r, &rect(0, 0, self.width, self.height));
-        let (w, h) = ((r.right - r.left).max(0), (r.bottom - r.top).max(0));
+        if is_empty(&r) {
+            return Image { width: 0, height: 0, data: Vec::new() };
+        }
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
         let mut data = Vec::with_capacity((w * h * 4) as usize);
         for y in r.top..r.top + h {
             let start = ((y * self.width + r.left) * 4) as usize;
@@ -398,6 +402,10 @@ mod tests {
         let c = img.crop(rect(2, 1, 10, 10));
         assert_eq!((c.width, c.height), (2, 2));
         assert_eq!(&c.data[..4], &img.data[(4 + 2) * 4..(4 + 2) * 4 + 4]);
+        for off in [rect(10, 1, 12, 2), rect(0, 5, 2, 7), rect(-3, -3, 0, 0), rect(3, 1, 1, 2)] {
+            let c = img.crop(off);
+            assert_eq!((c.width, c.height, c.data.len()), (0, 0, 0), "nothing of the image is in it");
+        }
     }
 
     #[test]
