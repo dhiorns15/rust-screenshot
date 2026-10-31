@@ -750,7 +750,7 @@ impl Recording {
             let stopped = format!("GStreamer stopped before it finished the recording{why}, so its end may be missing.");
             note = Some(note.map_or(stopped.clone(), |n| format!("{n} {stopped}")));
         }
-        super::finish_recording(&self.working, &self.path)?;
+        super::move_into_place(&self.working, &self.path)?;
         Ok(Recorded { path: self.path, note })
     }
 

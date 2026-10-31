@@ -168,10 +168,15 @@ pub fn save_png(img: &Image, path: &Path) -> Result<(), String> {
     encoder.set_depth(png::BitDepth::Eight);
     encoder.set_compression(png::Compression::Fast);
     let rgb: Vec<u8> = img.data.chunks_exact(4).flat_map(|px| [px[2], px[1], px[0]]).collect();
-    encoder
+    let result = encoder
         .write_header()
         .and_then(|mut writer| writer.write_image_data(&rgb))
-        .map_err(|e| format!("Can't encode PNG: {e}"))
+        .map_err(|e| format!("Can't encode PNG: {e}"));
+    if result.is_err() {
+        // Not a picture, so don't leave it for the library to try to show.
+        let _ = std::fs::remove_file(path);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -196,5 +201,14 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(&bytes[1..4], b"PNG");
+    }
+
+    #[test]
+    fn a_failed_save_leaves_no_file() {
+        // Far fewer pixels than the size says, which the encoder refuses.
+        let img = Image { width: 3, height: 2, data: vec![200; 4] };
+        let path = std::env::temp_dir().join(format!("rsnip-test-bad-{}.png", std::process::id()));
+        assert!(save_png(&img, &path).is_err());
+        assert!(!path.exists(), "nothing half-written is left behind");
     }
 }

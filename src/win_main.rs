@@ -923,18 +923,29 @@ unsafe fn deliver(hwnd: HWND, img: Image, source: HWND) {
         Ok(p) => p,
         Err(e) => return notify(hwnd, "Couldn't save screenshot", &e),
     };
-    if let Some((app, window)) = capture::window_source(source) {
-        gallery::record_source(&path, &app, &window);
-    }
+    let source = capture::window_source(source);
     // PNG encoding of a large capture can take a moment; keep the hook's thread responsive.
     let target = hwnd as isize;
     std::thread::spawn(move || {
-        let error = output::save_png(&img, &path).err();
+        let error = save_screenshot(&img, &path, source.as_ref()).err();
         let result = Box::into_raw(Box::new(SaveResult { path, error, copied }));
         if unsafe { PostMessageW(target as HWND, WM_APP_SAVED, 0, result as LPARAM) } == 0 {
             drop(unsafe { Box::from_raw(result) });
         }
     });
+}
+
+/// Saves the capture as `path`, written out of sight first (see `gallery::working_path`) so a
+/// failure leaves nothing behind, and with where it came from recorded only once it's whole.
+fn save_screenshot(img: &Image, path: &Path, source: Option<&(String, String)>) -> Result<(), String> {
+    let working = gallery::working_path(path)?;
+    output::save_png(img, &working)?;
+    if let Some((app, window)) = source {
+        gallery::record_source(path, app, window);
+    }
+    gallery::move_into_place(&working, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&working);
+    })
 }
 
 unsafe fn on_saved(hwnd: HWND, result: SaveResult) {

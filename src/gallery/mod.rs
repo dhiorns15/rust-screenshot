@@ -1390,15 +1390,15 @@ fn start_reader(ocr: env::Ocr, ctx: egui::Context) -> (Sender<PathBuf>, Receiver
 }
 
 /// Records where a capture came from (app and window title), for search. Called before its file
-/// is written, so the library finds it there.
+/// appears in the library (see `working_path`), so the library finds it there.
 #[cfg(windows)]
 pub fn record_source(path: &Path, app: &str, window: &str) {
     search::record_source(path, app, window);
 }
 
-/// Where the recording that will be `path` is written until it's finished: under the same name in
-/// the save folder's hidden `.rsnip`, so the library and the automatic pusher never see it
-/// half-written. `finish_recording` moves it into place.
+/// Where the recording or screenshot that will be `path` is written until it's finished: under the
+/// same name in the save folder's hidden `.rsnip`, so the library and the automatic pusher never
+/// see it half-written. `move_into_place` moves it into place.
 pub fn working_path(path: &Path) -> Result<PathBuf, String> {
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return Err("Bad file name".into()) };
     let dir = dir.join(".rsnip");
@@ -1407,8 +1407,8 @@ pub fn working_path(path: &Path) -> Result<PathBuf, String> {
     Ok(dir.join(name))
 }
 
-/// Moves a finished recording from its `working_path` to `path`, in the same folder.
-pub fn finish_recording(working: &Path, path: &Path) -> Result<(), String> {
+/// Moves a finished file from its `working_path` to `path`, in the same folder.
+pub fn move_into_place(working: &Path, path: &Path) -> Result<(), String> {
     // A virus scanner can hold a file just written for a moment.
     let mut tries = 0;
     loop {
@@ -1418,7 +1418,7 @@ pub fn finish_recording(working: &Path, path: &Path) -> Result<(), String> {
                 tries += 1;
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
-            Err(e) => return Err(format!("Couldn't move the recording into {}: {e}", path.parent().unwrap_or(path).display())),
+            Err(e) => return Err(format!("Couldn't move the file into {}: {e}", path.parent().unwrap_or(path).display())),
         }
     }
 }
@@ -1563,7 +1563,7 @@ mod tests {
         let working = working_path(&path).unwrap();
         std::fs::write(&working, b"half").unwrap();
         assert!(library_files(&dir).is_empty(), "not listed, so not pushed, while it's written");
-        finish_recording(&working, &path).unwrap();
+        move_into_place(&working, &path).unwrap();
         assert_eq!(library_files(&dir), std::slice::from_ref(&path));
         assert!(!working.exists());
         doc::prune_layers(&dir);

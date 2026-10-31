@@ -139,7 +139,7 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
                 Ok(later) => {
                     notes.extend(later);
                     let note = Some(notes.join(" ")).filter(|n| !n.is_empty());
-                    crate::gallery::finish_recording(&working, &path).map(|()| Recorded { path, note })
+                    crate::gallery::move_into_place(&working, &path).map(|()| Recorded { path, note })
                 }
                 Err(e) => {
                     let _ = std::fs::remove_file(&working);
