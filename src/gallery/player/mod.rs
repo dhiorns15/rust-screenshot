@@ -259,6 +259,15 @@ fn decode_gif(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> Resu
 
 /// Copies `from`..`to` of a GIF to `dst`, each frame as it's shown.
 pub fn trim_gif(src: &Path, dst: &Path, from: Duration, to: Duration) -> Result<(), String> {
+    let result = copy_gif(src, dst, from, to);
+    if result.is_err() {
+        // Not a half-written one, which the library would show.
+        let _ = std::fs::remove_file(dst);
+    }
+    result
+}
+
+fn copy_gif(src: &Path, dst: &Path, from: Duration, to: Duration) -> Result<(), String> {
     use image::AnimationDecoder;
     let file = std::io::BufReader::new(std::fs::File::open(src).map_err(|e| e.to_string())?);
     let frames = image::codecs::gif::GifDecoder::new(file).map_err(|e| e.to_string())?.into_frames();
@@ -289,7 +298,6 @@ pub fn trim_gif(src: &Path, dst: &Path, from: Duration, to: Duration) -> Result<
         encoder.as_mut().unwrap().write_frame(&gif_frame).map_err(|e| e.to_string())?;
     }
     if encoder.is_none() {
-        let _ = std::fs::remove_file(dst);
         return Err("Nothing is left between those points".into());
     }
     Ok(())
@@ -1026,6 +1034,23 @@ pub mod tests {
         assert!(player.playing() && player.position().abs_diff(from) < Duration::from_millis(50), "from its start: {:?}", player.position());
         player.update(&ctx);
         assert!(player.playing(), "and goes on");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A GIF that can't be read to the end (cut short here, after some frames) leaves no
+    /// half-trimmed copy behind for the library to show.
+    #[test]
+    fn a_trim_that_fails_leaves_nothing_behind() {
+        let dir = std::env::temp_dir().join(format!("rsnip-player-cut-short-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Recording.gif");
+        gif(&path, 10);
+        let whole = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &whole[..whole.len() * 7 / 10]).unwrap();
+        let trimmed = trimmed_path(&path);
+        let failed = trim(&path, &trimmed, Duration::ZERO, Duration::from_secs(1)).unwrap_err();
+        assert_ne!(failed, "Nothing is left between those points", "it got some frames in before failing: {failed}");
+        assert!(!trimmed.exists(), "no half-written copy");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
