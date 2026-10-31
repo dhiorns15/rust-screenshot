@@ -31,8 +31,9 @@ fn any_rect(w: usize, h: usize) -> impl Strategy<Value = Rect> {
         .prop_map(|(x, y, rw, rh)| Rect::from_min_size(Pos2::new(x, y), Vec2::new(rw, rh)))
 }
 
+/// Up to 100 pixels a side, so the blur's radius (a sixth of the shorter side, at most 14) reaches its cap.
 fn image_and_rect() -> impl Strategy<Value = (usize, usize, u64, Rect)> {
-    (1usize..60, 1usize..60, any::<u64>()).prop_flat_map(|(w, h, seed)| any_rect(w, h).prop_map(move |r| (w, h, seed, r)))
+    (1usize..100, 1usize..100, any::<u64>()).prop_flat_map(|(w, h, seed)| any_rect(w, h).prop_map(move |r| (w, h, seed, r)))
 }
 
 /// Builds one of every kind of shape from a few numbers.
@@ -214,6 +215,20 @@ proptest! {
         prop_assert_eq!(doc.size(), Vec2::new(40.0, 30.0));
         std::fs::remove_dir_all(dir).unwrap();
     }
+}
+
+/// The oracles above are handed `pixel_region`'s answer, so this checks it on its own.
+#[test]
+fn pixel_region_is_the_whole_pixels_the_rect_touches_inside_the_image() {
+    let p = Pixmap::new(10, 8).unwrap();
+    let r = |x0, y0, x1, y1| Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(x1, y1));
+    assert_eq!(pixel_region(&p, r(2.3, 2.7, 5.1, 6.0)), Some((2, 2, 4, 4)), "partly covered pixels count");
+    assert_eq!(pixel_region(&p, r(-5.0, -5.0, 50.0, 50.0)), Some((0, 0, 10, 8)), "clipped to the image");
+    assert_eq!(pixel_region(&p, r(7.5, 1.0, 30.0, 3.0)), Some((7, 1, 3, 2)));
+    assert_eq!(pixel_region(&p, r(12.0, 1.0, 30.0, 3.0)), None, "off the right");
+    assert_eq!(pixel_region(&p, r(-9.0, -9.0, -1.0, -1.0)), None, "off the top left");
+    assert_eq!(pixel_region(&p, r(3.0, 3.0, 3.0, 5.0)), None, "no width");
+    assert_eq!(pixel_region(&p, r(3.0, 3.0, 3.5, 3.5)), Some((3, 3, 1, 1)), "within one pixel");
 }
 
 #[test]
