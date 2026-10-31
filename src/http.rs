@@ -133,12 +133,10 @@ pub fn request(method: &str, url: &str, headers: &[(&str, &str)], body: Body) ->
         .iter()
         .filter_map(|(name, value)| Some((name.as_str().to_owned(), value.to_str().ok()?.to_owned())))
         .collect();
-    let body = reply
-        .body_mut()
-        .with_config()
-        .limit(MAX_REPLY)
-        .read_to_vec()
-        .map_err(|e| explain(host, &e))?;
+    // Past MAX_REPLY it's left unread: a reply that came is never an error (ureq's own limit makes
+    // one), or a push that worked would be reported as failed, and pushed again.
+    let mut body = Vec::new();
+    reply.body_mut().as_reader().take(MAX_REPLY).read_to_end(&mut body).map_err(|e| explain(host, &ureq::Error::Io(e)))?;
     Ok(Response { status, headers, body })
 }
 
@@ -473,6 +471,13 @@ c"), "a'bc");
         assert_eq!(reply.header("content-type"), Some("text/plain"));
         assert_eq!(reply.header("CONTENT-TYPE"), Some("text/plain"));
         assert_eq!(reply.header("etag"), None);
+    }
+
+    #[test]
+    fn a_reply_too_big_to_keep_is_cut_off_rather_than_an_error() {
+        let (url, _) = serve_each(vec![("200 OK", "", "x".repeat(MAX_REPLY as usize + 100_000))]);
+        let reply = request("GET", &url, &[], Body::Empty).unwrap();
+        assert_eq!((reply.status, reply.body.len() as u64), (200, MAX_REPLY), "it worked, whatever the server went on to say");
     }
 
     #[test]
