@@ -24,6 +24,10 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
       - run: cargo build --locked
+      # The built exe captures the runner's screen as `rsnip --full` does: the tray app, the
+      # capture and the save, end to end.
+      - run: ci/capture-test.ps1
+        shell: pwsh
       # Package the debug build to check the installer builds, installs, upgrades and uninstalls.
       - run: installer/build.ps1 -Bin ..\target\debug
         shell: pwsh
