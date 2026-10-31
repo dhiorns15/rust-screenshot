@@ -18,6 +18,9 @@ pub struct Server<'a> {
 
 /// Signs in and looks at the folder, without changing anything.
 pub fn test(s: &Server) -> Result<String, String> {
+    if s.folder.contains(['\n', '\r']) {
+        return Err(format!("{:?} can't be a folder over SFTP", s.folder.trim()));
+    }
     let folder = s.folder.trim_end_matches('/');
     let batch = if folder.is_empty() { "pwd\n".to_owned() } else { format!("cd {}\n", quote(folder)) };
     match run(s, &batch) {
@@ -30,6 +33,12 @@ pub fn test(s: &Server) -> Result<String, String> {
 
 /// Uploads `file` into the folder as `name`, making the folder (a level at a time) if need be.
 pub fn put(s: &Server, name: &str, file: &Path) -> Result<(), String> {
+    // The batch is a command a line, so a line break in a name would start another command
+    // (and sftp has `!`, which runs a shell command).
+    let lossy = file.to_string_lossy();
+    if let Some(part) = [s.folder, name, &lossy].into_iter().find(|part| part.contains(['\n', '\r'])) {
+        return Err(format!("{:?} can't be a folder or file name over SFTP", part.trim()));
+    }
     run(s, &batch(s.folder, name, file))
 }
 
@@ -133,6 +142,12 @@ mod tests {
         );
         assert_eq!(batch("/srv/www", "a.png", Path::new("a.png")), "-mkdir \"/srv\"\n-mkdir \"/srv/www\"\nput \"a.png\" \"/srv/www/a.png\"\n");
         assert_eq!(batch("", "a \"b\".png", Path::new("C:\\x\\a.png")), "put \"C:\\\\x\\\\a.png\" \"a \\\"b\\\".png\"\n");
+        // A line break would end the command and start another (`!` runs a shell command).
+        let server = Server { host: "nas", port: 22, user: "", folder: "shots" };
+        assert_eq!(put(&server, "a\n!rm x.png", Path::new("/a.png")), Err("\"a\\n!rm x.png\" can't be a folder or file name over SFTP".into()));
+        let server = Server { folder: "a\rb", ..server };
+        assert!(put(&server, "a.png", Path::new("/a.png")).unwrap_err().contains("can't be a folder"));
+        assert!(test(&server).unwrap_err().contains("can't be a folder"));
     }
 
     #[test]

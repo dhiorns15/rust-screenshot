@@ -602,7 +602,7 @@ pub fn sign_in_with_code(kind: &Kind, cancelled: &AtomicBool, report: impl Fn(Co
 pub fn test(destination: &Destination, saved: &mut Saved) -> Result<String, String> {
     let secret = saved.secret().unwrap_or_default().to_owned();
     let secret = secret.as_str();
-    match &destination.kind {
+    let result = match &destination.kind {
         Kind::Sftp { host, port, user, folder, .. } => sftp::test(&sftp::Server { host, port: *port, user, folder }),
         Kind::WebDav { url, user, .. } => webdav::test(&webdav::Folder { url, user, password: secret }),
         Kind::S3 { endpoint, region, bucket, access_key, .. } => {
@@ -618,7 +618,8 @@ pub fn test(destination: &Destination, saved: &mut Saved) -> Result<String, Stri
         Kind::GoogleDrive { .. } => google_drive::test(saved),
         Kind::OneDrive { .. } => onedrive::test(saved),
         Kind::Custom { .. } => custom::test(&uploader(&destination.kind, secret)),
-    }
+    };
+    result.map_err(|e| without(e, secret))
 }
 
 /// Sends `file` to `destination`, with its secret; the link to it there, if there is one.
@@ -626,7 +627,7 @@ pub fn push(destination: &Destination, saved: &mut Saved, file: &Path) -> Result
     let secret = saved.secret().unwrap_or_default().to_owned();
     let secret = secret.as_str();
     let name = file.file_name().ok_or("Not a file")?.to_string_lossy().into_owned();
-    match &destination.kind {
+    let result = match &destination.kind {
         Kind::Sftp { host, port, user, folder, public_url } => {
             sftp::put(&sftp::Server { host, port: *port, user, folder }, &name, file)?;
             Ok(link(public_url, &name))
@@ -657,6 +658,17 @@ pub fn push(destination: &Destination, saved: &mut Saved, file: &Path) -> Result
         Kind::GoogleDrive { folder, share_link, folder_id } => google_drive::upload(saved, folder, folder_id, *share_link, file),
         Kind::OneDrive { folder, share_link } => onedrive::upload(saved, folder, *share_link, file),
         Kind::Custom { .. } => custom::upload(&uploader(&destination.kind, secret), file),
+    };
+    result.map_err(|e| without(e, secret))
+}
+
+/// `message` with `secret` taken out of it, if it's in it: a server that echoes a key it won't
+/// take mustn't put it in the push history, or on the screen.
+fn without(message: String, secret: &str) -> String {
+    if secret.len() >= 6 && message.contains(secret) {
+        message.replace(secret, "…")
+    } else {
+        message
     }
 }
 
@@ -846,6 +858,15 @@ mod tests {
         assert_eq!(requests.join().unwrap()[0].path, "/api/users/me");
         let (server, _) = serve_each(vec![("401 Unauthorized", "", String::new())]);
         assert_eq!(test(&to(Kind::Immich { server }), Some("nope")), Err("Immich didn't accept the API key".into()));
+    }
+
+    #[test]
+    fn a_secret_a_server_echoes_is_kept_out_of_what_is_said() {
+        // A server that complains with the key in it, as some do.
+        let (server, _) = serve_each(vec![("500 Internal Server Error", "", r#"{"message":"bad key xoxb-SECRET-123"}"#.to_owned())]);
+        let said = push(&to(Kind::Immich { server }), Some("xoxb-SECRET-123"), &shot("echo")).unwrap_err();
+        assert!(said.contains("bad key …") && !said.contains("SECRET"), "{said}");
+        assert_eq!(without("short".into(), "ab"), "short", "a secret that short would be in anything");
     }
 
     #[test]
@@ -1059,10 +1080,17 @@ mod tests {
         assert_eq!(test(&d, Some("rsnip-secret")), Ok("Connected. The folder will be made with the first push".into()));
         assert_eq!(test(&d, Some("wrong")), Err("The server didn't accept the user name or password".into()));
         assert!(test(&share(""), None).unwrap_err().starts_with("The share didn't let RSnip in"), "no guests there");
-        for file in [&png, &mp4] {
+        // Quotes and a `!` in a name are fine; a `;` would end smbclient's put and start another
+        // command, so a name with one is refused rather than sent.
+        let odd = png.with_file_name("Shot !ls 'a' 1.png");
+        std::fs::copy(&png, &odd).unwrap();
+        for file in [&png, &mp4, &odd] {
             assert_eq!(push(&d, Some("rsnip-secret"), file), Ok(None));
             check(&Path::new(&var("RSNIP_TEST_SMB_DIR")).join("shots/today"), file);
         }
+        let semicolon = png.with_file_name("Shot; !ls 1.png");
+        std::fs::copy(&png, &semicolon).unwrap();
+        assert!(push(&d, Some("rsnip-secret"), &semicolon).unwrap_err().contains("can't be a folder or file name"));
         assert_eq!(test(&d, Some("rsnip-secret")), Ok("Connected".into()));
         println!("SMB: pushed, making the folders");
     }

@@ -114,6 +114,7 @@ mod platform {
 
     pub fn test(s: &Share) -> Result<String, String> {
         let (server, share, folders) = parse(s.share, s.folder).ok_or(BAD_SHARE)?;
+        plain(&folders, "")?;
         let command = if folders.is_empty() { "ls".to_owned() } else { format!("cd {}", quote(&folders.join("/"))) };
         match run(s, &server, &share, &command) {
             Ok(()) => Ok("Connected".into()),
@@ -126,16 +127,32 @@ mod platform {
 
     pub fn put(s: &Share, name: &str, file: &Path) -> Result<(), String> {
         let (server, share, folders) = parse(s.share, s.folder).ok_or(BAD_SHARE)?;
-        run(s, &server, &share, &commands(&folders, name, file)).map_err(|out| explain(out.as_deref()))
+        let lossy = file.to_string_lossy();
+        plain(&folders, name)?;
+        if lossy.contains([';', '\n', '\r']) {
+            return Err(format!("{} can't be pushed to an SMB share from where it is: smbclient takes a `;` in its name as the end of a command", file.display()));
+        }
+        run(s, &server, &share, &commands(&folders, name, &lossy)).map_err(|out| explain(out.as_deref()))
+    }
+
+    /// An error if a folder or `name` has a `;` or a line break in it: smbclient takes `;` as the
+    /// end of one command and the start of another, quotes or no quotes (and `!` then runs a
+    /// shell command), and it has no way of quoting one. (Its commands can't come on standard
+    /// input instead: read from there, it exits 0 however they went.)
+    fn plain(folders: &[String], name: &str) -> Result<(), String> {
+        match folders.iter().map(String::as_str).chain([name]).find(|part| part.contains([';', '\n', '\r'])) {
+            Some(part) => Err(format!("{:?} can't be a folder or file name on an SMB share: smbclient takes a `;` as the end of a command", part.trim())),
+            None => Ok(()),
+        }
     }
 
     /// smbclient's commands for a push: a mkdir for each level of the folder (one that's there
     /// already only complains), then the put. smbclient goes on after a failed command and exits
     /// with how the last one went, so the put is last.
-    pub(super) fn commands(folders: &[String], name: &str, file: &Path) -> String {
+    pub(super) fn commands(folders: &[String], name: &str, file: &str) -> String {
         let mut commands: Vec<String> = (1..=folders.len()).map(|n| format!("mkdir {}", quote(&folders[..n].join("/")))).collect();
         let remote = folders.iter().cloned().chain([name.to_owned()]).collect::<Vec<_>>().join("/");
-        commands.push(format!("put {} {}", quote(&file.to_string_lossy()), quote(&remote)));
+        commands.push(format!("put {} {}", quote(file), quote(&remote)));
         commands.join("; ")
     }
 
@@ -209,10 +226,20 @@ mod tests {
     fn makes_each_level_then_puts_last() {
         let folders = ["a b".to_owned(), "c".to_owned()];
         assert_eq!(
-            platform::commands(&folders, "Shot \"1\".png", Path::new("/home/me/RSnip/Shot 1.png")),
+            platform::commands(&folders, "Shot \"1\".png", "/home/me/RSnip/Shot 1.png"),
             "mkdir \"a b\"; mkdir \"a b/c\"; put \"/home/me/RSnip/Shot 1.png\" \"a b/c/Shot _1_.png\""
         );
-        assert_eq!(platform::commands(&[], "a.png", Path::new("/a.png")), "put \"/a.png\" \"a.png\"");
+        assert_eq!(platform::commands(&[], "a.png", "/a.png"), "put \"/a.png\" \"a.png\"");
+        // A `;` would end the put and start another command (`!rm` would run it in a shell), so a
+        // name with one isn't sent; nor a line break.
+        let share = Share { share: "//nas/shots", folder: "a;b", user: "", password: "" };
+        let refused = "\"a;b\" can't be a folder or file name on an SMB share: smbclient takes a `;` as the end of a command";
+        assert_eq!(put(&share, "x.png", Path::new("/x.png")), Err(refused.into()));
+        assert_eq!(test(&share), Err(refused.into()));
+        let share = Share { folder: "", ..share };
+        assert!(put(&share, "x; !rm -rf y.png", Path::new("/x.png")).unwrap_err().contains("can't be a folder or file name"));
+        assert!(put(&share, "x\n.png", Path::new("/x.png")).unwrap_err().contains("can't be a folder or file name"));
+        assert!(put(&share, "x.png", Path::new("/a;b/x.png")).unwrap_err().contains("from where it is"));
     }
 
     #[cfg(not(windows))]
