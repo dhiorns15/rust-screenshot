@@ -378,7 +378,11 @@ fn change_settings_in(path: &Path, change: impl FnOnce(&mut Settings)) -> Result
     let mut all = match read_settings(path, READ_TRIES) {
         Ok(all) => all,
         Err(why) => {
-            let backup = path.with_extension("json.bak");
+            // settings.json.bak, else settings.json.2.bak and so on: an earlier one isn't written over.
+            let backup = (1..)
+                .map(|n| if n == 1 { path.with_extension("json.bak") } else { path.with_extension(format!("json.{n}.bak")) })
+                .find(|b| !b.exists())
+                .unwrap_or_default();
             std::fs::copy(path, &backup).map_err(|e| format!("{} can't be read ({why}), nor kept aside ({e})", path.display()))?;
             eprintln!("RSnip's settings couldn't be read ({why}): they're kept in {}, and new ones started", backup.display());
             Settings::new()
@@ -448,12 +452,14 @@ fn read_settings(path: &Path, tries: u32) -> Result<Settings, String> {
 }
 
 /// Writes `all` to a new file beside `path`, then renames it over `path`, so another process never
-/// reads it half-written. Only this user can read it, as it has the destinations' details.
+/// reads it half-written. Only this user can read it, as it has the destinations' details. A
+/// symlink (to a dotfiles folder, say) is followed, so the file it points at is replaced, not it.
 fn save_settings(path: &Path, all: &Settings) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     use std::sync::atomic::{AtomicU32, Ordering};
     static NEXT: AtomicU32 = AtomicU32::new(0);
+    let path = &follow_links(path);
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return Err(std::io::ErrorKind::InvalidInput.into()) };
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec_pretty(all)?;
@@ -469,6 +475,18 @@ fn save_settings(path: &Path, all: &Settings) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&temp);
     }
     written
+}
+
+/// Where `path` points, through any symlinks (whether or not the file is there yet, unlike
+/// `canonicalize`): itself if it isn't one.
+fn follow_links(path: &Path) -> PathBuf {
+    let mut target = path.to_owned();
+    // A limit, as a loop of links would have no end.
+    for _ in 0..16 {
+        let Ok(link) = std::fs::read_link(&target) else { break };
+        target = target.parent().map_or(link.clone(), |dir| dir.join(link));
+    }
+    target
 }
 
 /// Settings: numbers, and some text (a folder, say).
@@ -583,6 +601,15 @@ mod tests {
         assert_eq!(std::fs::read(&backup).unwrap(), damaged, "kept aside");
         assert_eq!(number(&read_settings(&path, 1).unwrap(), "CheckUpdates"), Some(0));
 
+        // Damaged again later: the first one kept aside isn't written over.
+        let damaged_again = br#"{"Theme": 2, "Destinations": [{"id": "b""#;
+        std::fs::write(&path, damaged_again).unwrap();
+        change_settings_in(&path, set("CheckUpdates", 1)).unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), damaged, "still the first");
+        let second = dir.join("settings.json.2.bak");
+        assert_eq!(std::fs::read(&second).unwrap(), damaged_again);
+        std::fs::remove_file(&second).unwrap();
+
         // A writer that finds them half-written waits for the rest, rather than starting afresh.
         std::fs::remove_file(&backup).unwrap();
         std::fs::write(&path, &damaged[..10]).unwrap();
@@ -604,6 +631,28 @@ mod tests {
         std::fs::create_dir(&unreadable).unwrap();
         assert!(change_settings_in(&unreadable, set("CheckUpdates", 0)).is_err());
         assert!(unreadable.is_dir() && !dir.join("folder.json.bak").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_kept_in_a_dotfiles_folder_through_a_symlink_stay_there() {
+        let dir = crate::gallery::tests::sandbox_dir("settings-symlink");
+        let (config, dotfiles) = (dir.join("rsnip"), dir.join("dotfiles"));
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        let path = config.join("settings.json");
+        std::os::unix::fs::symlink("../dotfiles/settings.json", &path).unwrap();
+        let is_link = |p: &Path| std::fs::symlink_metadata(p).unwrap().file_type().is_symlink();
+        // Nothing at the other end yet: the file is made there, and the link kept.
+        change_settings_in(&path, set("LibraryDock", 1)).unwrap();
+        assert!(is_link(&path), "the link was replaced by a file");
+        assert_eq!(number(&read_settings(&dotfiles.join("settings.json"), 1).unwrap(), "LibraryDock"), Some(1));
+        // And when there is one, it's the one replaced.
+        change_settings_in(&path, set("Theme", 2)).unwrap();
+        assert!(is_link(&path));
+        let all = read_settings(&dotfiles.join("settings.json"), 1).unwrap();
+        assert_eq!((number(&all, "LibraryDock"), number(&all, "Theme")), (Some(1), Some(2)));
+        assert_eq!(follow_links(&dotfiles.join("settings.json")), dotfiles.join("settings.json"), "not a link: itself");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
