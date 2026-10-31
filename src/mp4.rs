@@ -91,15 +91,20 @@ impl Movie {
             at += size;
         }
         let moov = moov.ok_or("Not an MP4 RSnip can read: it has no index (moov), so it wasn't finished")?;
-        let mut movie = Movie::parse(ftyp.unwrap_or_default(), &moov)?;
-        // A sound track with samples outside the file is left out, rather than failing a cut half
-        // way through.
-        movie.sound.retain(|t| t.samples.iter().all(|s| s.offset.checked_add(s.size as u64).is_some_and(|end| end <= len)));
+        let mut movie = Movie::parse(ftyp.unwrap_or_default(), &moov, len)?;
+        // Samples outside the file: the picture's make it unreadable (and a cut would fail half
+        // way through, after making room for a size that's made up); a sound track with any is
+        // left out.
+        let inside = |t: &Track| t.samples.iter().all(|s| s.offset.checked_add(s.size as u64).is_some_and(|end| end <= len));
+        if !inside(&movie.video) {
+            return Err(bad("its frames run past the end"));
+        }
+        movie.sound.retain(inside);
         Ok(movie)
     }
 
-    /// The movie from its `ftyp` box and `moov`'s contents.
-    fn parse(ftyp: Vec<u8>, moov: &[u8]) -> Result<Movie, String> {
+    /// The movie from its `ftyp` box and `moov`'s contents, in a file `len` bytes long.
+    fn parse(ftyp: Vec<u8>, moov: &[u8], len: u64) -> Result<Movie, String> {
         if find(moov, b"mvex").is_some() {
             return Err(bad("it's fragmented"));
         }
@@ -109,7 +114,7 @@ impl Movie {
         let traks: Vec<&[u8]> = children(moov).filter(|(k, _)| k == b"trak").map(|(_, b)| b).collect();
         let video = traks.iter().find(|t| handler(t) == Some(&b"vide"[..]));
         let movie_timescale = movie_timescale.max(1);
-        let video = Track::parse(video.ok_or_else(|| bad("no video"))?, movie_timescale)?;
+        let video = Track::parse(video.ok_or_else(|| bad("no video"))?, movie_timescale, len)?;
         // The size is in tkhd's last 8 bytes, as 16.16 fixed point.
         let t = full(&video.tkhd);
         let (width, height) = (be32(t, t.len() - 8) >> 16, be32(t, t.len() - 4) >> 16);
@@ -119,7 +124,7 @@ impl Movie {
         let mut ids = vec![video.id()];
         let mut sound = Vec::new();
         for trak in traks.iter().filter(|t| handler(t) == Some(&b"soun"[..])) {
-            if let Ok(track) = Track::parse(trak, movie_timescale) {
+            if let Ok(track) = Track::parse(trak, movie_timescale, len) {
                 if track.id() != 0 && !ids.contains(&track.id()) {
                     ids.push(track.id());
                     sound.push(track);
@@ -281,8 +286,8 @@ impl Movie {
 
 impl Track {
     /// A `trak` box's samples and the boxes to write them out again, in a movie of
-    /// `movie_timescale` units per second.
-    fn parse(trak: &[u8], movie_timescale: u32) -> Result<Track, String> {
+    /// `movie_timescale` units per second, from a file `len` bytes long.
+    fn parse(trak: &[u8], movie_timescale: u32, len: u64) -> Result<Track, String> {
         let trak = content(trak);
         let tkhd = header(find(trak, b"tkhd"), 80, 92).ok_or_else(|| bad("no track header"))?;
         let mdia = content(find(trak, b"mdia").ok_or_else(|| bad("no media"))?);
@@ -298,7 +303,9 @@ impl Track {
         let fixed = be32(sizes, 0);
         let count = be32(sizes, 4) as usize;
         let size = |i: usize| if fixed != 0 { fixed } else { be32(sizes, 8 + 4 * i) };
-        if fixed == 0 && sizes.len() < 8 + 4 * count {
+        // The count is from the file, so it's held to what the file could hold: the sizes listed
+        // one by one, or, all the same size, that many of them.
+        if fixed == 0 && sizes.len() < 8 + 4 * count || fixed != 0 && count as u64 * fixed as u64 > len {
             return Err(bad("its sample sizes are cut short"));
         }
 
@@ -358,7 +365,7 @@ impl Track {
             hdlr: hdlr.to_vec(),
             minf_rest,
             stsd: stsd.to_vec(),
-            ctts_version: ctts.map(|c| c[8]),
+            ctts_version: ctts.map(|c| c.get(8).copied().unwrap_or(0)),
         })
     }
 
@@ -617,14 +624,15 @@ fn children(data: &[u8]) -> impl Iterator<Item = ([u8; 4], &[u8])> {
         let kind: [u8; 4] = data.get(at + 4..at + 8)?.try_into().ok()?;
         let (size, header) = match size {
             0 => (data.len() - at, 8),
-            1 => (be64(data.get(at + 8..at + 16)?, 0) as usize, 16),
+            1 => (usize::try_from(be64(data.get(at + 8..at + 16)?, 0)).ok()?, 16),
             n => (n, 8),
         };
-        if size < header || at + size > data.len() {
+        let end = at.checked_add(size)?;
+        if size < header || end > data.len() {
             return None;
         }
-        let whole = &data[at..at + size];
-        at += size;
+        let whole = &data[at..end];
+        at = end;
         Some((kind, whole))
     })
 }
@@ -1156,16 +1164,61 @@ pub(crate) mod tests {
         let traks: Vec<&[u8]> = children(moov).filter(|(k, _)| k == b"trak").map(|(_, b)| b).collect();
         assert_eq!(traks.len(), 2);
         let only_sound = [find(moov, b"mvhd").unwrap().to_vec(), traks[1].to_vec()].concat();
-        let err = Movie::parse(Vec::new(), &only_sound).err().unwrap();
+        let err = Movie::parse(Vec::new(), &only_sound, u64::MAX).err().unwrap();
         assert_eq!(err, "Not an MP4 RSnip can read: no video");
-        assert!(Movie::parse(Vec::new(), &[find(moov, b"mvhd").unwrap().to_vec(), traks[0].to_vec()].concat()).is_ok(), "and the picture alone is fine");
+        assert!(Movie::parse(Vec::new(), &[find(moov, b"mvhd").unwrap().to_vec(), traks[0].to_vec()].concat(), u64::MAX).is_ok(), "and the picture alone is fine");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A crafted index that would have the reader make room for billions of frames, or read past
+    /// a box or the file, is refused rather than running out of memory or panicking.
+    #[test]
+    fn crafted_indexes_are_refused_without_running_away() {
+        let dir = temp_dir("crafted");
+        let (mut movie, data) = movie(30, 10);
+        let path = dir.join("whole.mp4");
+        write(&mut movie, &data, &path);
+        let file = std::fs::read(&path).unwrap();
+        let moov_at = nth_box(&file, b"moov", 0);
+        // All the frames one size, and four billion of them.
+        let mut huge = file.clone();
+        let stsz = nth_box(&huge, b"stsz", 0);
+        huge[stsz + 12..stsz + 16].copy_from_slice(&1u32.to_be_bytes());
+        huge[stsz + 16..stsz + 20].copy_from_slice(&u32::MAX.to_be_bytes());
+        let stsc = nth_box(&huge, b"stsc", 0);
+        huge[stsc + 20..stsc + 24].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(Movie::parse(Vec::new(), &huge[moov_at + 8..], huge.len() as u64).err().unwrap(), "Not an MP4 RSnip can read: its sample sizes are cut short");
+        // A frame whose size runs past the end of the file.
+        let mut past = file.clone();
+        let stsz = nth_box(&past, b"stsz", 0);
+        past[stsz + 20..stsz + 24].copy_from_slice(&u32::MAX.to_be_bytes());
+        std::fs::write(&path, &past).unwrap();
+        assert_eq!(Movie::open(&path).err().unwrap(), "Not an MP4 RSnip can read: its frames run past the end");
+        // A box with a 64-bit size near the top of the range, and a ctts box with nothing in it.
+        let big: Vec<u8> = [&1u32.to_be_bytes()[..], b"free", &u64::MAX.to_be_bytes()].concat();
+        assert_eq!(children(&big).count(), 0);
+        let bare_ctts = [&[0u8, 0, 0, 8][..], b"ctts"].concat();
+        let (mut again, data) = self::movie(30, 10);
+        write(&mut again, &data, &path);
+        let mut file = std::fs::read(&path).unwrap();
+        let stbl = nth_box(&file, b"stbl", 0);
+        // Grows stbl by the bare box, fixing up the sizes of the boxes it's in.
+        let stbl_size = be32(&file, stbl) as usize;
+        file.splice(stbl + stbl_size..stbl + stbl_size, bare_ctts.iter().copied());
+        for kind in [b"moov", b"trak", b"mdia", b"minf", b"stbl"] {
+            let at = nth_box(&file, kind, 0);
+            let size = be32(&file, at) + 8;
+            file[at..at + 4].copy_from_slice(&size.to_be_bytes());
+        }
+        std::fs::write(&path, &file).unwrap();
+        let _ = Movie::open(&path).map(|m| m.frames());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn refuses_what_it_cant_read() {
-        assert!(Movie::parse(Vec::new(), b"").is_err());
-        assert!(Movie::parse(Vec::new(), &plain_box(b"mvex", b"")).is_err());
+        assert!(Movie::parse(Vec::new(), b"", u64::MAX).is_err());
+        assert!(Movie::parse(Vec::new(), &plain_box(b"mvex", b""), u64::MAX).is_err());
         let path = std::env::temp_dir().join(format!("rsnip-not-mp4-{}", std::process::id()));
         std::fs::write(&path, b"\0\0\0\x10junkjunkjunk").unwrap();
         assert!(Movie::open(&path).is_err());
