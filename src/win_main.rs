@@ -325,7 +325,6 @@ unsafe fn run_tray(mode: Option<Mode>, delay: Option<u32>, update_now: bool) {
     }
 
     hook::uninstall();
-    tray::remove(hwnd);
     DestroyIcon(icon);
     DestroyIcon(icon_large);
 }
@@ -537,6 +536,9 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
         }
         WM_DESTROY => {
             finish_recording_before_exit();
+            // While the window still exists: the icon is identified by it, so removing it after
+            // the message loop (with the window gone) can leave a ghost icon.
+            tray::remove(hwnd);
             PostQuitMessage(0);
             0
         }
