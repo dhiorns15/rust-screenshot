@@ -415,10 +415,12 @@ pub fn take_print_screen(run: Run, program: &str, action: Action) -> Result<Opti
     let keys = parse_list(&before).ok_or_else(|| format!("GNOME's screenshot keys read as {before}"))?;
     let kept: Vec<String> = keys.iter().filter(|k| !same(k, PRINT)).cloned().collect();
     let changed = kept.len() != keys.len();
+    // RSnip's binding first: if that fails, the screenshot tool still has its keys, and nothing
+    // need be given back. (The other way round, a failure here left them taken with no record.)
+    set(run, program, action, PRINT)?;
     if changed {
         run(&["set", SHELL, SCREENSHOT_UI, &list(&kept)])?;
     }
-    set(run, program, action, PRINT)?;
     Ok(changed.then_some(before))
 }
 
@@ -665,6 +667,18 @@ mod tests {
         assert_eq!(state.print_screen(), None);
         assert_eq!(state.keys, State::default().keys, "RSnip has no shortcuts left");
         assert!(fake.borrow().changes_to("custom0").is_empty());
+    }
+
+    #[test]
+    fn if_rsnips_binding_cant_be_set_the_screenshot_tool_keeps_print_screen() {
+        let fake = gnome();
+        // gsettings can read, but setting a custom shortcut fails (a read-only dconf, say).
+        let run = |args: &[&str]| match args {
+            ["set", schema, ..] if schema.starts_with(CUSTOM) => Err("Permission denied".to_owned()),
+            _ => fake.borrow_mut().run(args),
+        };
+        assert!(take_print_screen(&run, PROGRAM, Action::Region).is_err());
+        assert_eq!(fake.borrow().screenshot_keys(), ["Print"], "not taken, as there'd be nothing to give it back from");
     }
 
     #[test]
