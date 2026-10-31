@@ -197,7 +197,7 @@ impl Doc {
         let snapshot = self.current();
         if snapshot.shapes.is_empty() && !framed {
             // The PNG alone is the whole picture.
-            remove_layers(&self.path);
+            remove_layer_files(&self.path);
             return Ok(());
         }
         let (json, base) = layer_paths(&self.path).ok_or("Bad file name")?;
@@ -404,13 +404,19 @@ fn load_layers(path: &Path) -> Option<Snapshot> {
     Some(Snapshot { base: Arc::new(base), shapes: layers.shapes })
 }
 
-/// Deletes the saved layers for `path`, e.g. when the screenshot is deleted.
+/// Deletes the saved layers for `path` and what search knows about it, when the screenshot itself
+/// is deleted.
 pub fn remove_layers(path: &Path) {
+    remove_layer_files(path);
+    super::search::remove(path);
+}
+
+/// Deletes just the saved layers for `path`: the screenshot stays, with its search data.
+fn remove_layer_files(path: &Path) {
     if let Some((json, base)) = layer_paths(path) {
         let _ = std::fs::remove_file(json);
         let _ = std::fs::remove_file(base);
     }
-    super::search::remove(path);
 }
 
 /// Deletes saved layers in `dir` whose screenshot is gone, e.g. deleted in Explorer.
@@ -980,6 +986,31 @@ mod tests {
         // Changing the PNG elsewhere makes the layers stale, so it opens flat.
         RgbaImage::from_pixel(60, 40, image::Rgba([0, 0, 0, 255])).save(&path).unwrap();
         assert!(Doc::open(&path).unwrap().current().shapes.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn saving_without_annotations_keeps_the_search_data() {
+        let dir = std::env::temp_dir().join(format!("rsnip-plain-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shot.png");
+        RgbaImage::from_pixel(60, 40, image::Rgba([200, 200, 200, 255])).save(&path).unwrap();
+        let mut doc = Doc::open(&path).unwrap();
+        doc.add(Shape::Redact { rect: Rect::from_min_size(Pos2::new(5.0, 5.0), Vec2::splat(10.0)), color: Color32::BLACK });
+        doc.save_layers(false).unwrap();
+        assert!(has_layers(&path));
+        // Its window, description and push records, which search keeps.
+        let meta = super::super::search::meta_path(&path).unwrap();
+        std::fs::write(&meta, b"{}").unwrap();
+
+        // Deleting the annotation (or cropping) and saving leaves a plain PNG, still with its data.
+        doc.replace(0, None);
+        doc.save_layers(false).unwrap();
+        assert!(!has_layers(&path));
+        assert!(meta.exists(), "saving isn't deleting the screenshot");
+
+        remove_layers(&path);
+        assert!(!meta.exists(), "deleting it takes the search data along");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
