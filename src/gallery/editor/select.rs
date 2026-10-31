@@ -30,6 +30,9 @@ pub(super) enum Grab {
 /// An annotation being moved or resized; it's drawn live and committed as one undo step.
 pub(super) struct Manip {
     pub(super) index: usize,
+    /// Doc version the drag started on; an undo or delete meanwhile drops the drag, since the
+    /// shape may be gone or `index` may be another shape's.
+    version: u64,
     grab: Grab,
     /// Where the drag started, in screen points.
     origin: Pos2,
@@ -62,7 +65,8 @@ impl Editor {
     }
 
     pub fn delete_selected(&mut self, tools: &mut ToolState) {
-        if let Some(sel) = self.selection.take() {
+        // Not a selection the doc has changed under (the toolbar's button comes before `sync_selection`).
+        if let Some(sel) = self.selection.take().filter(|s| s.version == self.doc.version) {
             self.doc.replace(sel.index, None);
         }
         tools.selection = None;
@@ -70,6 +74,9 @@ impl Editor {
 
     /// Drops the selection when it no longer applies, then applies the toolbar's edits to it.
     pub(super) fn sync_selection(&mut self, tools: &mut ToolState) {
+        if self.manip.as_ref().is_some_and(|m| m.version != self.doc.version) {
+            self.manip = None;
+        }
         if tools.tool != self.last_tool {
             self.last_tool = tools.tool;
             self.selection = None;
@@ -122,7 +129,7 @@ impl Editor {
     pub(super) fn begin_manip(&mut self, index: usize, grab: Grab, origin: Pos2, select: bool, font: Option<&FontVec>) {
         let start = self.doc.current().shapes[index].clone();
         let start_bounds = start.bounds(font);
-        self.manip = Some(Manip { index, grab, origin, live: start.clone(), start, start_bounds, select });
+        self.manip = Some(Manip { index, version: self.doc.version, grab, origin, live: start.clone(), start, start_bounds, select });
     }
 
     /// Follows the pointer (screen points) while an annotation is moved or resized.
@@ -153,7 +160,7 @@ impl Editor {
 
     /// Commits the move or resize as one undo step.
     pub(super) fn end_manip(&mut self, tools: &mut ToolState) {
-        let Some(m) = self.manip.take() else { return };
+        let Some(m) = self.manip.take().filter(|m| m.version == self.doc.version) else { return };
         if m.live != m.start {
             self.doc.replace(m.index, Some(m.live));
         }

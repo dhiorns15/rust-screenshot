@@ -88,11 +88,20 @@ impl Harness {
 
     /// Presses at `from`, moves to `to` over several frames, and releases.
     fn drag_screen(&mut self, from: Pos2, to: Pos2) {
+        self.drag_screen_doing(from, to, |_| {});
+    }
+
+    /// Like `drag_screen`, with `meanwhile` done half way, while the button is still held.
+    fn drag_screen_doing(&mut self, from: Pos2, to: Pos2, meanwhile: impl FnOnce(&mut Harness)) {
         self.time += 1.0;
         let button = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() };
         self.frame(vec![Event::PointerMoved(from)]);
         self.frame(vec![button(from, true)]);
+        let mut meanwhile = Some(meanwhile);
         for i in 1..=5 {
+            if i == 3 {
+                meanwhile.take().unwrap()(self);
+            }
             self.frame(vec![Event::PointerMoved(from + (to - from) * i as f32 / 5.0)]);
         }
         self.frame(vec![button(to, false)]);
@@ -259,6 +268,50 @@ fn drawn_shape_stays_selected_and_moves() {
     assert_eq!(h.editor.doc.current().shapes.len(), 1, "moving shouldn't draw another box");
     h.editor.doc.undo();
     assert_eq!(first_rect(&h), r(100.0, 100.0, 300.0, 200.0), "a move is one undo step");
+}
+
+/// Ctrl+Z, Ctrl+Y and the keys work while the mouse is held down on an annotation (the
+/// shortcuts don't know about the canvas), so a drag whose shape is undone or deleted under it
+/// must just stop, not draw it back or move whatever is now at its index.
+#[test]
+fn undo_and_delete_during_a_drag_drop_the_drag() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Box;
+    drag(&mut h, (100.0, 100.0), (300.0, 200.0));
+    let (grab, to) = (image_point(&h, 150.0, 100.0), image_point(&h, 200.0, 150.0));
+    h.drag_screen_doing(grab, to, |h| {
+        assert!(h.editor.manip.is_some(), "the box is being moved");
+        h.editor.doc.undo();
+    });
+    assert!(h.editor.doc.current().shapes.is_empty(), "the undone box isn't drawn back by the drag");
+    h.editor.doc.redo();
+    h.frame(vec![]);
+    assert_eq!(first_rect(&h), r(100.0, 100.0, 300.0, 200.0), "and comes back where it was");
+
+    // With two boxes, undoing the second while dragging it leaves the first alone.
+    drag(&mut h, (400.0, 100.0), (600.0, 200.0));
+    let (grab, to) = (image_point(&h, 450.0, 100.0), image_point(&h, 450.0, 300.0));
+    h.drag_screen_doing(grab, to, |h| h.editor.doc.undo());
+    assert_eq!(h.editor.doc.current().shapes.len(), 1);
+    assert_eq!(first_rect(&h), r(100.0, 100.0, 300.0, 200.0));
+
+    // Delete while dragging removes the box; the drag doesn't bring it back.
+    h.tools.tool = Tool::Select;
+    h.frame(vec![]);
+    h.click(150.0, 100.0);
+    let (grab, to) = (image_point(&h, 150.0, 100.0), image_point(&h, 200.0, 150.0));
+    h.drag_screen_doing(grab, to, |h| key(h, Key::Delete));
+    assert!(h.editor.doc.current().shapes.is_empty());
+
+    // The toolbar's Delete button, clicked in a frame the shortcuts already redid the deletion in.
+    h.editor.doc.undo();
+    h.frame(vec![]);
+    h.click(150.0, 100.0);
+    assert!(h.tools.selection.is_some());
+    h.editor.doc.redo();
+    h.editor.delete_selected(&mut h.tools);
+    h.frame(vec![]);
+    assert!(h.editor.doc.current().shapes.is_empty() && h.tools.selection.is_none());
 }
 
 #[test]
@@ -428,7 +481,7 @@ fn panic_hunt(seed: u64, steps: usize) {
     let mut rng = Rng(seed | 1);
     let keys = [Key::Delete, Key::Backspace, Key::Escape, Key::Enter, Key::ArrowLeft, Key::ArrowRight, Key::ArrowUp, Key::ArrowDown, Key::A];
     for step in 0..steps {
-        match rng.below(10) {
+        match rng.below(12) {
             0 => h.tools.tool = crate::gallery::editor::TOOLS[rng.below(crate::gallery::editor::TOOLS.len())].0,
             1 | 2 => {
                 let p = rng.point(&h);
@@ -445,6 +498,16 @@ fn panic_hunt(seed: u64, steps: usize) {
                 h.modifiers = egui::Modifiers::NONE;
             }
             7 => h.type_text(["a", "Hi ", "123", " "][rng.below(4)]),
+            8 | 9 => {
+                // Undo, redo or a key while the mouse is still held down.
+                let (a, b) = (rng.point(&h), rng.point(&h));
+                let (what, k) = (rng.below(3), keys[rng.below(keys.len())]);
+                h.drag_screen_doing(a, b, |h| match what {
+                    0 => h.editor.doc.undo(),
+                    1 => h.editor.doc.redo(),
+                    _ => key(h, k),
+                });
+            }
             _ => {
                 // What the toolbar's Undo and Redo do.
                 h.editor.finish_text(&h.tools);
