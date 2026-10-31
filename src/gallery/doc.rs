@@ -8,7 +8,8 @@ use eframe::egui::{Color32, Pos2, Rect, Vec2};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use tiny_skia::{
-    BlendMode, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform,
+    BlendMode, FillRule, FilterQuality, LineCap, LineJoin, Paint, PathBuilder, Pattern, Pixmap, SpreadMode, Stroke,
+    Transform,
 };
 
 const MAX_HISTORY: usize = 200;
@@ -30,6 +31,9 @@ pub enum Shape {
     /// Dims everything outside `rect`.
     Spotlight { rect: Rect },
     Pixelate { rect: Rect },
+    /// A magnified copy of the image under `rect`, drawn into `inset` (the same shape, bigger),
+    /// both outlined and joined by two lines.
+    Zoom { rect: Rect, inset: Rect, color: Color32, width: f32 },
 }
 
 /// Pixel size of the pixelate mosaic.
@@ -50,6 +54,7 @@ impl Shape {
             Shape::Pen { points, .. } => Rect::from_points(points),
             Shape::Text { pos, text, size, .. } => text_bounds(*pos, text, *size, font).shrink(4.0),
             Shape::Step { center, diameter, .. } => Rect::from_center_size(*center, Vec2::splat(*diameter)),
+            Shape::Zoom { rect, inset, .. } => rect.union(*inset),
         }
     }
 
@@ -57,21 +62,16 @@ impl Shape {
     /// so things drawn inside a box stay clickable.
     pub fn hit(&self, p: Pos2, tol: f32, font: Option<&FontVec>) -> bool {
         match self {
-            Shape::Box { rect, width, .. } => {
-                let reach = width / 2.0 + tol;
-                let inner = rect.shrink(reach);
-                rect.expand(reach).contains(p) && !(inner.is_positive() && inner.contains(p))
-            }
+            Shape::Box { rect, width, .. } => on_outline(*rect, width / 2.0 + tol, p),
+            // The magnified copy is solid; the area it magnifies only counts its outline.
+            Shape::Zoom { rect, inset, width, .. } => inset.expand(tol).contains(p) || on_outline(*rect, width / 2.0 + tol, p),
             Shape::Ellipse { rect, width, .. } => polyline_distance(&ellipse_points(*rect), true, p) <= width / 2.0 + tol,
             // The head is wider than the shaft.
             Shape::Arrow { from, to, width, .. } => segment_distance(p, *from, *to) <= width * 1.5 + tol,
             Shape::Pen { points, width, .. } => polyline_distance(points, false, p) <= width / 2.0 + tol,
             Shape::Line { from, to, width, .. } => segment_distance(p, *from, *to) <= width / 2.0 + tol,
             // Its inside is the part left bright, usually with other annotations in it.
-            Shape::Spotlight { rect } => {
-                let inner = rect.shrink(tol);
-                rect.expand(tol).contains(p) && !(inner.is_positive() && inner.contains(p))
-            }
+            Shape::Spotlight { rect } => on_outline(*rect, tol, p),
             _ => self.bounds(font).expand(tol).contains(p),
         }
     }
@@ -95,6 +95,10 @@ impl Shape {
             Shape::Pen { points, .. } => points.iter_mut().for_each(|p| *p += d),
             Shape::Text { pos, .. } => *pos += d,
             Shape::Step { center, .. } => *center += d,
+            Shape::Zoom { rect, inset, .. } => {
+                *rect = rect.translate(d);
+                *inset = inset.translate(d);
+            }
         }
         s
     }
@@ -125,9 +129,69 @@ impl Shape {
                 *diameter = to.width().max(1.0);
                 *center = to.center();
             }
+            Shape::Zoom { rect, inset, .. } => {
+                *rect = Rect::from_two_pos(map(rect.min), map(rect.max));
+                *inset = Rect::from_two_pos(map(inset.min), map(inset.max));
+            }
         }
         s
     }
+}
+
+/// Whether `p` is within `reach` of `rect`'s outline.
+fn on_outline(rect: Rect, reach: f32, p: Pos2) -> bool {
+    let inner = rect.shrink(reach);
+    rect.expand(reach).contains(p) && !(inner.is_positive() && inner.contains(p))
+}
+
+/// How much bigger a new zoom shows the area it magnifies.
+const ZOOM_SCALE: f32 = 2.0;
+
+/// The room between a new zoom's area and its magnified copy.
+const ZOOM_GAP: f32 = 16.0;
+
+/// Where a new zoom of `rect` shows its magnified copy: twice the size, beside it on the right if
+/// that fits inside `bounds` (the image), else on the left, below or above, lined up with it as
+/// far as `bounds` allows. Where none of those fit, it's kept inside `bounds` over the area,
+/// smaller if it must be.
+pub fn zoom_inset(rect: Rect, bounds: Rect) -> Rect {
+    let size = rect.size() * ZOOM_SCALE;
+    let c = rect.center();
+    // Centred on the area, then slid along the side it's on (never back over the area) to fit.
+    let slide = |start: f32, len: f32, lo: f32, hi: f32| start.min(hi - len).max(lo);
+    let x = slide(c.x - size.x / 2.0, size.x, bounds.min.x, bounds.max.x);
+    let y = slide(c.y - size.y / 2.0, size.y, bounds.min.y, bounds.max.y);
+    let beside = [
+        Pos2::new(rect.max.x + ZOOM_GAP, y),
+        Pos2::new(rect.min.x - ZOOM_GAP - size.x, y),
+        Pos2::new(x, rect.max.y + ZOOM_GAP),
+        Pos2::new(x, rect.min.y - ZOOM_GAP - size.y),
+    ];
+    let fallback = || {
+        let k = ZOOM_SCALE.min(bounds.width() / rect.width()).min(bounds.height() / rect.height()).max(0.0);
+        slid_inside(Rect::from_center_size(c, rect.size() * k), bounds)
+    };
+    beside.into_iter().map(|min| Rect::from_min_size(min, size)).find(|r| bounds.contains_rect(*r)).unwrap_or_else(fallback)
+}
+
+/// `r` moved the least distance that puts it inside `bounds` (its top left, if it's too big).
+fn slid_inside(r: Rect, bounds: Rect) -> Rect {
+    let r = r.translate(Vec2::new((bounds.max.x - r.max.x).min(0.0), (bounds.max.y - r.max.y).min(0.0)));
+    r.translate(Vec2::new((bounds.min.x - r.min.x).max(0.0), (bounds.min.y - r.min.y).max(0.0)))
+}
+
+/// The two lines from a zoom's area `rect` to its magnified copy `inset`, joining their facing
+/// corners on whichever side they're furthest apart; `None` when they overlap.
+pub fn zoom_connectors(rect: Rect, inset: Rect) -> Option<[(Pos2, Pos2); 2]> {
+    let (r, i) = (rect, inset);
+    let sides = [
+        (i.min.x - r.max.x, [(r.right_top(), i.left_top()), (r.right_bottom(), i.left_bottom())]),
+        (r.min.x - i.max.x, [(r.left_top(), i.right_top()), (r.left_bottom(), i.right_bottom())]),
+        (i.min.y - r.max.y, [(r.left_bottom(), i.left_top()), (r.right_bottom(), i.right_top())]),
+        (r.min.y - i.max.y, [(r.left_top(), i.left_bottom()), (r.right_top(), i.right_bottom())]),
+    ];
+    let widest = sides.into_iter().filter(|(gap, _)| *gap > 0.0).max_by(|a, b| a.0.total_cmp(&b.0));
+    widest.map(|(_, lines)| lines)
 }
 
 /// Points around the ellipse inscribed in `rect`.
@@ -584,6 +648,7 @@ pub fn render(snapshot: &Snapshot, font: Option<&FontVec>) -> RgbaImage {
             }
             Shape::Blur { rect } => blur(&mut pixmap, *rect),
             Shape::Pixelate { rect } => pixelate(&mut pixmap, *rect),
+            Shape::Zoom { rect, inset, color, width } => draw_zoom(&mut pixmap, *rect, *inset, *color, *width),
             Shape::Redact { rect, color } => {
                 if let Some(r) = sk_rect(*rect) {
                     let mut p = paint(*color);
@@ -675,6 +740,82 @@ pub fn render(snapshot: &Snapshot, font: Option<&FontVec>) -> RgbaImage {
         dst.copy_from_slice(&[un(src[0]), un(src[1]), un(src[2]), src[3]]);
     }
     out
+}
+
+/// Draws the pixels under `rect` magnified into `inset` (as drawn so far, so earlier annotations
+/// there are magnified too), then outlines both and joins them.
+fn draw_zoom(pixmap: &mut Pixmap, rect: Rect, inset: Rect, color: Color32, width: f32) {
+    let id = Transform::identity();
+    let (sx, sy) = (inset.width() / rect.width(), inset.height() / rect.height());
+    let scaled = sx.is_finite() && sy.is_finite() && sx > 0.0 && sy > 0.0;
+    if let (Some((x0, y0, rw, rh)), Some(target), true) = (pixel_region(pixmap, rect), sk_rect(inset), scaled) {
+        let stride = pixmap.width() as usize * 4;
+        if let Some(mut src) = Pixmap::new(rw as u32, rh as u32) {
+            for (y, row) in src.data_mut().chunks_exact_mut(rw * 4).enumerate() {
+                let from = (y0 + y) * stride + x0 * 4;
+                row.copy_from_slice(&pixmap.data()[from..from + rw * 4]);
+            }
+            // Maps the copied pixels, which start at (x0, y0) in the image, onto `inset`.
+            let tx = inset.min.x + (x0 as f32 - rect.min.x) * sx;
+            let ty = inset.min.y + (y0 as f32 - rect.min.y) * sy;
+            let to_inset = Transform::from_row(sx, 0.0, 0.0, sy, tx, ty);
+            let shader = Pattern::new(src.as_ref(), SpreadMode::Pad, FilterQuality::Bicubic, 1.0, to_inset);
+            pixmap.fill_rect(target, &Paint { shader, ..Paint::default() }, id, None);
+        }
+    }
+    // Only what can reach the image is stroked: the rasteriser can't cope with huge coordinates.
+    let reach = Rect::from_min_size(Pos2::ZERO, Vec2::new(pixmap.width() as f32, pixmap.height() as f32)).expand(width + 2.0);
+    let edges = |r: Rect| [(r.left_top(), r.right_top()), (r.right_top(), r.right_bottom()), (r.right_bottom(), r.left_bottom()), (r.left_bottom(), r.left_top())];
+    let outlines = [rect, inset].into_iter().flat_map(edges);
+    let connectors = zoom_connectors(rect, inset).into_iter().flatten();
+    for (lines, width) in [(outlines.collect::<Vec<_>>(), width), (connectors.collect(), (width / 2.0).max(1.0))] {
+        let mut pb = PathBuilder::new();
+        for (a, b) in lines.into_iter().filter_map(|(a, b)| clip_segment(a, b, reach)) {
+            pb.move_to(a.x, a.y);
+            pb.line_to(b.x, b.y);
+        }
+        if let Some(path) = pb.finish() {
+            pixmap.stroke_path(&path, &paint(color), &stroke(width), id, None);
+        }
+    }
+}
+
+/// The part of the line from `a` to `b` inside `clip`, if any (Liang–Barsky). Where it's cut,
+/// the end lands exactly on `clip`'s edge, so outlines stay straight however far they reach.
+fn clip_segment(a: Pos2, b: Pos2, clip: Rect) -> Option<(Pos2, Pos2)> {
+    // In f64, so even lines between the far ends of f32's range have a finite length.
+    let (ax, ay, dx, dy) = (a.x as f64, a.y as f64, b.x as f64 - a.x as f64, b.y as f64 - a.y as f64);
+    // How far along each end is, and the edge (across, at) it was cut at.
+    let (mut start, mut end) = ((0.0f64, None), (1.0f64, None));
+    let sides = [
+        (-dx, ax - clip.min.x as f64, (true, clip.min.x)),
+        (dx, clip.max.x as f64 - ax, (true, clip.max.x)),
+        (-dy, ay - clip.min.y as f64, (false, clip.min.y)),
+        (dy, clip.max.y as f64 - ay, (false, clip.max.y)),
+    ];
+    for (p, q, edge) in sides {
+        let t = q / p;
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else if p < 0.0 && t > start.0 {
+            start = (t, Some(edge));
+        } else if p > 0.0 && t < end.0 {
+            end = (t, Some(edge));
+        }
+    }
+    let at = |(t, edge): (f64, Option<(bool, f32)>)| {
+        let mut p = Pos2::new((ax + dx * t) as f32, (ay + dy * t) as f32);
+        match edge {
+            Some((true, x)) => p.x = x,
+            Some((false, y)) => p.y = y,
+            None => {}
+        }
+        p.clamp(clip.min, clip.max)
+    };
+    // A little slack for rounding, which at worst leaves a speck on `clip`'s edge.
+    (start.0 <= end.0 + 1e-9).then(|| (at(start), at(end)))
 }
 
 /// Calls `f(x, y, coverage)` for every pixel the laid-out text touches.
@@ -1241,6 +1382,79 @@ mod tests {
         let spot = Shape::Spotlight { rect: r(10.0, 10.0, 40.0, 40.0) };
         assert!(spot.hit(Pos2::new(10.0, 25.0), 3.0, None), "picked by its border");
         assert!(!spot.hit(Pos2::new(25.0, 25.0), 3.0, None), "not by the bright area inside");
+    }
+
+    fn r(x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
+        Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(x1, y1))
+    }
+
+    #[test]
+    fn a_new_zooms_copy_goes_beside_it_where_it_fits() {
+        let image = r(0.0, 0.0, 400.0, 300.0);
+        assert_eq!(zoom_inset(r(20.0, 20.0, 60.0, 40.0), image), r(76.0, 10.0, 156.0, 50.0), "twice the size, on the right, centred");
+        assert_eq!(zoom_inset(r(20.0, 0.0, 60.0, 20.0), image), r(76.0, 0.0, 156.0, 40.0), "slid down to stay on the image");
+        assert_eq!(zoom_inset(r(300.0, 20.0, 380.0, 40.0), image), r(124.0, 10.0, 284.0, 50.0), "no room on the right: the left");
+        let small = r(0.0, 0.0, 300.0, 200.0);
+        assert_eq!(zoom_inset(r(150.0, 20.0, 250.0, 60.0), small), r(100.0, 76.0, 300.0, 156.0), "nor the left: below");
+        assert_eq!(zoom_inset(r(150.0, 140.0, 250.0, 180.0), small), r(100.0, 44.0, 300.0, 124.0), "nor below: above");
+        assert_eq!(zoom_inset(r(100.0, 50.0, 250.0, 150.0), small), small, "nowhere beside it: over it, kept on the image");
+        assert_eq!(zoom_inset(small, small), small, "the whole image can't be any bigger");
+    }
+
+    #[test]
+    fn a_zoom_is_joined_to_its_copy_on_the_side_they_face() {
+        let area = r(0.0, 0.0, 10.0, 10.0);
+        let p = Pos2::new;
+        let right = zoom_connectors(area, r(20.0, 0.0, 40.0, 20.0));
+        assert_eq!(right, Some([(p(10.0, 0.0), p(20.0, 0.0)), (p(10.0, 10.0), p(20.0, 20.0))]));
+        let left = zoom_connectors(area, r(-40.0, -5.0, -20.0, 15.0));
+        assert_eq!(left, Some([(p(0.0, 0.0), p(-20.0, -5.0)), (p(0.0, 10.0), p(-20.0, 15.0))]));
+        let below = zoom_connectors(area, r(5.0, 30.0, 25.0, 50.0));
+        assert_eq!(below, Some([(p(0.0, 10.0), p(5.0, 30.0)), (p(10.0, 10.0), p(25.0, 30.0))]));
+        let above = zoom_connectors(area, r(-30.0, -40.0, -10.0, -20.0));
+        assert_eq!(above, Some([(p(0.0, 0.0), p(-30.0, -20.0)), (p(10.0, 0.0), p(-10.0, -20.0))]), "further above than to the left");
+        assert_eq!(zoom_connectors(area, r(40.0, 15.0, 60.0, 35.0)).unwrap()[0].1, p(40.0, 15.0), "further right than below");
+        assert_eq!(zoom_connectors(area, r(5.0, 5.0, 25.0, 25.0)), None, "overlapping");
+    }
+
+    #[test]
+    fn lines_are_clipped_to_what_can_be_seen() {
+        let clip = r(0.0, 0.0, 10.0, 10.0);
+        let p = Pos2::new;
+        assert_eq!(clip_segment(p(-10.0, 5.0), p(20.0, 5.0), clip), Some((p(0.0, 5.0), p(10.0, 5.0))));
+        assert_eq!(clip_segment(p(2.0, 2.0), p(8.0, 8.0), clip), Some((p(2.0, 2.0), p(8.0, 8.0))), "inside stays whole");
+        assert_eq!(clip_segment(p(-10.0, -10.0), p(-1.0, 20.0), clip), None, "beside it");
+        assert_eq!(clip_segment(p(20.0, 0.0), p(20.0, 10.0), clip), None);
+        let (a, b) = clip_segment(p(5.0, -f32::MAX), p(5.0, f32::MAX), clip).unwrap();
+        assert_eq!((a, b), (p(5.0, 0.0), p(5.0, 10.0)), "even from the ends of the range");
+    }
+
+    #[test]
+    fn renders_a_zoom_magnified_and_outlined() {
+        // Red on the left half, blue on the right.
+        let base = RgbaImage::from_fn(100, 60, |x, _| image::Rgba(if x < 50 { [255, 0, 0, 255] } else { [0, 0, 255, 255] }));
+        let green = Color32::from_rgb(0, 255, 0);
+        let zoom = Shape::Zoom { rect: r(20.0, 10.0, 80.0, 50.0), inset: r(10.0, 5.0, 85.0, 55.0), color: green, width: 2.0 };
+        let out = render(&Snapshot { base: Arc::new(base), shapes: vec![zoom.clone()] }, None);
+        let px = |x: u32, y: u32| out.get_pixel(x, y).0;
+        // The middle of the area (x = 50) lands at 10 + 30 × 1.25 = 47.5 in the copy.
+        for (x, y) in [(15, 30), (30, 20), (45, 40)] {
+            let [red, _, blue, _] = px(x, y);
+            assert!(red > 240 && blue < 15, "{x},{y} is red: {:?}", px(x, y));
+        }
+        for (x, y) in [(50, 30), (70, 20), (83, 40)] {
+            let [red, _, blue, _] = px(x, y);
+            assert!(red < 15 && blue > 240, "{x},{y} is blue: {:?}", px(x, y));
+        }
+        assert_eq!(px(50, 10), [0, 255, 0, 255], "the area's outline");
+        assert_eq!(px(10, 30), [0, 255, 0, 255], "the copy's outline");
+        assert_eq!(px(5, 30), [255, 0, 0, 255], "outside both is untouched");
+
+        let apart = Shape::Zoom { rect: r(0.0, 0.0, 10.0, 10.0), inset: r(20.0, 0.0, 40.0, 20.0), color: green, width: 2.0 };
+        assert!(apart.hit(Pos2::new(30.0, 15.0), 1.0, None), "picked anywhere on the copy");
+        assert!(apart.hit(Pos2::new(10.0, 5.0), 1.0, None), "or by the area's outline");
+        assert!(!apart.hit(Pos2::new(5.0, 5.0), 1.0, None), "not inside the area, which stays clickable");
+        assert!(!apart.hit(Pos2::new(15.0, 5.0), 1.0, None), "nor between them");
     }
 
     #[test]

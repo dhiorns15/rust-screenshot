@@ -23,6 +23,7 @@ annotation (colour, size, shadow, delete) and a hint on how to use it.
 | Step | N | click to drop 1, 2, 3… markers |
 | Highlight | H | drag; multiply-blended like a real highlighter |
 | Spotlight | S | drag; dims everything outside the area |
+| Zoom | Z | drag over the part to magnify; a copy twice the size appears beside it (where there's room on the image), outlined and joined to it by two lines. Drag the copy to move it on its own, or the outline of the magnified part to move both. Annotations under it are magnified too |
 | Blur | U | drag; strong enough to make text unreadable |
 | Pixelate | X | drag; mosaic over sensitive content |
 | Redact | R | drag; a solid box (black by default) that hides content for certain. *Auto-redact* reads the text in the screenshot and covers every email address, IP address, API key or token, card number and phone number it finds, in one undo step (it needs text reading, like Copy text) |

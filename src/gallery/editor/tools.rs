@@ -23,10 +23,12 @@ pub enum Tool {
     Pixelate,
     Crop,
     CopyText,
+    /// Shows a magnified copy of part of the image beside it.
+    Zoom,
 }
 
 /// The toolbar's tools, in order: (tool, label, shortcut key, tooltip).
-pub const TOOLS: [(Tool, &str, Key, &str); 15] = [
+pub const TOOLS: [(Tool, &str, Key, &str); 16] = [
     (Tool::Select, "Select", Key::V, "Click an annotation to select it, then move, resize, restyle or delete it (V)"),
     (Tool::CopyText, "Copy text", Key::O, "Drag across text in the image to select it, then copy it with Ctrl+C. Double-click selects a line (O)"),
     (Tool::Arrow, "Arrow", Key::A, "Drag to draw an arrow; hold Shift to snap to 45° (A)"),
@@ -38,6 +40,7 @@ pub const TOOLS: [(Tool, &str, Key, &str); 15] = [
     (Tool::Step, "Step", Key::N, "Click to add numbered steps 1, 2, 3… (N)"),
     (Tool::Highlight, "Highlight", Key::H, "Drag to highlight an area (H)"),
     (Tool::Spotlight, "Spotlight", Key::S, "Drag to dim everything outside an area (S)"),
+    (Tool::Zoom, "Zoom", Key::Z, "Drag over the part to magnify; a bigger copy appears beside it, which you can drag anywhere (Z)"),
     (Tool::Blur, "Blur", Key::U, "Drag to blur sensitive content (U)"),
     (Tool::Pixelate, "Pixelate", Key::X, "Drag to pixelate sensitive content (X)"),
     (Tool::Redact, "Redact", Key::R, "Drag to cover content with a solid box (R)"),
@@ -106,6 +109,7 @@ impl Style {
             Shape::Redact { color, .. } => plain(Tool::Redact, *color, 0.0),
             Shape::Spotlight { .. } => plain(Tool::Spotlight, Color32::TRANSPARENT, 0.0),
             Shape::Pixelate { .. } => plain(Tool::Pixelate, Color32::TRANSPARENT, 0.0),
+            Shape::Zoom { color, width, .. } => plain(Tool::Zoom, *color, *width),
         }
     }
 
@@ -117,7 +121,8 @@ impl Style {
             | Shape::Ellipse { color, width, .. }
             | Shape::Arrow { color, width, .. }
             | Shape::Line { color, width, .. }
-            | Shape::Pen { color, width, .. } => {
+            | Shape::Pen { color, width, .. }
+            | Shape::Zoom { color, width, .. } => {
                 *color = self.color;
                 *width = self.width;
             }
@@ -222,7 +227,7 @@ impl ToolState {
 
     /// Whether the Size slider means a line width (or step size).
     pub fn uses_width(&self) -> bool {
-        matches!(self.style_tool(), Tool::Arrow | Tool::Line | Tool::Box | Tool::Ellipse | Tool::Pen | Tool::Step)
+        matches!(self.style_tool(), Tool::Arrow | Tool::Line | Tool::Box | Tool::Ellipse | Tool::Pen | Tool::Step | Tool::Zoom)
     }
 
     pub(super) fn step_diameter(&self) -> f32 {

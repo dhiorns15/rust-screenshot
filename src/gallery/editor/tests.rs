@@ -511,6 +511,41 @@ fn shift_snaps_lines_and_endpoints_drag() {
     }
 }
 
+/// The first shape's area and magnified copy, if it's a zoom.
+fn zoom_rects(h: &Harness) -> (Rect, Rect) {
+    match &h.editor.doc.current().shapes[0] {
+        Shape::Zoom { rect, inset, .. } => (*rect, *inset),
+        _ => panic!("not a zoom"),
+    }
+}
+
+#[test]
+fn a_zooms_copy_moves_on_its_own_and_its_area_moves_both() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Zoom;
+    drag(&mut h, (100.0, 100.0), (200.0, 150.0));
+    assert_eq!(zoom_rects(&h), (r(100.0, 100.0, 200.0, 150.0), r(216.0, 75.0, 416.0, 175.0)), "a copy twice the size on the right");
+    assert!(h.tools.selection.is_some_and(|s| s.kind == Tool::Zoom), "the new zoom is selected");
+    assert!(h.tools.uses_color() && h.tools.uses_width(), "its colour and line width are in the options row");
+
+    // Dragging the copy moves just the copy.
+    drag(&mut h, (300.0, 125.0), (300.0, 225.0));
+    assert_eq!(zoom_rects(&h), (r(100.0, 100.0, 200.0, 150.0), r(216.0, 175.0, 416.0, 275.0)));
+    // Dragging the area's outline moves both.
+    drag(&mut h, (150.0, 100.0), (170.0, 110.0));
+    assert_eq!(zoom_rects(&h), (r(120.0, 110.0, 220.0, 160.0), r(236.0, 185.0, 436.0, 285.0)));
+    assert_eq!(h.editor.doc.current().shapes.len(), 1, "moving shouldn't draw another zoom");
+    h.editor.doc.undo();
+    h.editor.doc.undo();
+    assert_eq!(zoom_rects(&h).1, r(216.0, 75.0, 416.0, 175.0), "each move is one undo step");
+
+    // With the Select tool, the copy is picked and moved on its own too.
+    h.tools.tool = Tool::Select;
+    h.frame(vec![]);
+    drag(&mut h, (300.0, 125.0), (350.0, 125.0));
+    assert_eq!(zoom_rects(&h), (r(100.0, 100.0, 200.0, 150.0), r(266.0, 75.0, 466.0, 175.0)));
+}
+
 /// Random input for the panic hunt: xorshift, so a seed replays the same run.
 struct Rng(u64);
 

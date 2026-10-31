@@ -188,6 +188,7 @@ pub fn tool_icon(tool: Tool) -> &'static str {
         Tool::Step => icon::NUMBER_CIRCLE_ONE,
         Tool::Highlight => icon::HIGHLIGHTER_CIRCLE,
         Tool::Spotlight => icon::FLASHLIGHT,
+        Tool::Zoom => icon::MAGNIFYING_GLASS_PLUS,
         Tool::Blur => icon::DROP_HALF,
         Tool::Pixelate => icon::CHECKERBOARD,
         Tool::Redact => icon::EYE_SLASH,

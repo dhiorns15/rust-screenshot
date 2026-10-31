@@ -19,7 +19,7 @@ use super::env::ReadWords;
 pub use copy_text::TextStatus;
 use crop::{crop_grab, CropDrag, CropSelection};
 use preview::{preview, shape_from_drag, snap_45};
-use select::{Grab, Manip, Selection, PICK_SLACK};
+use select::{body_grab, Grab, Manip, Selection, PICK_SLACK};
 use text::PendingText;
 pub use tools::{size_slider, Style, Tool, ToolState, ANNOTATION_FONT, GROUP_STARTS, PALETTE, PALETTE_NAMES, TEXT_SIZES, TOOLS};
 
@@ -195,8 +195,8 @@ impl Editor {
                     }
                 } else if tools.tool == Tool::Select {
                     self.finish_text(tools);
-                    match (origin.and_then(|o| self.doc.shape_at(o, PICK_SLACK / scale, font)), press) {
-                        (Some(index), Some(p)) => self.begin_manip(index, Grab::Move, p, true, font),
+                    match (origin.and_then(|o| Some((self.doc.shape_at(o, PICK_SLACK / scale, font)?, o))), press) {
+                        (Some((index, o)), Some(p)) => self.begin_manip(index, body_grab(&self.doc.current().shapes[index], o), p, true, font),
                         _ => self.deselect(tools),
                     }
                 } else if tools.tool != Tool::Step {
@@ -290,7 +290,7 @@ impl Editor {
             }
 
             if let Some(drag) = &self.drag {
-                preview(&painter, drag, tools, scale, to_screen, bounds, rect);
+                preview(&painter, drag, tools, scale, to_screen, bounds, rect, self.texture.as_ref().map(|t| t.id()));
             }
             self.paint_selection(&painter, to_screen, font);
             self.selection_keys(ui, tools);
@@ -316,7 +316,8 @@ impl Editor {
             }
             return;
         }
-        let Some(shape) = shape_from_drag(&drag, tools) else { return };
+        let bounds = Rect::from_min_size(Pos2::ZERO, self.doc.size());
+        let Some(shape) = shape_from_drag(&drag, tools, bounds) else { return };
         let pen = matches!(shape, Shape::Pen { .. });
         self.doc.add(shape);
         // What was just drawn stays selected so it can be adjusted straight away. Not freehand

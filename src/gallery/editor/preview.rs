@@ -6,10 +6,11 @@ use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke};
 use super::crop::{crop_shade, shade_outside};
 use super::text::{preview_font, shadow_offset};
 use super::{Drag, Tool, ToolState};
-use crate::gallery::doc::{arrow_geometry, ellipse_points, Shape, SPOTLIGHT_DIM};
+use crate::gallery::doc::{arrow_geometry, ellipse_points, zoom_connectors, zoom_inset, Shape, SPOTLIGHT_DIM};
 
-/// The shape a finished drag with the current tool draws, if it's big enough to keep.
-pub(super) fn shape_from_drag(drag: &Drag, tools: &ToolState) -> Option<Shape> {
+/// The shape a finished drag with the current tool draws, if it's big enough to keep. `bounds` is
+/// the image, which a zoom's magnified copy is placed inside.
+pub(super) fn shape_from_drag(drag: &Drag, tools: &ToolState, bounds: Rect) -> Option<Shape> {
     let rect = Rect::from_two_pos(drag.start, drag.current);
     let big_enough = rect.width() >= 2.0 && rect.height() >= 2.0;
     let color = tools.color();
@@ -22,6 +23,7 @@ pub(super) fn shape_from_drag(drag: &Drag, tools: &ToolState) -> Option<Shape> {
         Tool::Pixelate if big_enough => Shape::Pixelate { rect },
         Tool::Redact if big_enough => Shape::Redact { rect, color },
         Tool::Spotlight if big_enough => Shape::Spotlight { rect },
+        Tool::Zoom if big_enough => Shape::Zoom { rect, inset: zoom_inset(rect, bounds), color, width },
         Tool::Line if drag.start.distance(drag.current) >= 2.0 => Shape::Line { from: drag.start, to: drag.current, color, width },
         Tool::Arrow if drag.start.distance(drag.current) >= 4.0 => Shape::Arrow { from: drag.start, to: drag.current, color, width },
         Tool::Pen => Shape::Pen { points: drag.points.clone(), color, width },
@@ -29,7 +31,8 @@ pub(super) fn shape_from_drag(drag: &Drag, tools: &ToolState) -> Option<Shape> {
     })
 }
 
-/// Shows the shape being dragged out.
+/// Shows the shape being dragged out. `texture` is the rendered image shown on `canvas`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn preview(
     painter: &egui::Painter,
     drag: &Drag,
@@ -38,17 +41,19 @@ pub(super) fn preview(
     to_screen: impl Fn(Pos2) -> Pos2,
     bounds: Rect,
     canvas: Rect,
+    texture: Option<egui::TextureId>,
 ) {
     if tools.tool == Tool::Crop {
         let r = Rect::from_two_pos(to_screen(drag.start), to_screen(drag.current));
         let size = Rect::from_two_pos(drag.start, drag.current).intersect(bounds).size();
         crop_shade(painter, r, canvas, size, false);
-    } else if let Some(shape) = shape_from_drag(drag, tools) {
-        paint_shape(painter, &shape, scale, to_screen, canvas, false);
+    } else if let Some(shape) = shape_from_drag(drag, tools, bounds) {
+        paint_shape(painter, &shape, scale, to_screen, canvas, false, texture);
     }
 }
 
-/// Approximates how the renderer draws `shape`, in screen points.
+/// Approximates how the renderer draws `shape`, in screen points. A zoom magnifies `texture`,
+/// the rendered image shown on `canvas`.
 pub(super) fn paint_shape(
     painter: &egui::Painter,
     shape: &Shape,
@@ -56,6 +61,7 @@ pub(super) fn paint_shape(
     to_screen: impl Fn(Pos2) -> Pos2,
     canvas: Rect,
     matching_font: bool,
+    texture: Option<egui::TextureId>,
 ) {
     let screen_rect = |r: &Rect| Rect::from_two_pos(to_screen(r.min), to_screen(r.max));
     let stroke = |width: f32, color: Color32| Stroke::new((width * scale).max(1.0), color);
@@ -110,6 +116,19 @@ pub(super) fn paint_shape(
             let (c, r) = (to_screen(*center), diameter * scale / 2.0);
             painter.circle(c, r, *color, Stroke::new((diameter / 16.0).max(1.5) * scale, Color32::WHITE));
             painter.text(c, Align2::CENTER_CENTER, number.to_string(), preview_font(diameter * 0.55 * scale, matching_font), Color32::WHITE);
+        }
+        Shape::Zoom { rect, inset, color, width } => {
+            let (source, copy) = (screen_rect(rect), screen_rect(inset));
+            if let Some(texture) = texture {
+                let uv = |p: Pos2| ((p - canvas.min) / canvas.size()).to_pos2().clamp(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                painter.image(texture, copy, Rect::from_min_max(uv(source.min), uv(source.max)), Color32::WHITE);
+            }
+            for r in [source, copy] {
+                painter.rect_stroke(r, 0.0, stroke(*width, *color), egui::StrokeKind::Middle);
+            }
+            for (a, b) in zoom_connectors(*rect, *inset).into_iter().flatten() {
+                painter.line_segment([to_screen(a), to_screen(b)], stroke((width / 2.0).max(1.0), *color));
+            }
         }
     }
 }

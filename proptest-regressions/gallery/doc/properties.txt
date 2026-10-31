@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 922b60904de6c57bb1885dc9c9d9e3f27d1673628563bb1772820f42e06ba507 # shrinks to ops = [Add((0, 0.0, 0.0, 0.0, 0.0)), Undo]
+cc d6aacf3d931592aaf33221d6073f582bcb79cea6a552922f0c3d6a2deb624f65 # shrinks to rect = [[0.0 -704477184.0] - [0.0 0.0]], inset = [[0.0 0.0] - [0.0 0.0]], width = 16.840254

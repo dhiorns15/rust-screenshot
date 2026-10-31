@@ -41,7 +41,7 @@ fn shape(kind: u8, a: f32, b: f32, c: f32, d: f32) -> Shape {
     let rect = Rect::from_two_pos(Pos2::new(a, b), Pos2::new(c, d));
     let (from, to) = (Pos2::new(a, b), Pos2::new(c, d));
     let color = Color32::from_rgb(a as u8, b as u8, c as u8);
-    match kind % 12 {
+    match kind % 13 {
         0 => Shape::Box { rect, color, width: 1.0 + d % 20.0 },
         1 => Shape::Ellipse { rect, color, width: 3.0 },
         2 => Shape::Highlight { rect, color },
@@ -53,8 +53,16 @@ fn shape(kind: u8, a: f32, b: f32, c: f32, d: f32) -> Shape {
         8 => Shape::Line { from, to, color, width: 2.5 },
         9 => Shape::Redact { rect, color },
         10 => Shape::Spotlight { rect },
-        _ => Shape::Pixelate { rect },
+        11 => Shape::Pixelate { rect },
+        // Its copy anywhere: beside it, over it, smaller, or off the image.
+        _ => Shape::Zoom { rect, inset: Rect::from_min_size(Pos2::new(d - 50.0, c - 100.0), rect.size() * (a % 5.0)), color, width: 1.0 + b % 9.0 },
     }
+}
+
+/// A rect for the render hunt: ordinary, empty, huge, or far off a small image.
+fn wild_rect() -> impl Strategy<Value = Rect> {
+    let coord = prop_oneof![4 => -50.0f32..150.0, 1 => Just(0.0f32), 1 => -1.0e9f32..1.0e9, 1 => Just(f32::MAX), 1 => Just(-f32::MAX)];
+    (coord.clone(), coord.clone(), coord.clone(), coord).prop_map(|(a, b, c, d)| Rect::from_two_pos(Pos2::new(a, b), Pos2::new(c, d)))
 }
 
 fn any_shape() -> impl Strategy<Value = (u8, f32, f32, f32, f32)> {
@@ -160,6 +168,25 @@ proptest! {
             let inside = region.is_some_and(|(x0, y0, rw, rh)| (x0..x0 + rw).contains(&x) && (y0..y0 + rh).contains(&y));
             prop_assert!(inside || a == b, "pixel {x},{y} outside {region:?} changed");
         }
+    }
+
+    #[test]
+    fn rendering_any_shapes_keeps_the_image_size(shapes in prop::collection::vec(any_shape(), 0..8)) {
+        let base = RgbaImage::from_vec(60, 40, noise(60, 40, 7)).unwrap();
+        let shapes = shapes.into_iter().map(|(k, a, b, c, d)| shape(k, a, b, c, d)).collect();
+        let out = render(&Snapshot { base: Arc::new(base), shapes }, None);
+        prop_assert_eq!(out.dimensions(), (60, 40));
+    }
+
+    #[test]
+    fn a_zoom_renders_whatever_its_rects(rect in wild_rect(), inset in wild_rect(), width in 0.0f32..30.0) {
+        let base = RgbaImage::from_vec(60, 40, noise(60, 40, 3)).unwrap();
+        let zoom = Shape::Zoom { rect, inset, color: Color32::RED, width };
+        let out = render(&Snapshot { base: Arc::new(base.clone()), shapes: vec![zoom.clone()] }, None);
+        prop_assert_eq!(out.dimensions(), (60, 40));
+        // And it can be picked, moved and resized without trouble.
+        let _ = (zoom.hit(Pos2::new(5.0, 5.0), 3.0, None), zoom.translated(Vec2::splat(7.0)), zoom.resized(zoom.bounds(None), rect));
+        let _ = (zoom_inset(rect, Rect::from_min_size(Pos2::ZERO, Vec2::new(60.0, 40.0))), zoom_connectors(rect, inset));
     }
 
     #[test]

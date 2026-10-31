@@ -18,8 +18,8 @@ command line or a desktop shortcut, with a few things Windows-only (see
   image or a video, and a red button to start. [More](docs/capturing.md)
 - **Copied and saved** every time: each capture goes to the clipboard and to RSnip's folder, and
   every action can have its own shortcut. [Settings](docs/settings.md)
-- **Annotate** with arrows, lines, boxes, ellipses, steps, text, highlighter, spotlight and a pen,
-  and crop. Everything stays selectable, and annotations stay editable after saving.
+- **Annotate** with arrows, lines, boxes, ellipses, steps, text, highlighter, spotlight, zoomed-in
+  callouts and a pen, and crop. Everything stays selectable, and annotations stay editable after saving.
   [More](docs/editor.md)
 - **Hide what shouldn't be seen** with blur, pixelate or redact, or let *Auto-redact* find the
   emails, keys and card numbers for you. [More](docs/editor.md#tools)

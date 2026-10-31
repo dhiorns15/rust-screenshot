@@ -25,6 +25,17 @@ pub(super) enum Grab {
     Edges(Edges),
     /// An arrow or line's start (`false`) or end (`true`).
     Endpoint(bool),
+    /// A zoom's magnified copy, which moves on its own.
+    Inset,
+}
+
+/// What dragging `shape` by its body from `p` (image pixels) does: moves it, or just a zoom's
+/// magnified copy when that's where it's held.
+pub(super) fn body_grab(shape: &Shape, p: Pos2) -> Grab {
+    match shape {
+        Shape::Zoom { inset, .. } if inset.contains(p) => Grab::Inset,
+        _ => Grab::Move,
+    }
 }
 
 /// An annotation being moved or resized; it's drawn live and committed as one undo step.
@@ -123,7 +134,8 @@ impl Editor {
         // inside the last; their body only moves them with the Select tool.
         let filled = matches!(shape, Shape::Highlight { .. } | Shape::Blur { .. } | Shape::Redact { .. } | Shape::Pixelate { .. });
         let movable = !filled || self.last_tool == Tool::Select;
-        (movable && shape.hit(to_img(p), PICK_SLACK / scale, font)).then_some(Grab::Move)
+        let at = to_img(p);
+        (movable && shape.hit(at, PICK_SLACK / scale, font)).then(|| body_grab(shape, at))
     }
 
     pub(super) fn begin_manip(&mut self, index: usize, grab: Grab, origin: Pos2, select: bool, font: Option<&FontVec>) {
@@ -138,6 +150,13 @@ impl Editor {
         let delta = (p - m.origin) / scale;
         m.live = match m.grab {
             Grab::Move => m.start.translated(delta),
+            Grab::Inset => {
+                let mut s = m.start.clone();
+                if let Shape::Zoom { inset, .. } = &mut s {
+                    *inset = inset.translate(delta);
+                }
+                s
+            }
             Grab::Endpoint(head) => {
                 let mut s = m.start.clone();
                 if let Shape::Arrow { from, to, .. } | Shape::Line { from, to, .. } = &mut s {
@@ -171,7 +190,8 @@ impl Editor {
 
     pub(super) fn paint_manip(&self, painter: &egui::Painter, scale: f32, to_screen: impl Fn(Pos2) -> Pos2, matching_font: bool) {
         if let Some(m) = &self.manip {
-            paint_shape(painter, &m.live, scale, to_screen, self.canvas, matching_font);
+            let texture = self.texture.as_ref().map(|t| t.id());
+            paint_shape(painter, &m.live, scale, to_screen, self.canvas, matching_font, texture);
         }
     }
 
@@ -207,12 +227,12 @@ impl Editor {
         font: Option<&FontVec>,
     ) {
         let cursor = |grab: Grab| match grab {
-            Grab::Move => egui::CursorIcon::Move,
+            Grab::Move | Grab::Inset => egui::CursorIcon::Move,
             Grab::Edges(edges) => edges.cursor(),
             Grab::Endpoint(_) => egui::CursorIcon::Crosshair,
         };
         if let Some(m) = &self.manip {
-            let icon = if m.grab == Grab::Move { egui::CursorIcon::Grabbing } else { cursor(m.grab) };
+            let icon = if matches!(m.grab, Grab::Move | Grab::Inset) { egui::CursorIcon::Grabbing } else { cursor(m.grab) };
             ui.ctx().set_cursor_icon(icon);
             return;
         }
