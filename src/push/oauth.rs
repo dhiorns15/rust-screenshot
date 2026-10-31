@@ -215,22 +215,33 @@ enum Poll {
 fn finish_device_with(provider: &Provider, code: &DeviceCode, cancelled: &AtomicBool, mut pause: impl FnMut(Duration)) -> Result<SignedIn, String> {
     let mut interval = code.interval;
     let mut waited = Duration::ZERO;
+    // The last time the service couldn't be reached at all: the code is still good, and the user
+    // may be signing in on their phone, so it's asked again, until the code runs out.
+    let mut unreachable = None;
     loop {
         pause(interval);
         waited += interval;
         if cancelled.load(Ordering::Relaxed) {
             return Err("Cancelled".into());
         }
-        match poll(provider, code)? {
-            Poll::Done(signed_in) => return Ok(signed_in),
-            Poll::Pending => {}
-            Poll::SlowDown => interval += SLOWER,
+        match poll(provider, code) {
+            Ok(Poll::Done(signed_in)) => return Ok(signed_in),
+            Ok(Poll::Pending) => {}
+            Ok(Poll::SlowDown) => interval += SLOWER,
+            Err(Asked::Refused(why)) => return Err(why),
+            Err(Asked::Unreachable(why)) => unreachable = Some(why),
         }
         // The service says when the code has expired, but in case it never does.
         if waited >= code.expires_in {
-            return Err(expired());
+            return Err(unreachable.unwrap_or_else(expired));
         }
     }
+}
+
+/// Why a `poll` had no answer: the service said no, or it couldn't be reached.
+enum Asked {
+    Refused(String),
+    Unreachable(String),
 }
 
 fn expired() -> String {
@@ -238,18 +249,18 @@ fn expired() -> String {
 }
 
 /// Asks once whether the user has signed in (RFC 8628 section 3.4).
-fn poll(provider: &Provider, code: &DeviceCode) -> Result<Poll, String> {
+fn poll(provider: &Provider, code: &DeviceCode) -> Result<Poll, Asked> {
     let mut form = format!("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={}&client_id={}", encode(&code.device_code), encode(provider.client_id));
     if !provider.client_secret.is_empty() {
         form.push_str(&format!("&client_secret={}", encode(provider.client_secret)));
     }
-    let reply = post_form(&provider.token_url, &form)?;
+    let reply = post_form(&provider.token_url, &form).map_err(Asked::Unreachable)?;
     let json: Value = serde_json::from_slice(&reply.body).unwrap_or_default();
     if reply.is_success() {
         let field = |key: &str| json[key].as_str().filter(|s| !s.is_empty()).map(str::to_owned);
         return match (field("refresh_token"), field("access_token")) {
             (Some(refresh_token), Some(access_token)) => Ok(Poll::Done(SignedIn { refresh_token, access_token })),
-            _ => Err(format!("{} signed in but didn't give RSnip a way to stay signed in", provider.name)),
+            _ => Err(Asked::Refused(format!("{} signed in but didn't give RSnip a way to stay signed in", provider.name))),
         };
     }
     let name = provider.name;
@@ -257,9 +268,9 @@ fn poll(provider: &Provider, code: &DeviceCode) -> Result<Poll, String> {
         "authorization_pending" => Ok(Poll::Pending),
         "slow_down" => Ok(Poll::SlowDown),
         // Microsoft says authorization_declined.
-        "access_denied" | "authorization_declined" => Err(format!("You didn't allow RSnip in {name}: choose Sign in to try again")),
-        "expired_token" | "invalid_grant" | "bad_verification_code" => Err(expired()),
-        error => Err(refusal(provider, error).unwrap_or_else(|| reply.check(name).err().unwrap_or_default())),
+        "access_denied" | "authorization_declined" => Err(Asked::Refused(format!("You didn't allow RSnip in {name}: choose Sign in to try again"))),
+        "expired_token" | "invalid_grant" | "bad_verification_code" => Err(Asked::Refused(expired())),
+        error => Err(Asked::Refused(refusal(provider, error).unwrap_or_else(|| reply.check(name).err().unwrap_or_default()))),
     }
 }
 
@@ -478,6 +489,15 @@ pub(super) mod tests {
         });
         assert_eq!(result, Err("Cancelled".into()));
         assert_eq!(requests.join().unwrap().len(), 1, "asked once, before the cancel");
+        // A service that can't be reached is asked again (the user may be signing in on their
+        // phone meanwhile), until the code runs out, and then that's what's said.
+        let (server, _) = serve_each(Vec::new());
+        let down = Provider { token_url: "http://127.0.0.1:9/token".into(), ..provider(&server, "") };
+        let short = DeviceCode { expires_in: Duration::from_secs(2), ..code(1) };
+        let mut asked = 0;
+        let unreachable = finish_device_with(&down, &short, &AtomicBool::new(false), |_| asked += 1).unwrap_err();
+        assert!(unreachable.contains("127.0.0.1:9"), "once the code's run out, why: {unreachable}");
+        assert_eq!(asked, 2, "asked again after the first miss");
         // The real wait ends early on a cancel.
         let started = std::time::Instant::now();
         let (server, _) = serve_each(Vec::new());
