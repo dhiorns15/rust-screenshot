@@ -95,7 +95,7 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
     // made them); it reports when it started, or why it didn't, so a failure shows straight away.
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let thread = {
-        let (stop, microphone_delay) = (stop.clone(), Arc::clone(&microphone_delay));
+        let (stop, microphone_delay, main) = (stop.clone(), Arc::clone(&microphone_delay), main as isize);
         std::thread::spawn(move || {
             let mut notes = Vec::new();
             let mut hevc = format.hevc;
@@ -135,7 +135,17 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
                 }
             }
             let _ = ready_tx.send(encoder.as_ref().map(|_| started).map_err(Clone::clone));
-            match encoder.and_then(|encoder| run(encoder, area, fps, started, &stop, sound)) {
+            let recorded = encoder.and_then(|encoder| {
+                let recorded = run(encoder, area, fps, started, &stop, sound);
+                if !stop.load(Ordering::Relaxed) {
+                    // It ended by itself (the longest recording, or the encoder failed): the
+                    // main window stops it as if Stop were clicked, taking down the frame and
+                    // the bar.
+                    unsafe { PostMessageW(main as HWND, WM_APP_STOP_RECORDING, 0, 0) };
+                }
+                recorded
+            });
+            match recorded {
                 Ok(later) => {
                     notes.extend(later);
                     let note = Some(notes.join(" ")).filter(|n| !n.is_empty());
@@ -416,6 +426,24 @@ mod tests {
         let (sound, _) = crate::encode::read_stream(&path, true);
         std::fs::remove_file(&path).unwrap();
         assert!(sound.abs_diff(video) < Duration::from_millis(250), "video {video:?}, sound {sound:?}");
+    }
+
+    /// The longest recording ends by itself, with its file finished.
+    #[test]
+    fn stops_at_the_longest_recording() {
+        let path = std::env::temp_dir().join(format!("rsnip-rec-long-{}.mp4", std::process::id()));
+        let encoder = match Mp4::new(&path, 64, 48, 30, false) {
+            Ok(mp4) => Box::new(mp4),
+            Err(e) => return eprintln!("skipped: {e}"),
+        };
+        let begun = Instant::now();
+        let stop = AtomicBool::new(false);
+        let notes = run(encoder, rect(0, 0, 64, 48), 30, begun - MAX_LENGTH + Duration::from_millis(200), &stop, None).unwrap();
+        assert!(notes.is_empty() && begun.elapsed() < Duration::from_secs(5), "{notes:?} after {:?}", begun.elapsed());
+        assert!(!stop.load(Ordering::Relaxed), "it wasn't stopped");
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(&bytes[4..8], b"ftyp");
     }
 
     #[test]
