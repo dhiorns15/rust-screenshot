@@ -184,7 +184,7 @@ pub fn zoom_inset(rect: Rect, bounds: Rect) -> Rect {
 }
 
 /// `r` moved the least distance that puts it inside `bounds` (its top left, if it's too big).
-fn slid_inside(r: Rect, bounds: Rect) -> Rect {
+pub fn slid_inside(r: Rect, bounds: Rect) -> Rect {
     let r = r.translate(Vec2::new((bounds.max.x - r.max.x).min(0.0), (bounds.max.y - r.max.y).min(0.0)));
     r.translate(Vec2::new((bounds.min.x - r.min.x).max(0.0), (bounds.min.y - r.min.y).max(0.0)))
 }

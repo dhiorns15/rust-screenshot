@@ -985,6 +985,84 @@ fn copy_text_says_when_theres_none() {
     assert!(shows(&h, "No text found in this image"));
 }
 
+/// Ctrl+V as egui-winit reports it: `Event::Paste` with the clipboard's text if it has some (the
+/// key press itself is dropped), then V let go of.
+fn press_ctrl_v(h: &mut Harness<App>, text: Option<String>) {
+    h.event(egui::Event::ModifiersChanged(Modifiers::COMMAND));
+    if let Some(text) = text {
+        h.event(egui::Event::Paste(text));
+    }
+    h.step();
+    h.event(egui::Event::Key { key: Key::V, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::COMMAND });
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    settle(h);
+}
+
+fn annotations(h: &Harness<App>) -> Vec<super::doc::Shape> {
+    h.state().editor.as_ref().unwrap().doc.current().shapes.clone()
+}
+
+#[test]
+fn ctrl_c_ctrl_x_and_ctrl_v_copy_cut_and_paste_the_selected_annotation() {
+    let mut h = harness("kittest-copy-annotation");
+    click(&mut h, "Box");
+    drag_on_canvas(&mut h, (0.2, 0.2), (0.5, 0.5));
+    h.event(egui::Event::Copy);
+    settle(&mut h);
+    let copied = h.state().env.sandboxed().copied.clone();
+    assert!(copied.as_deref().and_then(editor::shape_from_text).is_some(), "the box, not the image: {copied:?}");
+    assert!(shows(&h, "Copied the annotation: Ctrl+V pastes it (to copy the image, press Esc first)"));
+
+    press_ctrl_v(&mut h, copied.clone());
+    assert_eq!(annotations(&h).len(), 2, "pasted once, not again when V is let go of");
+    let moved = |s: &super::doc::Shape| s.bounds(None).min;
+    assert_eq!(moved(&annotations(&h)[1]) - moved(&annotations(&h)[0]), Vec2::splat(16.0));
+    // With only a picture or files on the clipboard there's no paste event, just V let go of.
+    press_ctrl_v(&mut h, None);
+    assert_eq!(annotations(&h).len(), 3);
+    // The key itself, as other backends (and kittest) send it.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::V);
+    settle(&mut h);
+    assert_eq!(annotations(&h).len(), 4);
+
+    h.event(egui::Event::Cut);
+    settle(&mut h);
+    assert_eq!(annotations(&h).len(), 3, "the pasted box is cut");
+    assert!(shows(&h, "Cut the annotation: Ctrl+V pastes it"));
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    settle(&mut h);
+    assert_eq!(annotations(&h).len(), 4, "and the cut undone");
+}
+
+#[test]
+fn pasting_while_typing_text_pastes_an_annotation_as_one_and_other_text_into_the_text() {
+    let mut h = harness_at("kittest-paste-into-text", 1.0 / 60.0);
+    click(&mut h, "Arrow");
+    drag_on_canvas(&mut h, (0.2, 0.2), (0.5, 0.5));
+    h.event(egui::Event::Copy);
+    settle(&mut h);
+    let copied = h.state().env.sandboxed().copied.clone();
+
+    click(&mut h, "Text");
+    let canvas = h.state().editor.as_ref().unwrap().canvas;
+    click_at(&mut h, canvas.lerp_inside(Vec2::new(0.6, 0.7)), 1);
+    settle(&mut h);
+    h.event(egui::Event::Text("Hello".into()));
+    settle(&mut h);
+    press_ctrl_v(&mut h, Some(" there".into()));
+    assert!(h.state().editor.as_ref().unwrap().is_typing(), "still typing");
+    press_ctrl_v(&mut h, copied);
+
+    let app = h.state();
+    assert!(!app.editor.as_ref().unwrap().is_typing(), "the text is finished");
+    let shapes = annotations(&h);
+    assert_eq!(shapes.len(), 3, "the arrow, the text and the pasted arrow");
+    assert!(matches!(&shapes[1], super::doc::Shape::Text { text, .. } if text == "Hello there"), "none of the annotation's JSON in the text");
+    assert!(matches!(shapes[2], super::doc::Shape::Arrow { .. }));
+    assert_eq!(app.tools.tool, Tool::Select, "so the pasted arrow can be moved");
+    assert!(app.tools.selection.is_some_and(|s| s.kind == Tool::Arrow));
+}
+
 /// Opens the Redact tool on screenshot a, with `lines` of text "read" from it, and clicks Auto-redact.
 fn auto_redact(name: &str, lines: &[&str]) -> Harness<'static, App> {
     let mut h = harness_at(name, 1.0 / 60.0);

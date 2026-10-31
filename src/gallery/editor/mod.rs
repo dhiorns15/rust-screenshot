@@ -1,5 +1,6 @@
 //! The annotation canvas: tools, mouse handling and live previews.
 
+mod arrange;
 mod copy_text;
 mod crop;
 mod handles;
@@ -16,6 +17,7 @@ use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Pos2, Rect, Sense,
 
 use super::doc::{render, Doc, Shape};
 use super::env::ReadWords;
+pub use arrange::shape_from_text;
 pub use copy_text::TextStatus;
 use crop::{crop_grab, cut_strip, strip_pixels, CropDrag, CropSelection};
 use preview::{preview, shape_from_drag, snap_45};
@@ -55,6 +57,8 @@ pub struct Editor {
     /// Text is being selected by dragging across it.
     text_drag: bool,
     auto_redact: Option<redact::AutoRedact>,
+    /// The clipboard text last pasted, and how many times in a row, so each paste lands further on.
+    pasted: Option<(String, u32)>,
 }
 
 impl Editor {
@@ -78,6 +82,7 @@ impl Editor {
             codes: None,
             text_drag: false,
             auto_redact: None,
+            pasted: None,
         }
     }
 
@@ -301,6 +306,7 @@ impl Editor {
             }
             self.paint_selection(&painter, to_screen, font);
             self.selection_keys(ui, tools);
+            self.arrange_keys(ui, tools, font);
             self.crop_confirm(ui, &painter, to_screen, font);
             if tools.tool == Tool::Step && response.hovered() {
                 if let Some(pos) = response.hover_pos() {

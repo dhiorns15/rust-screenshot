@@ -14,7 +14,7 @@ pub(super) const PICK_SLACK: f32 = 6.0;
 pub(super) struct Selection {
     pub(super) index: usize,
     /// Doc version it was made on; any other change to the doc (undo, redo, crop) drops it.
-    version: u64,
+    pub(super) version: u64,
     /// The style last published to the toolbar, to spot the toolbar's changes.
     style: Style,
 }

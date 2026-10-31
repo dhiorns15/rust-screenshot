@@ -361,6 +361,8 @@ struct App {
     page_width: f32,
     /// RSnip crashed since the user last heard about it (see `crash`): when.
     crashed: Option<u64>,
+    /// V was seen pressed, or Ctrl+V pasting, since V was last let go of (see `paste_pressed`).
+    paste_key_seen: bool,
 }
 
 impl App {
@@ -441,6 +443,7 @@ impl App {
             tools_spacing: 72.0,
             page_width: 150.0,
             crashed: crate::crash::unseen(&env.crash_dir, env.setting(crate::crash::SEEN_SETTING)).map(|c| c.time),
+            paste_key_seen: false,
             env,
         };
         if let Some(ocr) = app.env.ocr.clone() {
@@ -792,6 +795,26 @@ impl App {
         }
     }
 
+    /// Puts the selected annotation, as `text`, on the clipboard (Ctrl+C); with `cut`, deletes it
+    /// once it's there (Ctrl+X).
+    fn copy_annotation(&mut self, text: &str, cut: bool) {
+        match self.env.copy_text(text) {
+            Ok(()) if cut => {
+                self.editor.as_mut().unwrap().delete_selected(&mut self.tools);
+                self.set_status("Cut the annotation: Ctrl+V pastes it");
+            }
+            // Ctrl+C used to copy the image whatever was selected.
+            Ok(()) => self.set_status("Copied the annotation: Ctrl+V pastes it (to copy the image, press Esc first)"),
+            Err(e) => self.set_status(e),
+        }
+    }
+
+    /// Ctrl+V in the editor: pastes an annotation copied there.
+    fn paste(&mut self) {
+        let (Some(text), Some(editor)) = (self.env.paste_text(), &mut self.editor) else { return };
+        editor.paste(&text, &mut self.tools, self.font.as_ref());
+    }
+
     /// Moves screenshots to the Recycle Bin, with their editing data.
     fn delete(&mut self, paths: &[PathBuf]) {
         let mut failed = 0;
@@ -916,7 +939,50 @@ impl App {
         ctx.request_repaint_after(Duration::from_millis(500));
     }
 
+    /// Whether Ctrl+V was pressed this frame. egui says so with `Event::Paste` when the clipboard
+    /// has text; with only a picture or files on it, egui-winit drops the key press altogether, so
+    /// then it's V let go of without having been seen pressed that tells.
+    fn paste_pressed(&mut self, ctx: &egui::Context) -> bool {
+        ctx.input(|i| {
+            let mut pressed = false;
+            for event in &i.events {
+                match event {
+                    egui::Event::Paste(_) => {
+                        pressed = true;
+                        self.paste_key_seen = true;
+                    }
+                    egui::Event::Key { key: Key::V, pressed: true, modifiers, .. } => {
+                        self.paste_key_seen = true;
+                        pressed |= modifiers.command;
+                    }
+                    egui::Event::Key { key: Key::V, pressed: false, .. } => pressed |= !std::mem::take(&mut self.paste_key_seen),
+                    // Shift+Insert and a Paste key paste too, and have no V to let go of.
+                    egui::Event::Key { key: Key::Insert | Key::Paste, pressed: false, .. } => self.paste_key_seen = false,
+                    _ => {}
+                }
+            }
+            pressed
+        })
+    }
+
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        let paste = self.paste_pressed(ctx);
+        // An annotation pasted while typing text finishes the text and is pasted as an annotation,
+        // rather than as its JSON in the text. Other text pastes into the text as usual.
+        if self.page == Page::Editor && self.editor.as_ref().is_some_and(|e| e.is_typing()) {
+            let copied = ctx.input_mut(|i| {
+                let at = i.events.iter().position(|e| matches!(e, egui::Event::Paste(text) if editor::shape_from_text(text).is_some()))?;
+                match i.events.remove(at) {
+                    egui::Event::Paste(text) => Some(text),
+                    _ => None,
+                }
+            });
+            if let (Some(text), Some(editor)) = (copied, &mut self.editor) {
+                editor.finish_text(&self.tools);
+                editor.paste(&text, &mut self.tools, self.font.as_ref());
+                return;
+            }
+        }
         let typing = self.editor.as_ref().is_some_and(|e| e.is_typing()) || ctx.egui_wants_keyboard_input();
         if typing || self.editor.is_none() || self.page != Page::Editor {
             return;
@@ -937,12 +1003,21 @@ impl App {
         if copying_text && shortcut(Modifiers::COMMAND, Key::A) {
             self.editor.as_mut().unwrap().select_all_text();
         }
-        if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
-            // With the Copy text tool, the selected text; otherwise the image.
-            match self.editor.as_ref().unwrap().selected_text().filter(|_| copying_text) {
-                Some(text) => self.copy_words(&text),
-                None => self.copy(),
+        let (copy, cut) = ctx.input(|i| (i.events.contains(&egui::Event::Copy), i.events.contains(&egui::Event::Cut)));
+        if copy || cut {
+            // With the Copy text tool, the selected text; otherwise the selected annotation, or
+            // with none selected the image.
+            let editor = self.editor.as_ref().unwrap();
+            match (editor.selected_text().filter(|_| copying_text), editor.copy_selected()) {
+                (Some(text), _) if copy => self.copy_words(&text),
+                (None, Some(shape)) => self.copy_annotation(&shape, cut),
+                (None, None) if copy => self.copy(),
+                _ => {}
             }
+        }
+        // The Copy text tool leaves Ctrl+V alone.
+        if paste && !copying_text {
+            self.paste();
         }
         if shortcut(Modifiers::COMMAND, Key::Num0) {
             self.editor.as_mut().unwrap().zoom = None;

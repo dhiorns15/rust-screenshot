@@ -784,7 +784,7 @@ thread_local! {
     static CLIPBOARD: RefCell<Option<arboard::Clipboard>> = const { RefCell::new(None) };
 }
 
-fn with_clipboard(f: impl FnOnce(&mut arboard::Clipboard) -> Result<(), arboard::Error>) -> Result<(), String> {
+fn with_clipboard<T>(f: impl FnOnce(&mut arboard::Clipboard) -> Result<T, arboard::Error>) -> Result<T, String> {
     CLIPBOARD.with(|cell| {
         let mut cell = cell.borrow_mut();
         if cell.is_none() {
@@ -801,6 +801,11 @@ pub fn copy_image(img: &RgbaImage) -> Result<(), String> {
 
 pub fn copy_text(text: &str) -> Result<(), String> {
     with_clipboard(|c| c.set_text(text))
+}
+
+/// The text on the clipboard, if it has some (and it can be read).
+pub fn paste_text() -> Option<String> {
+    with_clipboard(|c| c.get_text()).ok()
 }
 
 /// Puts files on the clipboard, to paste into a folder, chat or email: as GNOME's Files does where

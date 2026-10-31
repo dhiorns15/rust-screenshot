@@ -35,7 +35,13 @@ annotation (colour, size, shadow, delete) and a hint on how to use it.
 Whatever you just drew stays selected (except pen strokes), so you can adjust it straight away; the
 Select tool picks any annotation. While something is selected, the options row's colours, *Size* and
 *Shadow* change it, Delete removes it, arrow keys nudge it (Shift: 10 px) and Esc deselects it.
-Each move, resize or restyle is one undo step.
+Each move, resize or restyle is one undo step, and so is each of these:
+
+| Keys | With an annotation selected |
+| --- | --- |
+| Ctrl+C / Ctrl+X | copy / cut it, to paste into this screenshot or another one |
+| Ctrl+V | paste a copied annotation, 16 px down and right of where it was (further each time it's pasted again), kept on the image, and selected. While typing text, an annotation pastes as one; other text pastes into the text |
+| Ctrl+D | duplicate it the same way, leaving the clipboard alone (a step gets the next number) |
 
 ## Annotations stay editable
 
@@ -46,7 +52,8 @@ deleted outside RSnip is cleaned up automatically.
 
 ## Keys and Export
 
-Ctrl+Z / Ctrl+Y undo/redo, Ctrl+C copies the edited image (or the selected text, with *Copy text*), Ctrl+S overwrites the file,
+Ctrl+Z / Ctrl+Y undo/redo, Ctrl+C copies the edited image (or the selected text, with *Copy text*;
+or the selected annotation, so press Esc first to copy the image), Ctrl+S overwrites the file,
 Ctrl+Shift+S saves a copy, Ctrl+scroll zooms, Ctrl+0 fits to the window.
 
 The *Export* menu saves a copy (PNG or JPG), copies the image *as a file* so it pastes as an

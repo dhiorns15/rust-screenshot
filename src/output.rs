@@ -21,6 +21,7 @@ use crate::util::from_wide_ptr;
 
 const CF_DIB: u32 = 8;
 const CF_HDROP: u32 = 15;
+const CF_UNICODETEXT: u32 = 13;
 
 /// Puts the image on the clipboard as a 24-bit DIB, which every app that accepts images understands.
 pub fn copy_to_clipboard(owner: HWND, img: &Image) -> Result<(), String> {
@@ -53,9 +54,51 @@ pub fn copy_to_clipboard(owner: HWND, img: &Image) -> Result<(), String> {
 }
 
 pub fn copy_text_to_clipboard(owner: HWND, text: &str) -> Result<(), String> {
-    const CF_UNICODETEXT: u32 = 13;
     let bytes: Vec<u8> = text.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
     set_clipboard(owner, CF_UNICODETEXT, &bytes)
+}
+
+/// The text on the clipboard, if it has some.
+pub fn clipboard_text(owner: HWND) -> Result<Option<String>, String> {
+    with_clipboard(owner, || unsafe { clipboard_bytes(CF_UNICODETEXT) }.map(|bytes| text_of(&bytes)))
+}
+
+/// UTF-16 clipboard text, up to its terminating NUL.
+fn text_of(bytes: &[u8]) -> String {
+    let units: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).take_while(|&u| u != 0).collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// Opens the clipboard for `f`, then closes it. Another app may briefly hold it open, so this
+/// tries a few times.
+fn with_clipboard<T>(owner: HWND, f: impl FnOnce() -> T) -> Result<T, String> {
+    unsafe {
+        for _ in 0..10 {
+            if OpenClipboard(owner) != 0 {
+                let result = f();
+                CloseClipboard();
+                return Ok(result);
+            }
+            Sleep(30);
+        }
+    }
+    Err("The clipboard is in use by another app".into())
+}
+
+/// A copy of what the open clipboard holds in `format`, if it has that.
+unsafe fn clipboard_bytes(format: u32) -> Option<Vec<u8>> {
+    let handle = GetClipboardData(format);
+    if handle.is_null() {
+        return None;
+    }
+    let size = GlobalSize(handle);
+    let data = GlobalLock(handle) as *const u8;
+    if data.is_null() {
+        return None;
+    }
+    let bytes = std::slice::from_raw_parts(data, size).to_vec();
+    GlobalUnlock(handle);
+    Some(bytes)
 }
 
 /// Puts files on the clipboard the way Explorer's Copy does, so pasting attaches or copies them.
@@ -88,26 +131,13 @@ fn set_clipboard(owner: HWND, format: u32, data: &[u8]) -> Result<(), String> {
         }
         std::ptr::copy_nonoverlapping(data.as_ptr(), GlobalLock(mem) as *mut u8, data.len());
         GlobalUnlock(mem);
-
-        // Another app may briefly hold the clipboard open.
-        let mut opened = false;
-        for _ in 0..10 {
-            if OpenClipboard(owner) != 0 {
-                opened = true;
-                break;
-            }
-            Sleep(30);
-        }
-        if !opened {
+        let set = with_clipboard(owner, || {
+            EmptyClipboard();
+            !SetClipboardData(format, mem).is_null()
+        });
+        if set != Ok(true) {
             GlobalFree(mem);
-            return Err("The clipboard is in use by another app".into());
-        }
-        EmptyClipboard();
-        let ok = !SetClipboardData(format, mem).is_null();
-        CloseClipboard();
-        if !ok {
-            GlobalFree(mem);
-            return Err("Couldn't write to the clipboard".into());
+            return Err(set.err().unwrap_or_else(|| "Couldn't write to the clipboard".into()));
         }
     }
     Ok(())

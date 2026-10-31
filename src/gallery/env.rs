@@ -164,7 +164,7 @@ pub struct Sandbox {
     pub can_install: bool,
     /// Times RSnip was asked to restart into an update it installed.
     pub restarts: usize,
-    /// The text last put on the clipboard.
+    /// The text last put on the clipboard, which is what pasting text finds there.
     pub copied: Option<String>,
     /// The files last put on the clipboard.
     pub copied_files: Vec<PathBuf>,
@@ -667,6 +667,14 @@ impl Env {
                 Ok(())
             }
             None => platform::copy_text(text),
+        }
+    }
+
+    /// The text on the clipboard, if it has some.
+    pub fn paste_text(&self) -> Option<String> {
+        match &self.sandbox {
+            Some(s) => s.borrow().copied.clone(),
+            None => platform::paste_text(),
         }
     }
 

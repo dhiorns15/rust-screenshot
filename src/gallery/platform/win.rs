@@ -229,6 +229,11 @@ pub fn copy_text(text: &str) -> Result<(), String> {
     crate::output::copy_text_to_clipboard(null_mut(), text)
 }
 
+/// The text on the clipboard, if it has some (and it can be read).
+pub fn paste_text() -> Option<String> {
+    crate::output::clipboard_text(null_mut()).ok().flatten()
+}
+
 pub fn copy_files(paths: &[PathBuf]) -> Result<(), String> {
     crate::output::copy_files_to_clipboard(null_mut(), paths)
 }

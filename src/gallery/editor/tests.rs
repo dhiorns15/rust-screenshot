@@ -18,6 +18,8 @@ struct Harness {
     modifiers: egui::Modifiers,
     /// The GPU's texture limit, where a test sets one.
     max_texture_side: Option<usize>,
+    /// The clipboard's text, for Ctrl+C, Ctrl+X and Ctrl+V (which the library window handles).
+    clipboard: Option<String>,
 }
 
 impl Harness {
@@ -39,10 +41,49 @@ impl Harness {
             time: 0.0,
             modifiers: egui::Modifiers::NONE,
             max_texture_side: None,
+            clipboard: None,
         };
         h.frame(vec![]);
         h.frame(vec![]);
         h
+    }
+
+    /// Ctrl+C, or with `cut` Ctrl+X, as the library window does them: the selected annotation
+    /// onto the clipboard (and away, for a cut).
+    fn copy(&mut self, cut: bool) {
+        if let Some(text) = self.editor.copy_selected() {
+            self.clipboard = Some(text);
+            if cut {
+                self.editor.delete_selected(&mut self.tools);
+            }
+        }
+        self.frame(vec![]);
+    }
+
+    /// Ctrl+V, as the library window does it.
+    fn paste(&mut self) {
+        if let Some(text) = self.clipboard.clone() {
+            self.editor.paste(&text, &mut self.tools, self.font.as_ref());
+        }
+        self.frame(vec![]);
+    }
+
+    /// Presses `key` with Ctrl, and Shift too if `shift`.
+    fn ctrl_key(&mut self, shift: bool, key: Key) {
+        let modifiers = if shift { egui::Modifiers::COMMAND | egui::Modifiers::SHIFT } else { egui::Modifiers::COMMAND };
+        let held = std::mem::replace(&mut self.modifiers, modifiers);
+        self.frame(vec![Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }]);
+        self.modifiers = held;
+        self.frame(vec![]);
+    }
+
+    fn shapes(&self) -> Vec<Shape> {
+        self.editor.doc.current().shapes.clone()
+    }
+
+    /// Which annotation is selected.
+    fn selected(&self) -> Option<usize> {
+        self.editor.selection.as_ref().map(|s| s.index)
     }
 
     fn frame(&mut self, events: Vec<Event>) {
@@ -591,6 +632,127 @@ fn cut_out_removes_a_strip_once_confirmed() {
     assert!(h.editor.crop.is_none());
 }
 
+/// The rects of the boxes drawn, in drawing order.
+fn box_rects(h: &Harness) -> Vec<Rect> {
+    h.shapes()
+        .iter()
+        .map(|s| match s {
+            Shape::Box { rect, .. } => *rect,
+            _ => panic!("not a box"),
+        })
+        .collect()
+}
+
+#[test]
+fn a_copied_annotation_pastes_beside_itself_and_is_selected() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Box;
+    drag(&mut h, (100.0, 100.0), (300.0, 200.0));
+    h.copy(false);
+    assert!(h.clipboard.as_deref().is_some_and(|t| t.starts_with("{\"rsnip-shape\":")), "copied as {:?}", h.clipboard);
+    assert_eq!(h.shapes().len(), 1, "copying changes nothing");
+
+    h.paste();
+    assert_eq!(box_rects(&h), [r(100.0, 100.0, 300.0, 200.0), r(116.0, 116.0, 316.0, 216.0)]);
+    assert_eq!(h.selected(), Some(1), "the pasted one is selected");
+    assert!(h.tools.selection.is_some_and(|s| s.kind == Tool::Box));
+    // Again: further on, so it isn't hidden under the last one.
+    h.paste();
+    assert_eq!(box_rects(&h)[2], r(132.0, 132.0, 332.0, 232.0));
+    assert_eq!(h.selected(), Some(2));
+
+    h.editor.doc.undo();
+    h.frame(vec![]);
+    assert_eq!(h.shapes().len(), 2, "a paste is one undo step");
+
+    // Pasted where it would go off the image, it's kept on it.
+    h.tools.tool = Tool::Box;
+    drag(&mut h, (600.0, 300.0), (795.0, 395.0));
+    h.copy(false);
+    h.paste();
+    assert_eq!(box_rects(&h).last(), Some(&r(605.0, 305.0, 800.0, 400.0)));
+}
+
+#[test]
+fn pasting_a_zoom_moves_both_its_area_and_its_copy() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Zoom;
+    drag(&mut h, (100.0, 100.0), (200.0, 150.0));
+    h.copy(false);
+    h.paste();
+    match &h.shapes()[1] {
+        Shape::Zoom { rect, inset, .. } => assert_eq!((*rect, *inset), (r(116.0, 116.0, 216.0, 166.0), r(232.0, 91.0, 432.0, 191.0))),
+        _ => panic!("not a zoom"),
+    }
+    assert_eq!(h.selected(), Some(1));
+    let pasted = crate::gallery::doc::render(h.editor.doc.current(), h.font.as_ref());
+    assert_eq!(pasted.dimensions(), (800, 400), "renders");
+}
+
+#[test]
+fn ctrl_d_duplicates_the_selection_without_the_clipboard() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Box;
+    drag(&mut h, (100.0, 100.0), (300.0, 200.0));
+    h.ctrl_key(false, Key::D);
+    assert_eq!(box_rects(&h), [r(100.0, 100.0, 300.0, 200.0), r(116.0, 116.0, 316.0, 216.0)]);
+    assert_eq!(h.selected(), Some(1));
+    h.ctrl_key(false, Key::D);
+    assert_eq!(box_rects(&h)[2], r(132.0, 132.0, 332.0, 232.0), "a duplicate of the duplicate");
+    assert_eq!(h.clipboard, None);
+    h.editor.doc.undo();
+    h.frame(vec![]);
+    assert_eq!(h.shapes().len(), 2, "one undo step each");
+
+    // A step gets the next number.
+    h.tools.tool = Tool::Step;
+    h.frame(vec![]);
+    h.click(500.0, 300.0);
+    h.ctrl_key(false, Key::D);
+    let numbers: Vec<u32> = h.shapes().iter().filter_map(|s| if let Shape::Step { number, .. } = s { Some(*number) } else { None }).collect();
+    assert_eq!(numbers, [1, 2]);
+
+    // With nothing selected, nothing happens.
+    key(&mut h, Key::Escape);
+    let before = h.shapes().len();
+    h.ctrl_key(false, Key::D);
+    assert_eq!(h.shapes().len(), before);
+}
+
+#[test]
+fn a_cut_annotation_pastes_back() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Box;
+    drag(&mut h, (100.0, 100.0), (300.0, 200.0));
+    h.copy(true);
+    assert!(h.shapes().is_empty(), "cut removes it");
+    assert_eq!(h.selected(), None);
+    h.paste();
+    assert_eq!(box_rects(&h), [r(116.0, 116.0, 316.0, 216.0)]);
+    assert_eq!(h.selected(), Some(0));
+}
+
+#[test]
+fn only_a_copied_annotation_pastes() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Box;
+    drag(&mut h, (100.0, 100.0), (300.0, 200.0));
+    let shape = serde_json::to_string(&h.shapes()[0]).unwrap();
+    for text in ["hello", "{\"rsnip-shape\": 1}", shape.as_str()] {
+        h.clipboard = Some(text.into());
+        h.paste();
+        assert_eq!(h.shapes().len(), 1, "{text:?} pasted nothing");
+    }
+
+    // Copying with nothing selected leaves the clipboard as it was.
+    key(&mut h, Key::Escape);
+    h.clipboard = Some("before".into());
+    h.copy(false);
+    h.copy(true);
+    assert_eq!(h.clipboard.as_deref(), Some("before"));
+    assert_eq!(h.shapes().len(), 1);
+}
+
 /// Random input for the panic hunt: xorshift, so a seed replays the same run.
 struct Rng(u64);
 
@@ -626,11 +788,13 @@ fn panic_hunt(seed: u64, steps: usize) {
     let mut h = Harness::new();
     let mut rng = Rng(seed | 1);
     let keys = [Key::Delete, Key::Backspace, Key::Escape, Key::Enter, Key::ArrowLeft, Key::ArrowRight, Key::ArrowUp, Key::ArrowDown, Key::A];
+    // Ctrl+ (with Shift if true): duplicate.
+    let shortcuts = [(false, Key::D)];
     for step in 0..steps {
         if step > 0 && step % 100 == 0 {
             println!("panic hunt: step {step} of {steps} after {:.0?}", started.elapsed());
         }
-        match rng.below(12) {
+        match rng.below(13) {
             0 => h.tools.tool = crate::gallery::editor::TOOLS[rng.below(crate::gallery::editor::TOOLS.len())].0,
             1 | 2 => {
                 let p = rng.point(&h);
@@ -657,6 +821,14 @@ fn panic_hunt(seed: u64, steps: usize) {
                     _ => key(h, k),
                 });
             }
+            12 => match rng.below(4) {
+                0 => h.copy(rng.below(2) == 0),
+                1 => h.paste(),
+                _ => {
+                    let (shift, k) = shortcuts[rng.below(shortcuts.len())];
+                    h.ctrl_key(shift, k);
+                }
+            },
             _ => {
                 // What the toolbar's Undo and Redo do.
                 h.editor.finish_text(&h.tools);
