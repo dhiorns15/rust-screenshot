@@ -746,12 +746,12 @@ impl App {
             for (path, stamp, text) in rx.try_iter() {
                 self.reading.remove(&path);
                 if self.metas.contains_key(&path) {
-                    // Read again, not the copy kept here: pushing records itself in it too.
-                    let mut meta = search::load(&path);
-                    meta.text = Some(text);
-                    meta.stamp = stamp;
-                    let _ = search::save(&path, &meta);
-                    self.metas.insert(path, meta);
+                    // Into the file as it is, not the copy kept here: pushing records itself in it too.
+                    let _ = search::update(&path, |meta| {
+                        meta.text = Some(text);
+                        meta.stamp = stamp;
+                    });
+                    self.metas.insert(path.clone(), search::load(&path));
                 }
             }
         }

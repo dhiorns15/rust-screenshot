@@ -1,9 +1,16 @@
 //! Finding screenshots by what's in them: the text read from each one, an AI model's description of
 //! it (see `describe`), the app and window it was captured from, and its name. What's known about a screenshot is cached beside it, in
 //! `.rsnip/<name>.meta.json`.
+//!
+//! Several processes note things there: the library (the text it read), the automatic pusher and
+//! Settings' pushes (where it went) and the describer (what it shows). Each change reads the file
+//! afresh and writes it back whole, holding the folder's `.rsnip/meta.lock` meanwhile (see
+//! `update`), so none undoes another's, and no reader sees half a file.
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -69,10 +76,9 @@ pub fn record_push(path: &Path, id: &str, link: Option<String>) -> Result<(), St
 pub fn record_push_of(path: &Path, id: &str, link: Option<String>, modified: Option<std::time::SystemTime>) -> Result<(), String> {
     let secs = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let at = secs(std::time::SystemTime::now());
-    // From the file, not a copy kept since: another process may have written it.
-    let mut meta = load(path);
-    meta.pushed.insert(id.to_owned(), Pushed { at, link, of: modified.map(secs) });
-    save(path, &meta)
+    update(path, |meta| {
+        meta.pushed.insert(id.to_owned(), Pushed { at, link, of: modified.map(secs) });
+    })
 }
 
 pub(super) fn meta_path(path: &Path) -> Option<PathBuf> {
@@ -85,12 +91,58 @@ pub fn load(path: &Path) -> Meta {
     meta_path(path).and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
+/// Replaces what's known about `path` with `meta`, whole; the app changes part of it (`update`),
+/// so another process's note isn't written over.
+#[cfg(test)]
 pub fn save(path: &Path, meta: &Meta) -> Result<(), String> {
     let file = meta_path(path).ok_or("Bad file name")?;
-    let dir = file.parent().unwrap();
+    let _lock = lock(file.parent().unwrap())?;
+    write_whole(&file, meta)
+}
+
+/// Changes what's known about `path` with `change`, from the file as it is now, not a copy kept
+/// since: another process may have noted something meanwhile, and the lock is held from reading
+/// it to writing it back, so that's kept.
+pub fn update(path: &Path, change: impl FnOnce(&mut Meta)) -> Result<(), String> {
+    let file = meta_path(path).ok_or("Bad file name")?;
+    let _lock = lock(file.parent().unwrap())?;
+    let mut meta = load(path);
+    change(&mut meta);
+    write_whole(&file, &meta)
+}
+
+/// How long a writer waits for another to finish before going ahead anyway: a lock left stuck
+/// (which the system lets go of when its process ends, so only one that hangs) shouldn't freeze
+/// the library.
+const LOCK_WAIT: Duration = Duration::from_secs(2);
+
+/// The lock writers in `dir` (a folder's `.rsnip`) take turns with: `meta.lock` there, held until
+/// the file returned is dropped; `None` if it can't be had, and the write goes ahead without it.
+/// Makes the folder, if need be.
+fn lock(dir: &Path) -> Result<Option<File>, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     super::platform::hide(dir);
-    std::fs::write(file, serde_json::to_vec(meta).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    let Ok(file) = File::options().create(true).truncate(false).write(true).open(dir.join("meta.lock")) else { return Ok(None) };
+    let until = Instant::now() + LOCK_WAIT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(Some(file)),
+            Err(std::fs::TryLockError::WouldBlock) if Instant::now() < until => std::thread::sleep(Duration::from_millis(5)),
+            Err(_) => return Ok(None),
+        }
+    }
+}
+
+/// Writes `meta` to a new file beside `file`, then renames it over `file`, so a reader never finds
+/// it half-written.
+fn write_whole(file: &Path, meta: &Meta) -> Result<(), String> {
+    let bytes = serde_json::to_vec(meta).map_err(|e| e.to_string())?;
+    let temp = file.with_extension(format!("{}.saving", std::process::id()));
+    let written = std::fs::write(&temp, bytes).and_then(|()| std::fs::rename(&temp, file));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written.map_err(|e| e.to_string())
 }
 
 pub fn remove(path: &Path) {
@@ -101,18 +153,19 @@ pub fn remove(path: &Path) {
 
 /// Notes the description `model` gave of `path`.
 pub fn record_description(path: &Path, description: &str, model: &str) -> Result<(), String> {
-    // From the file, not a copy kept since: the text may have been read, or a push noted, meanwhile.
-    let mut meta = load(path);
-    meta.description = Some(description.to_owned());
-    meta.described_by = Some(model.to_owned());
-    save(path, &meta)
+    update(path, |meta| {
+        meta.description = Some(description.to_owned());
+        meta.described_by = Some(model.to_owned());
+    })
 }
 
 /// Records where a capture came from, before its file is written.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn record_source(path: &Path, app: &str, window: &str) {
-    let meta = Meta { app: app.to_owned(), window: window.to_owned(), ..load(path) };
-    let _ = save(path, &meta);
+    let _ = update(path, |meta| {
+        meta.app = app.to_owned();
+        meta.window = window.to_owned();
+    });
 }
 
 /// The text hasn't been read yet, or the file changed since (e.g. it was edited).
@@ -209,6 +262,46 @@ mod tests {
         assert!(m.pushed.contains_key("dest"));
         std::fs::write(meta_path(&path).unwrap(), br#"{"app":"Notepad"}"#).unwrap();
         assert_eq!(load(&path).description, None, "older files have none");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn changes_made_at_once_are_all_kept_and_the_file_is_always_whole() {
+        let dir = crate::gallery::tests::sandbox_dir("meta-at-once");
+        let path = dir.join("shot.png");
+        std::fs::write(&path, b"one").unwrap();
+        record_source(&path, "Notepad", "notes.txt");
+        // As the library, the pusher and the describer would, each noting its own thing while a
+        // reader keeps looking: no note undoes another, and the reader never sees half a file.
+        let writers: Vec<_> = (0..6)
+            .map(|w| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for n in 0..30 {
+                        match w % 3 {
+                            0 => record_push(&path, &format!("dest{w}-{n}"), None).unwrap(),
+                            1 => record_description(&path, &format!("Description {w}-{n}."), "m").unwrap(),
+                            _ => update(&path, |m| m.text = Some(format!("text {w}-{n}"))).unwrap(),
+                        }
+                    }
+                })
+            })
+            .collect();
+        let reader = {
+            let path = path.clone();
+            std::thread::spawn(move || (0..300).all(|_| meta_path(&path).and_then(|p| std::fs::read(p).ok()).is_none_or(|b| serde_json::from_slice::<Meta>(&b).is_ok())))
+        };
+        for w in writers {
+            w.join().unwrap();
+        }
+        assert!(reader.join().unwrap(), "a reader caught the file half-written");
+        let m = load(&path);
+        assert_eq!(m.pushed.len(), 60, "every push noted: {:?}", m.pushed.keys());
+        assert_eq!((m.app.as_str(), m.window.as_str()), ("Notepad", "notes.txt"), "kept through it all");
+        assert!(m.description.is_some() && m.text.is_some());
+        let mut left: Vec<String> = std::fs::read_dir(dir.join(".rsnip")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["meta.lock", "shot.png.meta.json"], "nothing half-written left behind");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
