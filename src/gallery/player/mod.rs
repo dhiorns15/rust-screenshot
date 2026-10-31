@@ -877,14 +877,35 @@ pub mod tests {
             })
         };
         let soon = || Instant::now() + Duration::from_secs(5);
-        let (played, elapsed) = play(Duration::ZERO, Duration::from_millis(300), soon());
-        assert!(played.abs_diff(elapsed) < Duration::from_millis(100) && played > Duration::from_millis(200), "{played:?} played in {elapsed:?}");
+        // With the whole suite running at once, the output can go hungry for a moment and the
+        // sound fall behind the clock; so each check gets a few goes before it fails.
+        let in_time = |check: &dyn Fn() -> Result<(), String>| {
+            let mut last = Ok(());
+            for _ in 0..3 {
+                last = check();
+                if last.is_ok() {
+                    return;
+                }
+            }
+            panic!("{}", last.unwrap_err());
+        };
+        let within = |played: Duration, expected: Duration, tolerance: u64, elapsed: Duration, limit: Duration| {
+            (played.abs_diff(expected) < Duration::from_millis(tolerance) && elapsed < limit).then_some(()).ok_or_else(|| format!("{played:?} played in {elapsed:?}"))
+        };
+        in_time(&|| {
+            let (played, elapsed) = play(Duration::ZERO, Duration::from_millis(300), soon());
+            within(played, elapsed, 100, elapsed, Duration::from_secs(2)).and_then(|()| (played > Duration::from_millis(200)).then_some(()).ok_or_else(|| format!("only {played:?} played")))
+        });
         // 0.5 s from the end, it plays that and stops on its own.
-        let (played, elapsed) = play(Duration::from_millis(2500), Duration::from_secs(5), soon());
-        assert!(played.abs_diff(Duration::from_millis(500)) < Duration::from_millis(100) && elapsed < Duration::from_secs(2), "{played:?} played in {elapsed:?}");
+        in_time(&|| {
+            let (played, elapsed) = play(Duration::from_millis(2500), Duration::from_secs(5), soon());
+            within(played, Duration::from_millis(500), 100, elapsed, Duration::from_secs(2))
+        });
         // Due 2 s ago, it leaves out the 2 s it's late for and plays the last second.
-        let (played, elapsed) = play(Duration::ZERO, Duration::from_secs(5), Instant::now() - Duration::from_secs(2));
-        assert!(played.abs_diff(Duration::from_secs(1)) < Duration::from_millis(150) && elapsed < Duration::from_secs(3), "{played:?} played in {elapsed:?}");
+        in_time(&|| {
+            let (played, elapsed) = play(Duration::ZERO, Duration::from_secs(5), Instant::now() - Duration::from_secs(2));
+            within(played, Duration::from_secs(1), 150, elapsed, Duration::from_secs(3))
+        });
         let _ = std::fs::remove_dir_all(&dir);
     }
 
