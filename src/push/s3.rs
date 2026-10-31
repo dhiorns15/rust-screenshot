@@ -75,7 +75,8 @@ fn send(b: &Bucket, method: &str, path: &str, payload: &str, extra: &[(&str, &st
     let host = authority(endpoint).ok_or("The endpoint has to start with http:// or https://")?;
     let date = amz_date(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()));
     let signed = [("host", host), ("x-amz-content-sha256", payload), ("x-amz-date", date.as_str())];
-    let authorization = authorization(b, method, path, "", &signed, payload, &date);
+    // Signed as it's sent: with the endpoint's own path, where it has one, before the bucket's.
+    let authorization = authorization(b, method, &format!("{}{path}", base_path(endpoint)), "", &signed, payload, &date);
     let mut headers: Vec<(&str, &str)> = vec![("x-amz-content-sha256", payload), ("x-amz-date", &date), ("Authorization", &authorization)];
     headers.extend_from_slice(extra);
     http::request(method, &format!("{endpoint}{path}"), &headers, body)
@@ -127,6 +128,15 @@ fn amz_date(secs: u64) -> String {
 }
 
 /// The host (and port, if written) of an http(s) address.
+/// The path in an endpoint's address, if it has one ("https://x.supabase.co/storage/v1/s3" has
+/// "/storage/v1/s3"; a MinIO behind a reverse proxy may too), without a trailing slash: the
+/// requests go there, so it's part of what's signed.
+fn base_path(endpoint: &str) -> &str {
+    let rest = endpoint.split_once("://").map_or(endpoint, |(_, rest)| rest);
+    let path = rest.find(['/', '?', '#']).map_or("", |at| &rest[at..]);
+    path.split(['?', '#']).next().unwrap_or_default().trim_end_matches('/')
+}
+
 fn authority(url: &str) -> Option<&str> {
     let (scheme, rest) = url.split_once("://")?;
     if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
@@ -202,6 +212,11 @@ mod tests {
         assert_eq!(authority("http://localhost:9000/"), Some("localhost:9000"));
         assert_eq!(authority("https://u@acc.r2.cloudflarestorage.com"), Some("acc.r2.cloudflarestorage.com"));
         assert_eq!(authority("s3.amazonaws.com"), None);
+        // An endpoint with a path of its own: the requests go there, so it's signed too.
+        assert_eq!(base_path("https://abc.supabase.co/storage/v1/s3"), "/storage/v1/s3");
+        assert_eq!(base_path("http://localhost:9000/"), "");
+        assert_eq!(base_path("https://acc.r2.cloudflarestorage.com"), "");
+        assert_eq!(base_path("https://minio.example.com/s3/?x#y"), "/s3");
         assert_eq!(encode_key("Screens/Screenshot 2026-10-24 091500 (2).png"), "Screens/Screenshot%202026-10-24%20091500%20%282%29.png");
         let error = b"<?xml version=\"1.0\"?><Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist</Message></Error>";
         assert_eq!(xml_text(error, "Message").as_deref(), Some("The specified bucket does not exist"));
