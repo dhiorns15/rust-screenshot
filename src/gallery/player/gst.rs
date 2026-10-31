@@ -1,8 +1,8 @@
 //! Decoding recordings with GStreamer (`gst-launch-1.0`), which sends raw frames on its standard
 //! output at a steady 30 per second, so each frame's time is known from how many came before.
-//! `gst-launch` can't seek, so playing from somewhere in an MP4 decodes a copy of its picture cut
-//! there (see mp4.rs), from the keyframe before it. The sound is decoded and played by GStreamers of
-//! their own (`sound`).
+//! `gst-launch` can't seek, so playing from somewhere in an MP4 decodes copies of its picture cut
+//! there (see mp4.rs), from the keyframe before it, half a minute at a time. The sound is decoded
+//! and played by GStreamers of their own (`sound`).
 
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -45,23 +45,75 @@ impl Drop for Temp {
     }
 }
 
-pub fn decode(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> Result<(), String> {
-    let movie = (Kind::of(path) == Some(Kind::Mp4)).then(|| Movie::open(path).ok()).flatten();
-    // WebMs (and anything unreadable) have no size to go by: frames are fitted into the box, with
-    // borders.
-    let (width, height) = fit(movie.as_ref().map_or(max, |m| (m.width, m.height)), max);
-    let mut start = Duration::ZERO;
-    let mut temp = None;
-    if let (Some(movie), false) = (&movie, from.is_zero()) {
+/// How much of an MP4 is cut at a time to decode from (see `decode`).
+const WINDOW: Duration = Duration::from_secs(30);
+
+/// A cut of an MP4's picture to decode from: a window from `from` (back to the keyframe before
+/// it) on, in this user's runtime folder (which is in memory), removed when done.
+struct Cut {
+    temp: Temp,
+    /// When its first frame is shown, and its last is over.
+    start: Duration,
+    end: Duration,
+}
+
+impl Cut {
+    /// Cuts `window` from `from` of `movie`, the MP4 at `path`; None if that can't be written
+    /// (no room, say).
+    fn new(movie: &Movie, path: &Path, from: Duration, window: Duration) -> Option<Cut> {
         // Just the video, in this user's own folder (not the shared /tmp).
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let cut = super::super::platform::runtime_dir().join(format!("play-{}-{}.mp4", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        if let Ok((keyframe, _)) = movie.cut_tracks(path, &cut, from, Duration::MAX, false) {
-            start = keyframe;
-            temp = Some(Temp(cut));
-        }
+        let (start, end) = movie.cut_tracks(path, &cut, from, from.saturating_add(window), false).ok()?;
+        Some(Cut { temp: Temp(cut), start, end })
     }
-    let source = temp.as_ref().map_or(path, |t| t.0.as_path());
+}
+
+pub fn decode(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> Result<(), String> {
+    decode_by(path, from, max, sink, WINDOW)
+}
+
+/// `decode`, an MP4 played from part way in cuts `window` long: gst-launch can't seek, and a cut
+/// of all the rest of a long recording would be most of its size over again, in memory, for
+/// every seek (the scrubber seeks a few times a second). Each cut is made while the one before
+/// is decoded, so one follows the other without a break.
+fn decode_by(path: &Path, from: Duration, max: (u32, u32), sink: &Sink, window: Duration) -> Result<(), String> {
+    let movie = (Kind::of(path) == Some(Kind::Mp4)).then(|| Movie::open(path).ok()).flatten();
+    // WebMs (and anything unreadable) have no size to go by: frames are fitted into the box, with
+    // borders.
+    let size = fit(movie.as_ref().map_or(max, |m| (m.width, m.height)), max);
+    let Some(movie) = movie.filter(|_| !from.is_zero()) else {
+        // The file itself, from its start.
+        return run(path, path, Duration::ZERO, from, size, sink).map(|_| ());
+    };
+    let mut wanted = from;
+    let mut cut = Cut::new(&movie, path, wanted, window);
+    loop {
+        let Some(this) = cut else {
+            // Without a cut, the file itself, decoded from its start to get there.
+            return run(path, path, Duration::ZERO, wanted, size, sink).map(|_| ());
+        };
+        let last = this.end >= movie.duration();
+        // The window after this one starts where this ends: always further on, so a hole in the
+        // frames can't hold it here.
+        let then = if this.end > wanted { this.end } else { wanted + window };
+        let (more, next) = std::thread::scope(|s| {
+            let next = (!last).then(|| s.spawn(|| Cut::new(&movie, path, then, window)));
+            let more = run(path, &this.temp.0, this.start, wanted, size, sink);
+            (more, next.and_then(|n| n.join().ok().flatten()))
+        });
+        if !more? || last {
+            return Ok(());
+        }
+        wanted = then;
+        cut = next;
+    }
+}
+
+/// Decodes `source` (`path` itself, or a cut of it whose first frame is shown at `start`),
+/// sending on the frames from `wanted`; false once no more are wanted. Err if GStreamer failed
+/// before any frame came out.
+fn run(path: &Path, source: &Path, start: Duration, wanted: Duration, (width, height): (u32, u32), sink: &Sink) -> Result<bool, String> {
     let caps = format!("video/x-raw,format=RGBA,width={width},height={height},pixel-aspect-ratio=1/1,framerate={FPS}/1");
     let mut command = gst_launch();
     command.args(["-q", "filesrc"]).arg(format!("location={}", source.display()));
@@ -83,24 +135,30 @@ pub fn decode(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> Resu
     let mut buf = vec![0u8; width as usize * height as usize * 4];
     let half = Duration::from_secs(1) / FPS / 2;
     let mut sent = 0;
+    let mut more = true;
     for n in 0u32.. {
-        if sink.stopped() || stdout.read_exact(&mut buf).is_err() {
+        if sink.stopped() {
+            more = false;
+            break;
+        }
+        if stdout.read_exact(&mut buf).is_err() {
             break;
         }
         let at = start + Duration::from_secs(n as u64) / FPS;
-        // Frames before the one on screen at `from` are only decoded to get to it.
-        if at + half < from {
+        // Frames before the one on screen at `wanted` are only decoded to get to it.
+        if at + half < wanted {
             continue;
         }
         let image = ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &buf);
         if !sink.send(Frame { at, image }) {
+            more = false;
             break;
         }
         sent += 1;
     }
     let _ = child.kill();
     let status = child.wait().map_err(|e| e.to_string())?;
-    if sent == 0 && !sink.stopped() && !status.success() {
+    if sent == 0 && more && !status.success() {
         let err = said.and_then(|s| s.join().ok()).unwrap_or_default();
         return Err(if missing_decoder(&err) {
             DECODER_MISSING.into()
@@ -109,8 +167,7 @@ pub fn decode(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> Resu
             format!("Couldn't play it: {line}")
         });
     }
-    drop(temp);
-    Ok(())
+    Ok(more)
 }
 
 /// The GStreamer element that splits a recording like `path` into its tracks.
@@ -325,6 +382,40 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert_eq!(cuts(), 0, "no cuts left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An MP4 played from part way is cut a window at a time (here a second, of a 3 s recording
+    /// with a keyframe each second), each back to the keyframe before it, and the frames come
+    /// through one window after another without a break or a repeat.
+    #[test]
+    fn decodes_an_mp4_a_window_at_a_time() {
+        let dir = dir("window");
+        let path = dir.join("Recording.mp4");
+        if !recording_with_sound(&path, Kind::Mp4) {
+            return eprintln!("skipped: no GStreamer, or no encoders to make one with");
+        }
+        let (movie, ms) = (Movie::open(&path).unwrap(), Duration::from_millis);
+        let whole = std::fs::metadata(&path).unwrap().len();
+        let mut from = ms(500);
+        for (start, end) in [(0, 1500), (1000, 2500), (2000, 3000)] {
+            let cut = Cut::new(&movie, &path, from, Duration::from_secs(1)).expect("cut");
+            assert!(cut.start == ms(start) && cut.end.abs_diff(ms(end)) < ms(40), "from {from:?}: {:?}..{:?}", cut.start, cut.end);
+            let copy = Movie::open(&cut.temp.0).unwrap();
+            assert!(copy.duration().abs_diff(cut.end - cut.start) < ms(40), "{:?}", copy.duration());
+            assert!(std::fs::metadata(&cut.temp.0).unwrap().len() < whole * 2 / 3, "a part of the file, not the rest of it");
+            from = cut.end;
+        }
+        assert!(from >= movie.duration(), "the last window reaches the end");
+
+        let (tx, frames) = std::sync::mpsc::sync_channel(4);
+        let sink = Sink { tx, failed: Arc::default(), stop: Arc::default(), ctx: None };
+        let decoding = std::thread::spawn(move || decode_by(&path, ms(500), (320, 240), &sink, Duration::from_secs(1)));
+        let ats: Vec<Duration> = frames.iter().map(|f| f.at).collect();
+        decoding.join().unwrap().unwrap();
+        assert!((72..=78).contains(&ats.len()), "{} frames", ats.len());
+        assert!(ats[0].abs_diff(ms(500)) < ms(17) && ats.last().unwrap().abs_diff(ms(2967)) < ms(40), "{:?}..{:?}", ats[0], ats.last().unwrap());
+        assert!(ats.windows(2).all(|w| w[1] > w[0] && w[1] - w[0] < ms(50)), "in order, without a gap: {ats:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
