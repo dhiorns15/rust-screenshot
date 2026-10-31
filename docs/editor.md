@@ -42,6 +42,8 @@ Each move, resize or restyle is one undo step, and so is each of these:
 | Ctrl+C / Ctrl+X | copy / cut it, to paste into this screenshot or another one |
 | Ctrl+V | paste a copied annotation, 16 px down and right of where it was (further each time it's pasted again), kept on the image, and selected. While typing text, an annotation pastes as one; other text pastes into the text |
 | Ctrl+D | duplicate it the same way, leaving the clipboard alone (a step gets the next number) |
+| Ctrl+] / Ctrl+[ | bring it forward / send it backward, over or under the annotation next to it |
+| Ctrl+Shift+] / Ctrl+Shift+[ | bring it to the front / send it to the back |
 
 ## Annotations stay editable
 

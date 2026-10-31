@@ -344,6 +344,18 @@ impl Doc {
         }
     }
 
+    /// Moves the shape at `from` to `to` in the drawing order (later shapes are drawn over earlier
+    /// ones), as one undo step.
+    pub fn move_shape(&mut self, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        let mut next = self.current().clone();
+        let shape = next.shapes.remove(from);
+        next.shapes.insert(to, shape);
+        self.push(next);
+    }
+
     /// The top-most annotation under `p`, with `tol` pixels of slack.
     pub fn shape_at(&self, p: Pos2, tol: f32, font: Option<&FontVec>) -> Option<usize> {
         self.current().shapes.iter().rposition(|s| s.hit(p, tol, font))

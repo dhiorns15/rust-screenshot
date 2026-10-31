@@ -1,4 +1,4 @@
-//! Copying, pasting and duplicating annotations.
+//! Copying, pasting and duplicating annotations, and moving them up and down the drawing order.
 
 use ab_glyph::FontVec;
 use eframe::egui::{Event, Key, Pos2, Rect, Ui, Vec2};
@@ -33,16 +33,43 @@ pub fn shape_from_text(text: &str) -> Option<Shape> {
     (b.is_finite() && sane(b.min) && sane(b.max)).then_some(shape)
 }
 
+/// Where Ctrl+] and Ctrl+[ (with Shift: all the way) move the selection in the drawing order.
+#[derive(Clone, Copy)]
+enum Arrange {
+    /// Over the annotation above it.
+    Forward,
+    /// Under the annotation below it.
+    Backward,
+    /// Over everything.
+    Front,
+    /// Under everything.
+    Back,
+}
+
 /// What the editor's Ctrl+ shortcuts for the selection ask for this frame.
 enum Shortcut {
     Duplicate,
+    Arrange(Arrange),
 }
 
-/// Ctrl+D, from this frame's keys.
+/// Ctrl+D, Ctrl+] or Ctrl+[ (with or without Shift), from this frame's keys. Brackets are matched
+/// by the key as well as by what it types, as Shift turns `]` into `}` and other keyboards put
+/// brackets elsewhere.
 fn shortcut(ui: &Ui) -> Option<Shortcut> {
     ui.input(|i| {
         i.events.iter().find_map(|e| match e {
-            Event::Key { key: Key::D, pressed: true, modifiers, .. } if modifiers.command && !modifiers.shift => Some(Shortcut::Duplicate),
+            Event::Key { key, physical_key, pressed: true, modifiers, .. } if modifiers.command => {
+                let bracket = |plain: Key, shifted: Key| *key == plain || *key == shifted || *physical_key == Some(plain);
+                if *key == Key::D && !modifiers.shift {
+                    Some(Shortcut::Duplicate)
+                } else if bracket(Key::CloseBracket, Key::CloseCurlyBracket) {
+                    Some(Shortcut::Arrange(if modifiers.shift { Arrange::Front } else { Arrange::Forward }))
+                } else if bracket(Key::OpenBracket, Key::OpenCurlyBracket) {
+                    Some(Shortcut::Arrange(if modifiers.shift { Arrange::Back } else { Arrange::Backward }))
+                } else {
+                    None
+                }
+            }
             _ => None,
         })
     })
@@ -109,13 +136,31 @@ impl Editor {
         self.select(self.doc.current().shapes.len() - 1, tools);
     }
 
-    /// Ctrl+D duplicates the selection.
+    /// Moves the selected annotation up or down the drawing order, as one undo step, keeping it
+    /// selected.
+    fn arrange_selected(&mut self, arrange: Arrange, tools: &mut ToolState) {
+        let Some(i) = self.selected_index() else { return };
+        let last = self.doc.current().shapes.len() - 1;
+        let to = match arrange {
+            Arrange::Forward => (i + 1).min(last),
+            Arrange::Backward => i.saturating_sub(1),
+            Arrange::Front => last,
+            Arrange::Back => 0,
+        };
+        self.doc.move_shape(i, to);
+        self.select(to, tools);
+    }
+
+    /// Ctrl+D duplicates the selection; Ctrl+] and Ctrl+[ move it up or down the drawing order,
+    /// and with Shift to the top or bottom.
     pub(super) fn arrange_keys(&mut self, ui: &Ui, tools: &mut ToolState, font: Option<&FontVec>) {
         if self.selected_index().is_none() || ui.ctx().egui_wants_keyboard_input() {
             return;
         }
-        if let Some(Shortcut::Duplicate) = shortcut(ui) {
-            self.duplicate_selected(tools, font);
+        match shortcut(ui) {
+            Some(Shortcut::Duplicate) => self.duplicate_selected(tools, font),
+            Some(Shortcut::Arrange(arrange)) => self.arrange_selected(arrange, tools),
+            None => {}
         }
     }
 }

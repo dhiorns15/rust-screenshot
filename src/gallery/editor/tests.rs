@@ -753,6 +753,46 @@ fn only_a_copied_annotation_pastes() {
     assert_eq!(h.shapes().len(), 1);
 }
 
+#[test]
+fn ctrl_brackets_move_the_selection_up_and_down_the_drawing_order() {
+    let mut h = Harness::new();
+    h.tools.tool = Tool::Box;
+    let (a, b, c) = (r(100.0, 100.0, 200.0, 200.0), r(300.0, 100.0, 400.0, 200.0), r(500.0, 100.0, 600.0, 200.0));
+    for rect in [a, b, c] {
+        drag(&mut h, (rect.min.x, rect.min.y), (rect.max.x, rect.max.y));
+    }
+    h.tools.tool = Tool::Select;
+    h.frame(vec![]);
+    h.click(150.0, 100.0);
+    assert_eq!(h.selected(), Some(0));
+
+    let steps = [
+        (false, Key::CloseBracket, [b, a, c], 1),
+        (true, Key::CloseBracket, [b, c, a], 2),
+        (false, Key::OpenBracket, [b, a, c], 1),
+        (true, Key::OpenBracket, [a, b, c], 0),
+    ];
+    for (shift, k, order, at) in steps {
+        let before = box_rects(&h);
+        h.ctrl_key(shift, k);
+        assert_eq!(box_rects(&h), order, "Ctrl+{}{k:?}", if shift { "Shift+" } else { "" });
+        assert_eq!(h.selected(), Some(at), "stays selected");
+        h.editor.doc.undo();
+        h.frame(vec![]);
+        assert_eq!(box_rects(&h), before, "one undo step");
+        h.editor.doc.redo();
+        h.frame(vec![]);
+        h.editor.select(at, &mut h.tools);
+    }
+
+    // As typed with Shift on a US keyboard, and already at the top: nothing to do, no undo step.
+    h.ctrl_key(true, Key::CloseCurlyBracket);
+    assert_eq!(box_rects(&h), [b, c, a]);
+    let version = h.editor.doc.version;
+    h.ctrl_key(false, Key::CloseBracket);
+    assert_eq!(h.editor.doc.version, version);
+}
+
 /// Random input for the panic hunt: xorshift, so a seed replays the same run.
 struct Rng(u64);
 
@@ -788,8 +828,8 @@ fn panic_hunt(seed: u64, steps: usize) {
     let mut h = Harness::new();
     let mut rng = Rng(seed | 1);
     let keys = [Key::Delete, Key::Backspace, Key::Escape, Key::Enter, Key::ArrowLeft, Key::ArrowRight, Key::ArrowUp, Key::ArrowDown, Key::A];
-    // Ctrl+ (with Shift if true): duplicate.
-    let shortcuts = [(false, Key::D)];
+    // Ctrl+ (with Shift if true): duplicate, and up and down the drawing order.
+    let shortcuts = [(false, Key::D), (false, Key::CloseBracket), (true, Key::CloseBracket), (false, Key::OpenBracket), (true, Key::OpenBracket)];
     for step in 0..steps {
         if step > 0 && step % 100 == 0 {
             println!("panic hunt: step {step} of {steps} after {:.0?}", started.elapsed());
