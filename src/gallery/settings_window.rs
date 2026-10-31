@@ -24,6 +24,7 @@ use crate::update::Release;
 mod descriptions;
 mod linux_shortcuts;
 mod push;
+mod watermark;
 
 pub const TITLE: &str = "RSnip Settings";
 const REPO: &str = "https://github.com/dhiorns15/rust-screenshot";
@@ -176,6 +177,7 @@ pub struct SettingsApp {
     describe: descriptions::DescribeState,
     /// RSnip's shortcuts in GNOME's settings (Linux).
     gnome: linux_shortcuts::GnomeShortcuts,
+    watermarking: watermark::WatermarkState,
 }
 
 /// Installing an update from Settings → Updates.
@@ -193,7 +195,7 @@ impl SettingsApp {
         ctx.set_fonts(fonts);
         let section = Section::General;
         let home = env.host().home;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, checking_recording: None, recording_support: None, sound_devices: Default::default(), home, picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, restart_tray: false, push: Default::default(), describe: Default::default(), gnome: Default::default() }
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, checking_recording: None, recording_support: None, sound_devices: Default::default(), home, picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, restart_tray: false, push: Default::default(), describe: Default::default(), gnome: Default::default(), watermarking: Default::default() }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -519,6 +521,7 @@ impl SettingsApp {
                 }
             }
         });
+        self.watermark(ui);
         self.clean_up(ui);
         self.descriptions(ui);
     }

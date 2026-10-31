@@ -189,6 +189,44 @@ fn recording_format_and_library_position() {
 }
 
 #[test]
+fn a_watermark_is_text_or_a_picture_with_a_preview() {
+    let mut h = settings("settings-watermark", |_| {});
+    // Tall enough to show the whole card without scrolling.
+    h.set_size(Vec2::new(SIZE.x, 1400.0));
+    open(&mut h, Section::Library);
+    assert!(h.query_by_label("Watermark preview").is_none(), "none to start with");
+    click(&mut h, "Text");
+    assert_eq!(h.state().env.setting("WatermarkKind"), Some(1));
+    assert!(h.query_by_label("Type the text to put on").is_some());
+    click(&mut h, "Watermark text");
+    h.get_by_label("Watermark text").type_text("© RSnip");
+    settle(&mut h);
+    assert_eq!(h.state().env.text_setting("WatermarkText").as_deref(), Some("© RSnip"));
+    assert!(h.query_by_label("Watermark preview").is_some());
+    click(&mut h, "Top left");
+    assert_eq!(h.state().env.setting("WatermarkCorner"), Some(0));
+    assert!(h.query_by_label("Watermark opacity").is_some() && h.query_by_label("Watermark size").is_some());
+
+    // A picture that isn't there: nothing is added, and Settings says so.
+    click(&mut h, "Picture");
+    assert!(h.query_by_label("Choose a picture to put on").is_some());
+    let gone = h.state().env.dir.join("logo.png");
+    h.state().env.sandboxed().picked_file = Some(gone.clone());
+    click(&mut h, "Choose…");
+    settle(&mut h);
+    assert_eq!(h.state().env.text_setting("WatermarkImage"), Some(gone.to_string_lossy().into_owned()));
+    assert!(h.query_by_label("logo.png isn't there any more, so no watermark is added").is_some());
+    image::RgbaImage::from_pixel(40, 20, image::Rgba([255, 0, 0, 255])).save(&gone).unwrap();
+    settle(&mut h);
+    assert!(h.query_by_label_contains("no watermark is added").is_none(), "seen once it's there");
+
+    click(&mut h, "None");
+    assert_eq!(h.state().env.setting("WatermarkKind"), Some(0));
+    assert!(h.query_by_label("Watermark preview").is_none());
+    assert_eq!(h.state().env.text_setting("WatermarkText").as_deref(), Some("© RSnip"), "kept for next time");
+}
+
+#[test]
 fn frame_rate_and_codec_are_for_mp4s_and_h265_needs_an_encoder() {
     let mut h = settings("settings-video", |_| {});
     open(&mut h, Section::Recording);
@@ -558,6 +596,8 @@ fn clean_up_is_off_until_asked_for_and_says_how_many_are_old_and_when_it_last_ra
     assert!(!is_on(&h, &title), "off by default");
     assert!(h.query_by_label_contains("Moved ").is_none(), "hasn't run");
     assert!(h.query_by_label("2 are older than 30 days").is_some(), "30 days unless chosen; not the photo");
+    h.get_by_label("7 days").scroll_to_me();
+    settle(&mut h);
     click(&mut h, "7 days");
     assert_eq!(h.state().env.setting(options::CLEAN_UP_DAYS.name), Some(7));
     assert!(h.query_by_label("3 are older than 7 days").is_some());
@@ -1451,6 +1491,20 @@ mod snapshots {
     }
 
     #[test]
+    fn watermark_with_its_preview() {
+        let _gpu = super::super::tests::gpu();
+        let mut h = rendered("snap-settings-watermark", |env| {
+            env.set_setting("WatermarkKind", 1);
+            env.set_text_setting("WatermarkText", "© RSnip");
+            env.set_setting("WatermarkScale", 10);
+        });
+        open(&mut h, Section::Library);
+        h.get_by_label("Watermark preview").scroll_to_me();
+        settle(&mut h);
+        snapshot(&mut h, Section::Library, "settings_watermark");
+    }
+
+    #[test]
     fn offer_to_move_the_library() {
         let _gpu = super::super::tests::gpu();
         let mut h = rendered("snap-settings-move", |env| {
@@ -1817,7 +1871,7 @@ mod description_snapshots {
         env.sandboxed().secrets.insert("describe-anthropic".into(), "sk-ant-saved".into());
         let ids = ["claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-haiku-5-5", "claude-opus-4-8", "claude-opus-5-5", "claude-sonnet-4-6", "claude-sonnet-5-5", "claude-mystery-1"];
         env.sandboxed().models = Some(Ok(ids.into_iter().map(|id| Model { id: id.into() }).collect()));
-        let mut h = Harness::builder().with_size(Vec2::new(800.0, 900.0)).with_pixels_per_point(1.0).wgpu().build_eframe(move |cc| SettingsApp::new(&cc.egui_ctx, env));
+        let mut h = Harness::builder().with_size(Vec2::new(800.0, 1000.0)).with_pixels_per_point(1.0).wgpu().build_eframe(move |cc| SettingsApp::new(&cc.egui_ctx, env));
         settle(&mut h);
         open(&mut h, Section::Library);
         settle(&mut h);

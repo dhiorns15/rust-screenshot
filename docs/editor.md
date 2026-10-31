@@ -52,9 +52,16 @@ Ctrl+Shift+S saves a copy, Ctrl+scroll zooms, Ctrl+0 fits to the window.
 The *Export* menu saves a copy (PNG or JPG), copies the image *as a file* so it pastes as an
 attachment into a folder, chat or email, copies all the text in it (OCR), or pins it to the screen. Its
 *Border* and *Drop shadow* options are added to every copy, save and export (the annotations stay
-editable without them). *Size* shrinks them too: *Full*, *50 %*, *33 %*, or *Max width*, which
-shrinks anything wider than the number of pixels you give it (1280 to start with) and leaves
-narrower ones as they are. The border and shadow shrink with the picture. Saving at a smaller size
+editable without them). So is a watermark, once you've set one up in *Settings → Library & editor →
+Watermark*: a line of text (white with a dark outline, so it reads on anything) or a PNG such as a
+logo, in the corner you choose, as see-through as you like, and sized as a share of the screenshot
+(text by its height, a picture by its width) so it looks the same on a small screenshot as on a
+large one. Settings shows a preview. It goes on the screenshot itself, inside any border, and
+*Watermark* in the Export menu turns it off and on again.
+
+*Size*, in the same menu, shrinks every copy, save and export: *Full*, *50 %*, *33 %*, or *Max
+width*, which shrinks anything wider than the number of pixels you give it (1280 to start with) and
+leaves narrower ones as they are. The border and shadow shrink with the picture. Saving at a smaller size
 keeps the full-size original for editing, like the border and shadow do. The menu stays open while
 you choose these; click outside it to close it.
 

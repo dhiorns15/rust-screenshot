@@ -188,10 +188,45 @@ fn export_menu_offers_what_this_system_supports() {
 }
 
 #[test]
-fn export_size_shrinks_what_is_copied() {
-    let mut h = harness("kittest-export-size");
+fn export_menu_turns_the_watermark_off_and_on() {
     // What Copy, Save and Copy as file would give. (Copy as file's own file is shared with other
     // tests, as each copies a "Screenshot a".)
+    let copied = |h: &mut Harness<App>| h.state_mut().rendered().expect("a screenshot is open");
+    // Without one, there's nothing to turn on, and turning on the border doesn't turn it off.
+    let mut h = harness("kittest-no-watermark");
+    h.get_by_label_contains("Export").click();
+    settle(&mut h);
+    assert!(!shows(&h, "Watermark"));
+    click(&mut h, "Border");
+    assert_eq!(h.state().env.setting("ExportWatermark"), None);
+
+    let mut h = harness_with("kittest-watermark", |env| {
+        env.set_setting(WATERMARK_KIND, 1);
+        env.set_text_setting(WATERMARK_TEXT, "RSnip");
+        env.set_setting(WATERMARK_CORNER, 3);
+    });
+    let original = image::open(&h.state().editor.as_ref().unwrap().doc.path).unwrap().to_rgba8();
+    h.get_by_label_contains("Export").click();
+    settle(&mut h);
+    let on = |h: &Harness<App>| h.get_by_label("Watermark").accesskit_node().toggled() == Some(egui::accesskit::Toggled::True);
+    assert!(on(&h), "on once there's one");
+    let marked = copied(&mut h);
+    assert_eq!(marked.dimensions(), original.dimensions());
+    let (w, h_) = original.dimensions();
+    let differs = |x0: u32, y0: u32, x1: u32, y1: u32| (x0..x1).any(|x| (y0..y1).any(|y| marked.get_pixel(x, y) != original.get_pixel(x, y)));
+    assert!(differs(w / 2, h_ / 2, w, h_), "in the bottom right");
+    assert!(!differs(0, 0, w, h_ / 2) && !differs(0, 0, w / 2, h_), "and nowhere else");
+
+    click(&mut h, "Watermark");
+    assert!(!on(&h));
+    assert_eq!(h.state().env.setting("ExportWatermark"), Some(0));
+    assert_eq!(copied(&mut h), original, "off for now");
+}
+
+#[test]
+fn export_size_shrinks_what_is_copied() {
+    let mut h = harness("kittest-export-size");
+    // What Copy, Save and Copy as file would give (see `export_menu_turns_the_watermark_off_and_on`).
     let copied_size = |h: &mut Harness<App>| h.state_mut().rendered().expect("a screenshot is open").dimensions();
     h.get_by_label_contains("Export").click();
     settle(&mut h);

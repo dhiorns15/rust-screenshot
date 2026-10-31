@@ -125,7 +125,7 @@ use eframe::egui::{
 };
 
 use crate::update;
-use doc::{apply_effects, flatten, render, Doc, Effects, Scale};
+use doc::{apply_effects, flatten, render, Corner, Doc, Effects, Mark, Scale, Watermark};
 use editor::{Editor, TextStatus, Tool, ToolState, GROUP_STARTS, PALETTE, PALETTE_NAMES, TEXT_SIZES, TOOLS};
 use env::Env;
 use pushing::Pushing;
@@ -318,8 +318,10 @@ struct App {
     pending: Option<Pending>,
     allow_close: bool,
     status: Option<(String, Instant)>,
-    /// Border/shadow added to everything the editor outputs.
+    /// The watermark, border, shadow and size of everything the editor outputs.
     effects: Effects,
+    /// The watermark set up in Settings, whether or not it's turned on for exports.
+    watermark: Option<Watermark>,
     /// Text recognition running for "Copy text".
     ocr: Option<Receiver<Result<String, String>>>,
     /// A newer release, once the update check has found one.
@@ -416,6 +418,7 @@ impl App {
             allow_close: false,
             status: None,
             effects: load_effects(&env),
+            watermark: load_watermark(&env),
             ocr: None,
             newer: None,
             restart: false,
@@ -659,15 +662,19 @@ impl App {
         }
     }
 
-    /// The edited image as it's exported: annotations flattened, plus any border/shadow.
+    /// The edited image as it's exported: annotations flattened, plus any watermark, border,
+    /// shadow and resizing.
     fn rendered(&mut self) -> Option<image::RgbaImage> {
         let editor = self.editor.as_mut()?;
         editor.finish_text(&self.tools);
-        Some(apply_effects(render(editor.doc.current(), self.font.as_ref()), self.effects))
+        Some(apply_effects(render(editor.doc.current(), self.font.as_ref()), &self.effects, self.font.as_ref()))
     }
 
     fn set_effects(&mut self, effects: Effects) {
-        self.effects = effects;
+        // Only once there's a watermark is it turned off, so setting one up later turns it on.
+        if self.watermark.is_some() {
+            self.env.set_setting("ExportWatermark", effects.watermark.is_some() as u32);
+        }
         self.env.set_setting("ExportBorder", effects.border.is_some() as u32);
         if let Some(c) = effects.border {
             self.env.set_setting("ExportBorderColor", u32::from_be_bytes([0, c.r(), c.g(), c.b()]));
@@ -683,6 +690,7 @@ impl App {
             }
         };
         self.env.set_setting("ExportScale", scale);
+        self.effects = effects;
     }
 
     fn save(&mut self, as_copy: bool) -> bool {
@@ -878,6 +886,7 @@ impl App {
             // Settings may have changed in the Settings window, the folder too.
             self.dock = Dock::from_setting(self.env.setting(Dock::SETTING));
             self.effects = load_effects(&self.env);
+            self.watermark = load_watermark(&self.env);
             self.env.refresh_dir();
             #[cfg(not(windows))]
             self.env.bring_in_screenshots();
@@ -1328,7 +1337,14 @@ impl App {
         }
         ui.separator();
         ui.label(RichText::new("Added to copies, saves and exports").small().weak());
-        let mut fx = self.effects;
+        let mut fx = self.effects.clone();
+        if let Some(watermark) = &self.watermark {
+            let mut on = fx.watermark.is_some();
+            let check = ui.checkbox(&mut on, "Watermark").on_hover_text("Set it up in Settings → Library & editor");
+            if check.changed() {
+                fx.watermark = on.then(|| watermark.clone());
+            }
+        }
         let mut border = fx.border.is_some();
         ui.horizontal(|ui| {
             ui.checkbox(&mut border, "Border");
@@ -1755,6 +1771,8 @@ fn load_effects(env: &Env) -> Effects {
     let [_, r, g, b] = get("ExportBorderColor").unwrap_or(0x202020).to_be_bytes();
     let max_width = max_width_setting(env);
     Effects {
+        // On unless it's been turned off in the Export menu.
+        watermark: load_watermark(env).filter(|_| get("ExportWatermark") != Some(0)),
         border: (get("ExportBorder") == Some(1)).then_some(Color32::from_rgb(r, g, b)),
         shadow: get("ExportShadow") == Some(1),
         scale: match get("ExportScale") {
@@ -1764,6 +1782,32 @@ fn load_effects(env: &Env) -> Effects {
             _ => Scale::Full,
         },
     }
+}
+
+/// What the watermark is: none, text or a picture.
+const WATERMARK_KIND: &str = "WatermarkKind";
+const WATERMARK_TEXT: &str = "WatermarkText";
+const WATERMARK_IMAGE: &str = "WatermarkImage";
+const WATERMARK_CORNER: &str = "WatermarkCorner";
+const WATERMARK_OPACITY: &str = "WatermarkOpacity";
+const WATERMARK_SCALE: &str = "WatermarkScale";
+const DEFAULT_WATERMARK_OPACITY: u32 = 70;
+
+/// The watermark set up in Settings, whether or not it's turned on for exports: `None` without
+/// text or a picture.
+fn load_watermark(env: &Env) -> Option<Watermark> {
+    let text = |name| env.text_setting(name).filter(|t| !t.trim().is_empty());
+    let mark = match env.setting(WATERMARK_KIND) {
+        Some(1) => Mark::Text(text(WATERMARK_TEXT)?),
+        Some(2) => Mark::Image(PathBuf::from(text(WATERMARK_IMAGE)?)),
+        _ => return None,
+    };
+    Some(Watermark {
+        corner: env.setting(WATERMARK_CORNER).and_then(|i| Corner::ALL.get(i as usize).copied()).unwrap_or_default(),
+        opacity: env.setting(WATERMARK_OPACITY).filter(|o| *o <= 100).unwrap_or(DEFAULT_WATERMARK_OPACITY),
+        scale: env.setting(WATERMARK_SCALE).filter(|s| (1..=100).contains(s)).unwrap_or(mark.default_scale()),
+        mark,
+    })
 }
 
 #[cfg(test)]
@@ -1874,6 +1918,49 @@ mod tests {
             env.set_setting("ExportMaxWidth", junk);
             assert_eq!(load_effects(&env).scale, Scale::MaxWidth(DEFAULT_MAX_WIDTH), "ExportMaxWidth {junk}");
         }
+    }
+
+    #[test]
+    fn watermark_loads_from_settings_and_survives_junk() {
+        let env = Env::sandbox(sandbox_dir("watermark"));
+        assert_eq!(load_watermark(&env), None, "none by default");
+        env.set_text_setting(WATERMARK_TEXT, "© Me");
+        assert_eq!(load_watermark(&env), None, "not until it's chosen");
+        env.set_setting(WATERMARK_KIND, 1);
+        let text = Watermark { mark: Mark::Text("© Me".into()), corner: Corner::BottomRight, opacity: DEFAULT_WATERMARK_OPACITY, scale: 5 };
+        assert_eq!(load_watermark(&env), Some(text.clone()));
+        assert_eq!(load_effects(&env).watermark, Some(text.clone()), "on for exports unless turned off");
+        assert!(load_effects(&env).any());
+
+        env.set_setting(WATERMARK_CORNER, 0);
+        env.set_setting(WATERMARK_OPACITY, 40);
+        env.set_setting(WATERMARK_SCALE, 12);
+        let moved = Watermark { corner: Corner::TopLeft, opacity: 40, scale: 12, ..text.clone() };
+        assert_eq!(load_watermark(&env), Some(moved.clone()));
+
+        env.set_setting(WATERMARK_KIND, 2);
+        assert_eq!(load_watermark(&env), None, "a picture, but none chosen");
+        env.set_text_setting(WATERMARK_IMAGE, "C:/logos/logo.png");
+        let picture = Watermark { mark: Mark::Image(PathBuf::from("C:/logos/logo.png")), ..moved };
+        assert_eq!(load_watermark(&env), Some(picture), "the picture is read when it's used");
+
+        env.set_setting("ExportWatermark", 0);
+        assert_eq!(load_effects(&env).watermark, None, "turned off in the Export menu");
+        env.set_setting("ExportWatermark", 1);
+        assert!(load_effects(&env).watermark.is_some());
+
+        // Junk goes back to the defaults.
+        env.set_setting(WATERMARK_KIND, 1);
+        env.set_setting(WATERMARK_CORNER, 9);
+        env.set_setting(WATERMARK_OPACITY, 101);
+        env.set_setting(WATERMARK_SCALE, 0);
+        assert_eq!(load_watermark(&env), Some(text.clone()));
+        env.set_setting(WATERMARK_SCALE, 500);
+        assert_eq!(load_watermark(&env), Some(text));
+        env.set_text_setting(WATERMARK_TEXT, "   ");
+        assert_eq!(load_watermark(&env), None, "blank text is none");
+        env.set_setting(WATERMARK_KIND, 7);
+        assert_eq!(load_watermark(&env), None);
     }
 
     #[test]

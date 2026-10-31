@@ -957,9 +957,10 @@ fn shadow_mask_rect(pos: Pos2, extent: Vec2, pad: i64, w: i64, h: i64) -> Option
     (x1 > x0 && y1 > y0).then_some((x0 as i64, y0 as i64, (x1 - x0) as usize, (y1 - y0) as usize))
 }
 
-/// Framing and resizing added to exported images; never part of the editable document.
-#[derive(Clone, Copy, PartialEq, Default)]
+/// A watermark, framing and resizing added to exported images; never part of the editable document.
+#[derive(Clone, PartialEq, Default)]
 pub struct Effects {
+    pub watermark: Option<Watermark>,
     pub border: Option<Color32>,
     pub shadow: bool,
     pub scale: Scale,
@@ -967,7 +968,7 @@ pub struct Effects {
 
 impl Effects {
     pub fn any(&self) -> bool {
-        self.border.is_some() || self.shadow || self.scale != Scale::Full
+        self.watermark.is_some() || self.border.is_some() || self.shadow || self.scale != Scale::Full
     }
 }
 
@@ -1000,8 +1001,12 @@ impl Scale {
 pub const BORDER_WIDTH: u32 = 2;
 pub const SHADOW_PAD: u32 = 16;
 
-/// `img` with a border and/or a soft drop shadow on transparent padding.
-pub fn apply_effects(mut img: RgbaImage, fx: Effects) -> RgbaImage {
+/// `img` with a watermark on it, then a border and/or a soft drop shadow on transparent padding,
+/// then resized. A text watermark is drawn with `font`.
+pub fn apply_effects(mut img: RgbaImage, fx: &Effects, font: Option<&FontVec>) -> RgbaImage {
+    if let Some(wm) = &fx.watermark {
+        watermark::apply(&mut img, wm, font);
+    }
     if let Some(c) = fx.border {
         let b = BORDER_WIDTH;
         let mut out = RgbaImage::from_pixel(img.width() + 2 * b, img.height() + 2 * b, image::Rgba(c.to_array()));
@@ -1141,6 +1146,9 @@ fn box_blur(px: &mut [u8], len: usize, lines: usize, step: usize, line_step: usi
         }
     }
 }
+
+mod watermark;
+pub use watermark::{read_picture, Corner, Mark, Watermark};
 
 #[cfg(test)]
 mod properties;
@@ -1565,12 +1573,12 @@ mod tests {
     #[test]
     fn export_effects_frame_the_image() {
         let img = RgbaImage::from_pixel(40, 20, image::Rgba([10, 200, 10, 255]));
-        let bordered = apply_effects(img.clone(), Effects { border: Some(Color32::RED), ..Effects::default() });
+        let bordered = apply_effects(img.clone(), &Effects { border: Some(Color32::RED), ..Effects::default() }, None);
         assert_eq!(bordered.dimensions(), (44, 24));
         assert_eq!(bordered.get_pixel(0, 0).0, [255, 0, 0, 255]);
         assert_eq!(bordered.get_pixel(2, 2).0, [10, 200, 10, 255]);
 
-        let shadowed = apply_effects(img, Effects { shadow: true, ..Effects::default() });
+        let shadowed = apply_effects(img, &Effects { shadow: true, ..Effects::default() }, None);
         let pad = SHADOW_PAD;
         assert_eq!(shadowed.dimensions(), (40 + 2 * pad, 20 + 2 * pad));
         assert_eq!(shadowed.get_pixel(0, 0).0[3], 0, "far corner is transparent");
@@ -1583,7 +1591,7 @@ mod tests {
     #[test]
     fn export_scale_shrinks_after_the_frame() {
         let img = RgbaImage::from_pixel(300, 120, image::Rgba([10, 200, 10, 255]));
-        let size = |fx: Effects| apply_effects(img.clone(), fx).dimensions();
+        let size = |fx: Effects| apply_effects(img.clone(), &fx, None).dimensions();
         let scaled = |scale| Effects { scale, ..Effects::default() };
         assert_eq!(size(scaled(Scale::Full)), (300, 120));
         assert_eq!(size(scaled(Scale::Half)), (150, 60));
@@ -1595,7 +1603,7 @@ mod tests {
         assert!(!Effects::default().any() && scaled(Scale::Half).any() && scaled(Scale::MaxWidth(1000)).any());
 
         // The border and shadow are added first, and shrink with the rest.
-        let framed = |scale| Effects { border: Some(Color32::RED), shadow: true, scale };
+        let framed = |scale| Effects { border: Some(Color32::RED), shadow: true, scale, ..Effects::default() };
         let (fw, fh) = (300 + 2 * BORDER_WIDTH + 2 * SHADOW_PAD, 120 + 2 * BORDER_WIDTH + 2 * SHADOW_PAD);
         assert_eq!(size(framed(Scale::Full)), (fw, fh));
         assert_eq!(size(framed(Scale::Half)), (fw / 2, fh / 2));
@@ -1603,11 +1611,11 @@ mod tests {
         let (w, h) = size(framed(Scale::MaxWidth(200)));
         assert_eq!((w, h), (200, (fh as f64 * 200.0 / fw as f64).round() as u32));
         assert_eq!(size(framed(Scale::MaxWidth(fw + 1))), (fw, fh));
-        let bordered = apply_effects(img.clone(), Effects { border: Some(Color32::RED), scale: Scale::Half, ..Effects::default() });
+        let bordered = apply_effects(img.clone(), &Effects { border: Some(Color32::RED), scale: Scale::Half, ..Effects::default() }, None);
         assert_eq!(bordered.get_pixel(75, 30).0, [10, 200, 10, 255], "a flat image stays flat");
 
         // Even a sliver keeps a pixel.
         let sliver = RgbaImage::from_pixel(1000, 1, image::Rgba([0, 0, 0, 255]));
-        assert_eq!(apply_effects(sliver, scaled(Scale::Third)).dimensions(), (333, 1));
+        assert_eq!(apply_effects(sliver, &scaled(Scale::Third), None).dimensions(), (333, 1));
     }
 }

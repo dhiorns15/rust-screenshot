@@ -20,6 +20,7 @@ command line or a desktop shortcut, with a few things Windows-only (see
   every action can have its own shortcut. [Settings](docs/settings.md)
 - **Annotate** with arrows, lines, boxes, ellipses, steps, text, highlighter, spotlight, zoomed-in
   callouts and a pen, and crop or cut out a strip. Everything stays selectable, and annotations stay editable after saving.
+  Copies and exports can get your watermark, a border and a drop shadow, and be shrunk on the way.
   [More](docs/editor.md)
 - **Hide what shouldn't be seen** with blur, pixelate or redact, or let *Auto-redact* find the
   emails, keys and card numbers for you. [More](docs/editor.md#tools)
