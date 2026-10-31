@@ -457,6 +457,10 @@ mod tests {
     #[test]
     fn only_a_fixed_drive_has_a_recycle_bin() {
         assert!(has_recycle_bin(&std::env::temp_dir()));
-        assert!(!has_recycle_bin(Path::new(r"\nas.invalid\shots\RSnip")));
+        // A network share (a UNC path: two backslashes, not one, which would be a folder at the
+        // root of the current drive).
+        let share = Path::new(r"\\nas.invalid\shots\RSnip");
+        assert_eq!(share.components().take(2).collect::<PathBuf>(), Path::new(r"\\nas.invalid\shots\"), "the share is the root asked about");
+        assert!(!has_recycle_bin(share));
     }
 }
