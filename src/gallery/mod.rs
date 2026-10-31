@@ -798,7 +798,7 @@ impl App {
                 self.set_status("Cut the annotation: Ctrl+V pastes it");
             }
             // Ctrl+C used to copy the image whatever was selected.
-            Ok(()) => self.set_status("Copied the annotation: Ctrl+V pastes it (to copy the image, press Esc first)"),
+            Ok(()) => self.set_status("Copied the annotation: Ctrl+V pastes it"),
             Err(e) => self.set_status(e),
         }
     }
@@ -1094,10 +1094,12 @@ impl App {
         }
         let (copy, cut) = ctx.input(|i| (i.events.contains(&egui::Event::Copy), i.events.contains(&egui::Event::Cut)));
         if copy || cut {
-            // With the Copy text tool, the selected text; otherwise the selected annotation, or
-            // with none selected the image.
+            // With the Copy text tool, the selected text; with the Select tool, the selected
+            // annotation; otherwise the image. (A shape just drawn is still selected, and Ctrl+C
+            // then is for the image: pick it with Select to copy the shape.)
             let editor = self.editor.as_ref().unwrap();
-            match (editor.selected_text().filter(|_| copying_text), editor.copy_selected()) {
+            let selecting = self.tools.tool == Tool::Select;
+            match (editor.selected_text().filter(|_| copying_text), editor.copy_selected().filter(|_| selecting)) {
                 (Some(text), _) if copy => self.copy_words(&text),
                 (None, Some(shape)) => self.copy_annotation(&shape, cut),
                 (None, None) if copy => self.copy(),

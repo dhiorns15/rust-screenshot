@@ -39,7 +39,7 @@ Each move, resize or restyle is one undo step, and so is each of these:
 
 | Keys | With an annotation selected |
 | --- | --- |
-| Ctrl+C / Ctrl+X | copy / cut it, to paste into this screenshot or another one |
+| Ctrl+C / Ctrl+X | with the Select tool, copy / cut it, to paste into this screenshot or another one (with a drawing tool, Ctrl+C copies the image, as the annotation just drawn is still selected) |
 | Ctrl+V | paste a copied annotation, 16 px down and right of where it was (further each time it's pasted again), kept on the image, and selected. While typing text, an annotation pastes as one; other text pastes into the text |
 | Ctrl+D | duplicate it the same way, leaving the clipboard alone (a step gets the next number) |
 | Ctrl+] / Ctrl+[ | bring it forward / send it backward, over or under the annotation next to it |
@@ -55,7 +55,7 @@ deleted outside RSnip is cleaned up automatically.
 ## Keys and Export
 
 Ctrl+Z / Ctrl+Y undo/redo, Ctrl+C copies the edited image (or the selected text, with *Copy text*;
-or the selected annotation, so press Esc first to copy the image), Ctrl+S overwrites the file,
+or the selected annotation, with *Select*), Ctrl+S overwrites the file,
 Ctrl+Shift+S saves a copy, Ctrl+scroll zooms, Ctrl+0 fits to the window.
 
 The *Export* menu saves a copy (PNG or JPG), copies the image *as a file* so it pastes as an

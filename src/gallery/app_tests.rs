@@ -1009,9 +1009,17 @@ fn ctrl_c_ctrl_x_and_ctrl_v_copy_cut_and_paste_the_selected_annotation() {
     drag_on_canvas(&mut h, (0.2, 0.2), (0.5, 0.5));
     h.event(egui::Event::Copy);
     settle(&mut h);
+    assert_eq!(h.state().env.sandboxed().copied, None, "just drawn, the box is still selected, but Ctrl+C copies the image");
+
+    // Picked with the Select tool (switching tools deselects it), by its left edge.
+    click(&mut h, "Select");
+    let canvas = h.state().editor.as_ref().unwrap().canvas;
+    click_at(&mut h, canvas.lerp_inside(Vec2::new(0.2, 0.35)), 1);
+    h.event(egui::Event::Copy);
+    settle(&mut h);
     let copied = h.state().env.sandboxed().copied.clone();
-    assert!(copied.as_deref().and_then(editor::shape_from_text).is_some(), "the box, not the image: {copied:?}");
-    assert!(shows(&h, "Copied the annotation: Ctrl+V pastes it (to copy the image, press Esc first)"));
+    assert!(copied.as_deref().and_then(editor::shape_from_text).is_some(), "with Select, the box: {copied:?}");
+    assert!(shows(&h, "Copied the annotation: Ctrl+V pastes it"));
 
     press_ctrl_v(&mut h, copied.clone());
     assert_eq!(annotations(&h).len(), 2, "pasted once, not again when V is let go of");
@@ -1039,12 +1047,15 @@ fn pasting_while_typing_text_pastes_an_annotation_as_one_and_other_text_into_the
     let mut h = harness_at("kittest-paste-into-text", 1.0 / 60.0);
     click(&mut h, "Arrow");
     drag_on_canvas(&mut h, (0.2, 0.2), (0.5, 0.5));
+    click(&mut h, "Select");
+    let canvas = h.state().editor.as_ref().unwrap().canvas;
+    click_at(&mut h, canvas.lerp_inside(Vec2::new(0.35, 0.35)), 1);
     h.event(egui::Event::Copy);
     settle(&mut h);
     let copied = h.state().env.sandboxed().copied.clone();
+    assert!(copied.is_some(), "the arrow, picked with Select");
 
     click(&mut h, "Text");
-    let canvas = h.state().editor.as_ref().unwrap().canvas;
     click_at(&mut h, canvas.lerp_inside(Vec2::new(0.6, 0.7)), 1);
     settle(&mut h);
     h.event(egui::Event::Text("Hello".into()));
