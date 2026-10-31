@@ -65,9 +65,10 @@ pub fn record(path: &Path, entry: &Entry) {
         let mut entries = load(path);
         entries.truncate(KEEP);
         let text: String = entries.iter().rev().filter_map(|e| serde_json::to_string(e).ok()).map(|l| l + "\n").collect();
-        let new = path.with_extension("jsonl.new");
-        if std::fs::write(&new, text).is_ok() {
-            let _ = std::fs::rename(&new, path);
+        // A name of this process's own: the library and the automatic pusher may both be here.
+        let new = path.with_extension(format!("jsonl.{}.new", std::process::id()));
+        if std::fs::write(&new, text).is_ok() && std::fs::rename(&new, path).is_err() {
+            let _ = std::fs::remove_file(&new);
         }
     }
 }
