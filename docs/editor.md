@@ -52,7 +52,11 @@ Ctrl+Shift+S saves a copy, Ctrl+scroll zooms, Ctrl+0 fits to the window.
 The *Export* menu saves a copy (PNG or JPG), copies the image *as a file* so it pastes as an
 attachment into a folder, chat or email, copies all the text in it (OCR), or pins it to the screen. Its
 *Border* and *Drop shadow* options are added to every copy, save and export (the annotations stay
-editable without them).
+editable without them). *Size* shrinks them too: *Full*, *50 %*, *33 %*, or *Max width*, which
+shrinks anything wider than the number of pixels you give it (1280 to start with) and leaves
+narrower ones as they are. The border and shadow shrink with the picture. Saving at a smaller size
+keeps the full-size original for editing, like the border and shadow do. The menu stays open while
+you choose these; click outside it to close it.
 
 ## The library
 

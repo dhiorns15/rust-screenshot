@@ -673,6 +673,16 @@ impl App {
             self.env.set_setting("ExportBorderColor", u32::from_be_bytes([0, c.r(), c.g(), c.b()]));
         }
         self.env.set_setting("ExportShadow", effects.shadow as u32);
+        let scale = match effects.scale {
+            Scale::Full => 0,
+            Scale::Half => 1,
+            Scale::Third => 2,
+            Scale::MaxWidth(width) => {
+                self.env.set_setting("ExportMaxWidth", width);
+                3
+            }
+        };
+        self.env.set_setting("ExportScale", scale);
     }
 
     fn save(&mut self, as_copy: bool) -> bool {
@@ -1050,7 +1060,9 @@ impl App {
             return self.recording_actions(ui, &path);
         }
         ui.add_enabled_ui(enabled, |ui| {
-            ui.menu_button(format!("{}  Export  {}", icon::EXPORT, icon::CARET_DOWN), |ui| self.export_menu(ui))
+            // It stays open while its options are set (typing a width, say); each action closes it.
+            let config = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+            egui::containers::menu::MenuButton::new(format!("{}  Export  {}", icon::EXPORT, icon::CARET_DOWN)).config(config).ui(ui, |ui| self.export_menu(ui))
         });
         let save = theme::primary_button(theme::label(icon::FLOPPY_DISK, "Save"));
         if ui.add_enabled(enabled && self.dirty(), save).on_hover_text("Overwrite the screenshot (Ctrl+S)").clicked() {
@@ -1327,6 +1339,27 @@ impl App {
             fx.border = border.then_some(fx.border.unwrap_or(color));
         });
         ui.checkbox(&mut fx.shadow, "Drop shadow");
+        ui.horizontal(|ui| {
+            ui.label("Size");
+            for (label, scale) in [("Full", Scale::Full), ("50 %", Scale::Half), ("33 %", Scale::Third)] {
+                ui.radio_value(&mut fx.scale, scale, label);
+            }
+        });
+        ui.horizontal(|ui| {
+            let mut width = match fx.scale {
+                Scale::MaxWidth(width) => width,
+                _ => max_width_setting(&self.env),
+            };
+            let limited = matches!(fx.scale, Scale::MaxWidth(_));
+            let radio = ui.radio(limited, "Max width").on_hover_text("Narrower images stay as they are");
+            let drag = egui::DragValue::new(&mut width).range(MIN_MAX_WIDTH..=MAX_MAX_WIDTH).speed(4.0).suffix(" px");
+            let typed = ui.add(drag);
+            typed.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, "Max width in pixels"));
+            let typed = typed.changed();
+            if radio.clicked() || typed {
+                fx.scale = Scale::MaxWidth(width);
+            }
+        });
         if fx != self.effects {
             self.set_effects(fx);
         }
@@ -1712,10 +1745,15 @@ const DEFAULT_MAX_WIDTH: u32 = 1280;
 const MIN_MAX_WIDTH: u32 = 16;
 const MAX_MAX_WIDTH: u32 = 20_000;
 
+/// The width "Max width" shrinks to, whether or not it's chosen.
+fn max_width_setting(env: &Env) -> u32 {
+    env.setting("ExportMaxWidth").filter(|w| (MIN_MAX_WIDTH..=MAX_MAX_WIDTH).contains(w)).unwrap_or(DEFAULT_MAX_WIDTH)
+}
+
 fn load_effects(env: &Env) -> Effects {
     let get = |name| env.setting(name);
     let [_, r, g, b] = get("ExportBorderColor").unwrap_or(0x202020).to_be_bytes();
-    let max_width = get("ExportMaxWidth").filter(|w| (MIN_MAX_WIDTH..=MAX_MAX_WIDTH).contains(w)).unwrap_or(DEFAULT_MAX_WIDTH);
+    let max_width = max_width_setting(env);
     Effects {
         border: (get("ExportBorder") == Some(1)).then_some(Color32::from_rgb(r, g, b)),
         shadow: get("ExportShadow") == Some(1),

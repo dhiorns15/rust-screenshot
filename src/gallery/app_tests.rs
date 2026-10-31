@@ -188,6 +188,38 @@ fn export_menu_offers_what_this_system_supports() {
 }
 
 #[test]
+fn export_size_shrinks_what_is_copied() {
+    let mut h = harness("kittest-export-size");
+    // What Copy, Save and Copy as file would give. (Copy as file's own file is shared with other
+    // tests, as each copies a "Screenshot a".)
+    let copied_size = |h: &mut Harness<App>| h.state_mut().rendered().expect("a screenshot is open").dimensions();
+    h.get_by_label_contains("Export").click();
+    settle(&mut h);
+    click(&mut h, "50 %");
+    assert_eq!(h.state().env.setting("ExportScale"), Some(1));
+    assert_eq!(copied_size(&mut h), (160, 100), "the 320 × 200 screenshot at half size");
+
+    click(&mut h, "Max width");
+    assert_eq!(h.state().effects.scale, Scale::MaxWidth(DEFAULT_MAX_WIDTH));
+    assert_eq!(h.state().env.setting("ExportScale"), Some(3));
+    assert_eq!(h.state().env.setting("ExportMaxWidth"), Some(DEFAULT_MAX_WIDTH));
+    assert_eq!(copied_size(&mut h), (320, 200), "narrower than the limit, so as it was");
+
+    click(&mut h, "Max width in pixels");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.get_by_label("Max width in pixels").type_text("64");
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    assert_eq!(h.state().env.setting("ExportMaxWidth"), Some(64));
+    assert!(shows(&h, "Drop shadow"), "the menu stays open while the width is typed");
+    assert_eq!(copied_size(&mut h), (64, 40));
+
+    click(&mut h, "Full");
+    assert_eq!(h.state().env.setting("ExportScale"), Some(0));
+    assert_eq!(h.state().env.setting("ExportMaxWidth"), Some(64), "kept for next time");
+}
+
+#[test]
 fn hide_and_show_requests_are_not_files_to_open() {
     let mut h = harness("kittest-hide-show");
     let open = |h: &Harness<App>| h.state().editor.as_ref().unwrap().doc.path.clone();
