@@ -306,6 +306,8 @@ struct App {
     editor: Option<Editor>,
     /// The recording open in the viewer, instead of an editor.
     player: Option<player::Player>,
+    /// A recording being saved in the other format (an MP4 as a GIF, a GIF as an MP4).
+    converting: Option<player::Converting>,
     /// A recording to save a copy of, and the folder chooser while it's open.
     copying_to: Option<(PathBuf, env::PickedFolder)>,
     /// Files being pushed to a destination, chosen by hand (see `push_to`).
@@ -405,6 +407,7 @@ impl App {
             thumb_rx,
             editor: None,
             player: None,
+            converting: None,
             copying_to: None,
             pushing: None,
             tools: ToolState::default(),
@@ -625,6 +628,37 @@ impl App {
         }
     }
 
+    /// Starts saving `from`..`to` of the open recording in the other format, beside it; it opens
+    /// once it's saved (see `converted`).
+    fn convert(&mut self, ctx: &egui::Context, from: Duration, to: Duration) {
+        let Some(src) = self.player.as_ref().map(|p| p.path.clone()) else { return };
+        if self.converting.is_some() {
+            return;
+        }
+        match player::Converting::start(&src, from, to, Some(ctx.clone())) {
+            Ok(job) => self.converting = Some(job),
+            Err(e) => self.set_status(format!("Couldn't save it: {e}")),
+        }
+    }
+
+    /// What saving in the other format came to: the new file is selected and opened (unless
+    /// there are edits it would close).
+    fn converted(&mut self, kind: player::Kind, result: player::Converted) {
+        match result {
+            Ok(Some(path)) => {
+                self.rescan();
+                let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                if !self.dirty() {
+                    self.selected = [path.clone()].into();
+                    self.open(&path);
+                }
+                self.set_status(format!("Saved {name}"));
+            }
+            Ok(None) => self.set_status(format!("Stopped saving the {}", kind.name())),
+            Err(e) => self.set_status(format!("Couldn't save the {}: {e}", kind.name())),
+        }
+    }
+
     /// The edited image as it's exported: annotations flattened, plus any border/shadow.
     fn rendered(&mut self) -> Option<image::RgbaImage> {
         let editor = self.editor.as_mut()?;
@@ -768,6 +802,10 @@ impl App {
 
     fn poll(&mut self, ctx: &egui::Context) {
         self.poll_pushing();
+        if let Some((kind, result)) = self.converting.as_ref().and_then(|job| Some((job.kind, job.finished()?))) {
+            self.converting = None;
+            self.converted(kind, result);
+        }
         if let Some(picked) = self.copying_to.as_ref().and_then(|(_, rx)| rx.try_recv().ok()) {
             let (src, _) = self.copying_to.take().unwrap();
             match picked {
@@ -1274,6 +1312,13 @@ impl App {
                 ui.label(format!("{name}{marker}"));
                 ui.label(RichText::new(format!("{} × {} px", size.x, size.y)).weak());
             }
+            if let Some(job) = &self.converting {
+                let name = job.path.file_name().unwrap_or_default().to_string_lossy();
+                ui.label(RichText::new(format!("Saving {name}… {:.0} %", (job.progress() * 100.0).floor())).color(theme::ACCENT));
+                if ui.small_button("Stop").on_hover_text(format!("Stop saving the {}; nothing is kept", job.kind.name())).clicked() {
+                    job.cancel();
+                }
+            }
             if let Some((text, at)) = &self.status {
                 if at.elapsed() < Duration::from_secs(4) {
                     ui.label(RichText::new(text).color(theme::ACCENT));
@@ -1423,8 +1468,10 @@ impl eframe::App for App {
             match (&mut self.editor, &mut self.player) {
                 (Some(editor), _) => editor.ui(ui, &mut self.tools, self.font.as_ref()),
                 (None, Some(player)) => {
+                    player.converting = self.converting.is_some();
                     match player.ui(ui) {
                         Some(player::Request::Trim(from, to)) => self.trim(from, to),
+                        Some(player::Request::Convert(from, to)) => self.convert(ctx, from, to),
                         Some(player::Request::Muted(muted)) => self.env.set_setting(crate::options::PLAYER_MUTED.name, muted as u32),
                         None => {}
                     }

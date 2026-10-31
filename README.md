@@ -25,8 +25,8 @@ command line or a desktop shortcut, with a few things Windows-only (see
   emails, keys and card numbers for you. [More](docs/editor.md#tools)
 - **Copy text** from a screenshot: pick out the words and copy them. [More](docs/editor.md#tools)
 - **Record** an area to MP4 or GIF, with the computer's sound, your microphone and your camera in
-  a round bubble on top, pause it (on Windows) to leave a stretch out, play it in the library with its sound and trim it to a new file without
-  re-encoding. [More](docs/capturing.md#sound-in-recordings), [the camera](docs/capturing.md#camera-in-recordings)
+  a round bubble on top, pause it (on Windows) to leave a stretch out, play it in the library with its sound, trim it to a new file without
+  re-encoding, and save an MP4 as a GIF or a GIF as an MP4. [More](docs/capturing.md#sound-in-recordings), [the camera](docs/capturing.md#camera-in-recordings)
   and [the player](docs/editor.md#recordings)
 - **Library and Gallery**: browse every screenshot, grouped by date (the groups fold away), and
   search by the words in them, the app and window they came from, their name, and (if you turn on
@@ -56,7 +56,7 @@ Get the [latest release](https://github.com/dhiorns15/rust-screenshot/releases/l
 - [Installing on Windows](docs/windows.md): the installer, or `rsnip.exe` on its own
 - [Capturing](docs/capturing.md): every way to capture or record, and the shortcuts
 - [The editor, library and Gallery](docs/editor.md): tools, saving, exporting, search, the Gallery
-  and trimming recordings
+  and trimming and converting recordings
 - [Places to push to](docs/destinations.md): sending to other places, and how to set up each
 - [Settings](docs/settings.md): each section of the Settings window, and crash reports
 - [Command line](docs/command-line.md): the `rsnip` options

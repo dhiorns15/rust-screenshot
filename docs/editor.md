@@ -114,7 +114,13 @@ start. *Save trimmed copy* saves it beside the original as "… (trimmed)". MP4s
 it's instant and loses nothing, but the cut starts on the keyframe at or before the start
 (recordings have one every second); GIFs are cut to the frame. A recording with sound keeps the
 sound of the part kept, in step with the picture, and the library's details say "with sound" beside
-its length. On Linux, playing MP4s needs GStreamer's H.264 and AAC decoders (`gstreamer1.0-libav` on
+its length. *Save as GIF…* (for an MP4) or *Save as MP4…* (for a GIF) saves it in the other
+format beside it, under the same name ("Recording ….gif", numbered if that's taken): the part kept
+while trimming, otherwise all of it. A GIF is 12 frames a second and at most 1280 pixels wide; an
+MP4 is H.264 at 30 frames a second, as recordings are (on Linux this needs GStreamer's x264, as
+recording does). Neither has sound. It's saved in the background, with how far it has got in the
+status bar and *Stop* to give up on it (nothing is left behind); the new file opens once it's done.
+On Linux, playing MP4s needs GStreamer's H.264 and AAC decoders (`gstreamer1.0-libav` on
 Debian and Ubuntu, which the `.deb` recommends). For a recording, *Copy* copies the file, to paste into a folder, chat or email,
 and *Export* saves a copy to another folder or shows it in its folder, selected (as
 *Show in folder* does for screenshots, and in the library's right-click menu).

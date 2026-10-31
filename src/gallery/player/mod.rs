@@ -1,7 +1,9 @@
-//! Playing recordings in the library, and trimming them. MP4s (and Linux's WebM) are decoded by the
-//! system, GStreamer on Linux (`gst`) and Media Foundation on Windows (`mf`), and GIFs by RSnip, on a
-//! thread of their own a few frames ahead; the player shows each frame when its time comes.
+//! Playing recordings in the library, trimming them, and saving them in the other format (see
+//! `convert`). MP4s (and Linux's WebM) are decoded by the system, GStreamer on Linux (`gst`) and
+//! Media Foundation on Windows (`mf`), and GIFs by RSnip, on a thread of their own a few frames
+//! ahead; the player shows each frame when its time comes.
 
+mod convert;
 #[cfg(not(windows))]
 mod gst;
 #[cfg(windows)]
@@ -18,6 +20,7 @@ use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 
 use super::env::Env;
 use crate::mp4::Movie;
+pub use convert::{Converted, Converting};
 use crate::options::PLAYER_MUTED;
 
 /// Frames are decoded no bigger than this, which is plenty for the viewer.
@@ -282,12 +285,51 @@ pub fn trim_gif(src: &Path, dst: &Path, from: Duration, to: Duration) -> Result<
     result
 }
 
+/// A looping GIF, written a frame at a time; its screen is the size of its first frame.
+struct GifOut {
+    file: Option<std::io::BufWriter<std::fs::File>>,
+    encoder: Option<gif::Encoder<std::io::BufWriter<std::fs::File>>>,
+}
+
+impl GifOut {
+    fn create(dst: &Path) -> Result<GifOut, String> {
+        let file = std::fs::File::create(dst).map_err(|e| format!("Couldn't write {}: {e}", dst.display()))?;
+        Ok(GifOut { file: Some(std::io::BufWriter::new(file)), encoder: None })
+    }
+
+    /// Adds `width` × `height` RGBA pixels, shown for `hundredths` of a second (at least 2, as
+    /// browsers show shorter ones for a tenth).
+    fn frame(&mut self, rgba: &mut [u8], (width, height): (u16, u16), hundredths: u64) -> Result<(), String> {
+        if self.encoder.is_none() {
+            let mut encoder = gif::Encoder::new(self.file.take().expect("the file, until the first frame"), width, height, &[]).map_err(|e| e.to_string())?;
+            encoder.set_repeat(gif::Repeat::Infinite).map_err(|e| e.to_string())?;
+            self.encoder = Some(encoder);
+        }
+        // Speed 10 of 30: much faster quantising than the default, still good for screen content.
+        let mut frame = gif::Frame::from_rgba_speed(width, height, rgba, 10);
+        frame.delay = hundredths.clamp(2, u16::MAX as u64) as u16;
+        self.encoder.as_mut().unwrap().write_frame(&frame).map_err(|e| e.to_string())
+    }
+
+    fn started(&self) -> bool {
+        self.encoder.is_some()
+    }
+
+    /// Ends the file and writes what's left of it.
+    fn finish(self) -> Result<(), String> {
+        use std::io::Write;
+        let file = match self.encoder {
+            Some(encoder) => encoder.into_inner().map_err(|e| e.to_string())?,
+            None => self.file.expect("the file"),
+        };
+        file.into_inner().map_err(|e| e.to_string())?.flush().map_err(|e| e.to_string())
+    }
+}
+
 fn copy_gif(src: &Path, dst: &Path, from: Duration, to: Duration) -> Result<(), String> {
     use image::AnimationDecoder;
     let frames = gif_decoder(src)?.into_frames();
-    let out = std::fs::File::create(dst).map_err(|e| format!("Couldn't write {}: {e}", dst.display()))?;
-    let mut encoder: Option<gif::Encoder<std::io::BufWriter<std::fs::File>>> = None;
-    let mut out = Some(std::io::BufWriter::new(out));
+    let mut out = GifOut::create(dst)?;
     let mut at = Duration::ZERO;
     for frame in frames {
         let frame = frame.map_err(|e| e.to_string())?;
@@ -301,20 +343,13 @@ fn copy_gif(src: &Path, dst: &Path, from: Duration, to: Duration) -> Result<(), 
         // Only the part of its time inside the trim.
         let kept = end.min(to) - start.max(from);
         let mut rgba = frame.into_buffer();
-        let (w, h) = (rgba.width() as u16, rgba.height() as u16);
-        if encoder.is_none() {
-            let mut e = gif::Encoder::new(out.take().unwrap(), w, h, &[]).map_err(|e| e.to_string())?;
-            e.set_repeat(gif::Repeat::Infinite).map_err(|e| e.to_string())?;
-            encoder = Some(e);
-        }
-        let mut gif_frame = gif::Frame::from_rgba_speed(w, h, &mut rgba, 10);
-        gif_frame.delay = ((kept.as_millis() + 5) / 10).clamp(2, u16::MAX as u128) as u16;
-        encoder.as_mut().unwrap().write_frame(&gif_frame).map_err(|e| e.to_string())?;
+        let size = (rgba.width() as u16, rgba.height() as u16);
+        out.frame(&mut rgba, size, (kept.as_millis() as u64 + 5) / 10)?;
     }
-    if encoder.is_none() {
+    if !out.started() {
         return Err("Nothing is left between those points".into());
     }
-    Ok(())
+    out.finish()
 }
 
 /// Copies `from`..`to` of a recording to `dst`, without re-encoding it; returns the part kept
@@ -352,6 +387,8 @@ enum Grab {
 pub enum Request {
     /// Save `from`..`to` as a new recording.
     Trim(Duration, Duration),
+    /// Save `from`..`to` in the other format (see `convert::target`).
+    Convert(Duration, Duration),
     /// The sound was muted (true) or unmuted, to be remembered.
     Muted(bool),
 }
@@ -394,6 +431,8 @@ pub struct Player {
     grab: Option<Grab>,
     /// Where the timeline was drawn last (for tests to drag on).
     pub timeline: egui::Rect,
+    /// A recording is being saved in the other format, so another can't be started yet.
+    pub converting: bool,
 }
 
 impl Player {
@@ -420,6 +459,7 @@ impl Player {
             trim: None,
             grab: None,
             timeline: egui::Rect::NOTHING,
+            converting: false,
         })
     }
 
@@ -660,6 +700,15 @@ impl Player {
                     let trim = if self.kind.can_trim() { trim.on_hover_text("Keep part of this recording, as a new file") } else { trim.on_disabled_hover_text("RSnip can trim MP4 and GIF recordings") };
                     if trim.clicked() {
                         self.trim = self.info.duration.map(|d| (Duration::ZERO, d));
+                    }
+                }
+                if let (Some(to), Some(duration)) = (convert::target(self.kind), self.info.duration) {
+                    let save = ui.add_enabled(!self.converting, egui::Button::new(format!("Save as {}…", to.name())));
+                    let what = if self.trim.is_some() { "the part kept" } else { "it" };
+                    let save = save.on_hover_text(format!("Save {what} as a new {} beside it", to.name())).on_disabled_hover_text("Already saving one: wait for it to finish, or cancel it");
+                    if save.clicked() {
+                        let (from, to) = self.trim.unwrap_or((Duration::ZERO, duration));
+                        request = Some(Request::Convert(from, to));
                     }
                 }
                 self.scrubber(ui);

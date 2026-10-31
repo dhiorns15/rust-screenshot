@@ -524,6 +524,21 @@ fn video_pipeline(source: &str, frame: (u32, u32), area: Option<Area>, fps: u32,
     args(&["-q", "-e"], &pipeline, Some(path))
 }
 
+/// The `gst-launch-1.0` arguments encoding raw RGBA frames of `size`, `fps` a second, from
+/// standard input into an H.264 MP4 at `path`, as a recording is made (without sound): for saving
+/// a GIF as an MP4 (see `player::convert`).
+pub fn mp4_from_frames(size: (u32, u32), fps: u32, path: &Path) -> Result<Vec<String>, String> {
+    let has = |e: &str| installed(e);
+    let encoder = usable(&H264, &has).ok_or_else(|| format!("{}, which saving an MP4 needs", why_not("H.264", &H264, &has)))?;
+    Ok(mp4_from_frames_with(&encoder, size, fps, path))
+}
+
+/// `mp4_from_frames` with `encoder`.
+fn mp4_from_frames_with(encoder: &Encoder, (width, height): (u32, u32), fps: u32, path: &Path) -> Vec<String> {
+    let source = format!("fdsrc fd=0 ! rawvideoparse format=rgba width={width} height={height} framerate={fps}/1 ! videoconvert");
+    video_pipeline(&source, (width, height), None, fps, encoder, None, path)
+}
+
 /// The arguments for raw RGBA frames on standard output, for a GIF.
 fn gif_pipeline(node: u32, frame: (u32, u32), area: Option<Area>) -> (Vec<String>, (u32, u32)) {
     let (w, h) = output_size(area, frame.0, frame.1);
@@ -578,7 +593,7 @@ pub(super) fn said(child: &mut Child) -> Option<JoinHandle<String>> {
 }
 
 /// The last thing a pipeline that has ended said (see `said`), if anything.
-fn last_line(said: Option<JoinHandle<String>>) -> Option<String> {
+pub(super) fn last_line(said: Option<JoinHandle<String>>) -> Option<String> {
     let err = said.and_then(|s| s.join().ok())?;
     err.lines().rev().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_string())
 }
@@ -866,6 +881,15 @@ mod tests {
         assert!(args.contains(&"path=42".to_string()));
         assert!(args.contains(&"x264enc".to_string()) && args.contains(&"bitrate=6220".to_string()), "{args:?}");
         assert_eq!(args.last().unwrap(), r#"location=/home/a b/Recording "1".mp4"#);
+    }
+
+    /// A GIF saved as an MP4 is encoded as recordings are, from raw frames on standard input.
+    #[test]
+    fn encodes_raw_frames_as_recordings_are() {
+        let args = mp4_from_frames_with(&H264[0], (641, 480), 30, Path::new("/home/a b/Recording.mp4")).join(" ");
+        assert!(args.starts_with("-q -e fdsrc fd=0 ! rawvideoparse format=rgba width=641 height=480 framerate=30/1 ! videoconvert ! videoscale"), "{args}");
+        assert!(args.contains("video/x-raw,format=I420,width=640,height=480,framerate=30/1") && args.contains("x264enc ") && args.contains("key-int-max=30"), "even, as encoders need: {args}");
+        assert!(args.ends_with("h264parse ! mp4mux name=mux ! filesink location=/home/a b/Recording.mp4"), "{args}");
     }
 
     /// A sound server with a speaker's monitor and a headset's microphone.

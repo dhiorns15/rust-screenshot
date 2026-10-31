@@ -1314,6 +1314,72 @@ fn trimming_saves_the_part_kept_as_a_new_recording() {
     assert!(gif.exists(), "the original stays");
 }
 
+/// Until a recording being saved in the other format is done, whether its progress was shown.
+fn wait_for_converting(h: &mut Harness<App>, name: &str) -> bool {
+    let mut shown = false;
+    for _ in 0..3000 {
+        shown |= h.query_by_label_contains(&format!("Saving {name}…")).is_some();
+        if h.state().converting.is_none() {
+            return shown;
+        }
+        settle(h);
+    }
+    panic!("it never finished saving {name}");
+}
+
+#[test]
+fn recordings_are_saved_in_the_other_format() {
+    let dir = fixtures("kittest-convert");
+    // A GIF of ten seconds, in two frames, and an MP4 (that only RSnip's own reader reads).
+    let gif = dir.join("Recording z.gif");
+    let mut out = gif::Encoder::new(std::fs::File::create(&gif).unwrap(), 640, 480, &[]).unwrap();
+    for colour in [[200, 40, 40], [40, 40, 200]] {
+        let mut frame = gif::Frame::from_palette_pixels(640, 480, vec![0; 640 * 480], colour.to_vec(), None);
+        frame.delay = 500;
+        out.write_frame(&frame).unwrap();
+    }
+    drop(out);
+    crate::mp4::tests::recording(&dir.join("Recording y.mp4"), false);
+    let env = Env::sandbox(dir.clone());
+    let mut h = Harness::builder().with_size(SIZE).with_step_dt(1.0 / 60.0).build_eframe(move |cc| App::new(&cc.egui_ctx, env, None));
+    settle(&mut h);
+    click(&mut h, "Recording y");
+    assert!(shows(&h, "Save as GIF…") && !shows(&h, "Save as MP4…"), "an MP4 is saved as a GIF");
+
+    click(&mut h, "Recording z");
+    wait_for_frame(&mut h);
+    click(&mut h, "Save as MP4…");
+    assert!(disabled(&h, "Save as MP4…"), "one at a time");
+    // Stopped, it leaves nothing.
+    let stopped = h.state().converting.is_some();
+    if stopped {
+        assert!(h.query_by_label_contains("Saving Recording z.mp4…").is_some(), "the progress shows");
+        click(&mut h, "Stop");
+        wait_for_converting(&mut h, "Recording z.mp4");
+    }
+    let mp4 = dir.join("Recording z.mp4");
+    let status = |h: &Harness<App>| h.state().status.as_ref().map(|(text, _)| text.clone()).unwrap_or_default();
+    if let Some(why) = status(&h).strip_prefix("Couldn't save the MP4: ") {
+        // No H.264 encoder here (a Windows server, or GStreamer without x264).
+        return crate::testing::skipped(why);
+    }
+    assert!(stopped, "it was quicker than ten frames");
+    assert_eq!(status(&h), "Stopped saving the MP4");
+    assert!(!mp4.exists() && !dir.join(".rsnip").join("Recording z.mp4").exists(), "nothing left behind");
+    assert!(!disabled(&h, "Save as MP4…"));
+
+    // Done, it's selected and opened.
+    click(&mut h, "Save as MP4…");
+    assert!(wait_for_converting(&mut h, "Recording z.mp4"), "the progress shows");
+    assert_eq!(status(&h), "Saved Recording z.mp4");
+    assert!(h.state().player.as_ref().is_some_and(|p| p.path == mp4), "the MP4 opens");
+    assert_eq!(h.state().selected, [mp4.clone()].into());
+    let info = super::player::info(&mp4);
+    assert_eq!(info.size, Some((640, 480)));
+    assert!(info.duration.unwrap().abs_diff(Duration::from_secs(10)) < Duration::from_millis(50), "{:?}", info.duration);
+    assert!(shows(&h, "Save as GIF…"), "and can be saved as a GIF again");
+}
+
 /// Pixel snapshots of the window, rendered on a software GPU. Linux only, so every machine renders
 /// the same pixels: run them with the `ci/Dockerfile` image, and refresh them after an intended
 /// change with `UPDATE_SNAPSHOTS=1` (then look at every changed PNG in `tests/snapshots`).

@@ -83,5 +83,5 @@ Giving an action Print Screen is how you choose what Print Screen does, e.g. Prt
 and Shift+PrtScn to record. By default PrtScn captures a region and the other actions have no
 shortcut. While recording, any capture shortcut stops it.
 
-Which keys do what is set in *Settings → Shortcuts* (see [Settings](settings.md)). Recordings play in the library and can be trimmed there: see [Recordings](editor.md#recordings). On Linux, see [RSnip on Linux](linux.md) for taking screenshots and recording, and
+Which keys do what is set in *Settings → Shortcuts* (see [Settings](settings.md)). Recordings play in the library and can be trimmed there, or saved as a GIF (an MP4) or an MP4 (a GIF): see [Recordings](editor.md#recordings). On Linux, see [RSnip on Linux](linux.md) for taking screenshots and recording, and
 [its keyboard shortcuts](linux.md#keyboard-shortcuts), which GNOME runs.
