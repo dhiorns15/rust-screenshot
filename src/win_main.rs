@@ -418,6 +418,11 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
         }
         WM_TIMER if wparam == TIMER_COUNTDOWN => {
             let left = COUNTDOWN.get().saturating_sub(1);
+            // The timer keeps ticking through another capture's overlay, which `capture` would
+            // refuse to interrupt: stay at one second and try again on the next tick.
+            if left == 0 && CAPTURING.get() {
+                return 0;
+            }
             if left == 0 {
                 cancel_countdown(hwnd);
                 capture(hwnd, Mode::Region);
