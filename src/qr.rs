@@ -25,7 +25,6 @@ pub fn find(width: usize, height: usize, luma: impl Fn(usize, usize) -> u8) -> V
 }
 
 /// The QR codes in an RGBA image (see `find`).
-#[cfg_attr(windows, allow(dead_code))]
 pub fn find_in_rgba(img: &image::RgbaImage) -> Vec<Code> {
     let (w, raw) = (img.width() as usize, img.as_raw());
     find(w, img.height() as usize, |x, y| {

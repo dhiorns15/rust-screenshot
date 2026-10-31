@@ -13,7 +13,7 @@ annotation (colour, size, shadow, delete) and a hint on how to use it.
 | Tool | Key | |
 | --- | --- | --- |
 | Select | V | click an annotation to select it; drag to move it, drag its handles to resize it (arrows: drag either end) |
-| Copy text | O | reads the text in the screenshot and picks it out. Drag across words to select them (double-click selects a line, Ctrl+A everything), then Ctrl+C or *Copy selection*; *Copy all text* copies the lot. Blurred, pixelated and redacted text stays hidden |
+| Copy text | O | reads the text in the screenshot and picks it out. Drag across words to select them (double-click selects a line, Ctrl+A everything), then Ctrl+C or *Copy selection*; *Copy all text* copies the lot. Blurred, pixelated and redacted text stays hidden. If the screenshot has a QR code (in the selected words' area, or anywhere when none are selected), the options row shows what it holds, with *Copy code* and, for a web link, *Open link*; this works without text reading too |
 | Arrow | A | drag; hold Shift to snap to 45° |
 | Line | L | drag; hold Shift to snap to 45° |
 | Box | B | drag |

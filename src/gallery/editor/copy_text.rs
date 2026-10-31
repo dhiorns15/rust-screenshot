@@ -1,6 +1,7 @@
 //! The Copy text tool: the text recognised in the image picked out over it, to select and copy.
 
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::Arc;
 
 use ab_glyph::FontVec;
 use eframe::egui::{self, Color32, Key, Painter, Pos2, Rect, Response, Ui};
@@ -9,6 +10,7 @@ use super::Editor;
 use crate::gallery::doc::render;
 use crate::gallery::theme::ACCENT;
 use crate::gallery::words::{self, Word};
+use crate::qr::{self, Code};
 
 /// The text recognised in the image as it was at doc `version`.
 pub(super) struct Recognised {
@@ -23,6 +25,18 @@ enum Reading {
     Done(Result<Vec<Word>, String>),
 }
 
+/// The QR codes in the image as it was at doc `version`. They're looked for once per version, in
+/// the whole image; the selection only picks which of them to offer.
+pub(super) struct Codes {
+    version: u64,
+    reading: CodeReading,
+}
+
+enum CodeReading {
+    Busy(Receiver<Vec<Code>>),
+    Done(Vec<Code>),
+}
+
 /// What the Copy text tool has found, for the toolbar.
 #[derive(Debug, PartialEq)]
 pub enum TextStatus {
@@ -34,31 +48,76 @@ pub enum TextStatus {
 }
 
 impl Editor {
-    /// Reads the image's text in the background, unless it's been read since it last changed.
-    pub(super) fn read_text(&mut self, ctx: &egui::Context, font: Option<&FontVec>) {
-        let Some(reader) = &self.reader else { return };
-        if let Some(r) = self.recognised.as_mut().filter(|r| r.version == self.doc.version) {
+    /// Reads the image's text in the background, and its QR codes too if `codes`, unless they've
+    /// been read since it last changed. The QR codes are read whether or not the system can read
+    /// text.
+    pub(super) fn read_text(&mut self, ctx: &egui::Context, font: Option<&FontVec>, codes: bool) {
+        let version = self.doc.version;
+        let text_stale = self.reader.is_some() && self.recognised.as_ref().is_none_or(|r| r.version != version);
+        let codes_stale = codes && self.codes.as_ref().is_none_or(|c| c.version != version);
+        // What's shown, annotations and all, so blurred or redacted text stays hidden. Rendered
+        // once for both.
+        let img = (text_stale || codes_stale).then(|| Arc::new(render(self.doc.current(), font)));
+        if let (Some(img), Some(reader), true) = (&img, &self.reader, text_stale) {
+            let (tx, rx) = channel();
+            let (img, reader, ctx) = (img.clone(), reader.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(reader(img.as_ref()));
+                ctx.request_repaint();
+            });
+            self.recognised = Some(Recognised { version, reading: Reading::Busy(rx), selection: None });
+        } else if let Some(r) = self.recognised.as_mut().filter(|r| r.version == version) {
             if let Reading::Busy(rx) = &r.reading {
                 let done = match rx.try_recv() {
-                    Ok(result) => result,
-                    Err(TryRecvError::Disconnected) => Err("Text recognition stopped unexpectedly".into()),
-                    Err(TryRecvError::Empty) => return,
+                    Ok(result) => Some(result),
+                    Err(TryRecvError::Disconnected) => Some(Err("Text recognition stopped unexpectedly".into())),
+                    Err(TryRecvError::Empty) => None,
                 };
-                r.reading = Reading::Done(done);
-                // The toolbar above was drawn this frame while still reading; show what was found.
-                ctx.request_repaint();
+                if let Some(done) = done {
+                    r.reading = Reading::Done(done);
+                    // The toolbar above was drawn this frame while still reading; show what was found.
+                    ctx.request_repaint();
+                }
             }
-            return;
         }
-        // What's shown, annotations and all, so blurred or redacted text stays hidden.
-        let img = render(self.doc.current(), font);
-        let (tx, rx) = channel();
-        let (reader, ctx) = (reader.clone(), ctx.clone());
-        std::thread::spawn(move || {
-            let _ = tx.send(reader(&img));
-            ctx.request_repaint();
-        });
-        self.recognised = Some(Recognised { version: self.doc.version, reading: Reading::Busy(rx), selection: None });
+        if let (Some(img), true) = (img, codes_stale) {
+            let (tx, rx) = channel();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(qr::find_in_rgba(&img));
+                ctx.request_repaint();
+            });
+            self.codes = Some(Codes { version, reading: CodeReading::Busy(rx) });
+        } else if let Some(c) = self.codes.as_mut().filter(|c| c.version == version) {
+            if let CodeReading::Busy(rx) = &c.reading {
+                let done = match rx.try_recv() {
+                    Ok(codes) => Some(codes),
+                    Err(TryRecvError::Disconnected) => Some(Vec::new()),
+                    Err(TryRecvError::Empty) => None,
+                };
+                if let Some(done) = done {
+                    c.reading = CodeReading::Done(done);
+                    ctx.request_repaint();
+                }
+            }
+        }
+    }
+
+    /// The QR codes to offer: those in the selected words' area, or every one in the image when
+    /// no words are selected.
+    pub fn qr_codes(&self) -> Vec<&Code> {
+        let codes = match &self.codes {
+            Some(Codes { version, reading: CodeReading::Done(codes) }) if *version == self.doc.version => codes,
+            _ => return Vec::new(),
+        };
+        let area = self.selected_words().iter().map(|w| w.rect).reduce(Rect::union);
+        codes.iter().filter(|c| area.is_none_or(|a| a.intersects(c.bounds))).collect()
+    }
+
+    /// The image's QR codes are still being looked for.
+    #[cfg(test)]
+    pub fn reading_codes(&self) -> bool {
+        !matches!(&self.codes, Some(Codes { version, reading: CodeReading::Done(_) }) if *version == self.doc.version)
     }
 
     pub fn text_status(&self) -> TextStatus {
@@ -220,8 +279,8 @@ mod tests {
     fn read(editor: &mut Editor) {
         let ctx = egui::Context::default();
         for _ in 0..200 {
-            editor.read_text(&ctx, None);
-            if editor.text_status() != TextStatus::Reading {
+            editor.read_text(&ctx, None, true);
+            if editor.text_status() != TextStatus::Reading && !editor.reading_codes() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -262,6 +321,41 @@ mod tests {
         assert_eq!(editor.all_text(), None, "what was read before the edit is gone");
         read(&mut editor);
         assert_eq!(editor.text_status(), TextStatus::Found { words: 1, selected: 0 });
+    }
+
+    /// A word `text` at `rect`, on line `line`.
+    fn word(text: &str, rect: Rect, line: usize) -> Word {
+        Word { text: text.into(), rect, line }
+    }
+
+    #[test]
+    fn offers_the_qr_code_in_the_selection_or_the_whole_image() {
+        let url = "https://example.com/in-the-editor";
+        // The code itself is from (210, 30) to about (330, 150).
+        let mut editor = Editor::new(Doc::from_image(qr::example(url, 4, (194, 14), (400, 200))));
+        let words = vec![word("Scan", Rect::from_min_size(Pos2::new(10.0, 20.0), egui::vec2(40.0, 20.0)), 0), word("me", Rect::from_min_size(Pos2::new(250.0, 160.0), egui::vec2(20.0, 20.0)), 1)];
+        editor.reader = Some(Arc::new(move |_| Ok(words.clone())));
+        read(&mut editor);
+        let texts = |editor: &Editor| editor.qr_codes().iter().map(|c| c.text.clone()).collect::<Vec<_>>();
+        assert_eq!(texts(&editor), [url], "nothing selected: the whole image");
+        assert_eq!(qr::link(&editor.qr_codes()[0].text), Some(url), "a link, to open");
+
+        editor.select_words(Some((0, 0)));
+        assert_eq!(texts(&editor), Vec::<String>::new(), "\"Scan\" is nowhere near it");
+        editor.select_words(Some((0, 1)));
+        assert_eq!(texts(&editor), [url], "the selection runs over it");
+    }
+
+    #[test]
+    fn reads_qr_codes_without_reading_text() {
+        let mut coded = Editor::new(Doc::from_image(qr::example("no OCR here", 3, (0, 0), (200, 200))));
+        read(&mut coded);
+        assert_eq!(coded.text_status(), TextStatus::Unavailable);
+        assert_eq!(coded.qr_codes().iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["no OCR here"]);
+
+        let mut plain = editor(&["Hello"]);
+        read(&mut plain);
+        assert!(plain.qr_codes().is_empty(), "no code in it");
     }
 
     #[test]

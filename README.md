@@ -23,7 +23,7 @@ command line or a desktop shortcut, with a few things Windows-only (see
   [More](docs/editor.md)
 - **Hide what shouldn't be seen** with blur, pixelate or redact, or let *Auto-redact* find the
   emails, keys and card numbers for you. [More](docs/editor.md#tools)
-- **Copy text** from a screenshot: pick out the words and copy them. [More](docs/editor.md#tools)
+- **Copy text** from a screenshot: pick out the words and copy them, or what a QR code in it holds. [More](docs/editor.md#tools)
 - **Record** an area to MP4 or GIF, with the computer's sound, your microphone and your camera in
   a round bubble on top, pause it (on Windows) to leave a stretch out, play it in the library with its sound, trim it to a new file without
   re-encoding, and save an MP4 as a GIF or a GIF as an MP4. [More](docs/capturing.md#sound-in-recordings), [the camera](docs/capturing.md#camera-in-recordings)

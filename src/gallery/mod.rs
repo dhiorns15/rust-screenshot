@@ -1159,6 +1159,7 @@ impl App {
 
     /// The Copy text tool's buttons, or why there's nothing to copy.
     fn copy_text_options(&mut self, ui: &mut egui::Ui) {
+        self.qr_code_options(ui);
         let Some(editor) = &mut self.editor else { return };
         let muted = theme::palette(ui).muted;
         let (selected, any) = match editor.text_status() {
@@ -1196,6 +1197,35 @@ impl App {
         if ui.add_enabled(any, egui::Button::new("Select all")).on_hover_text("Ctrl+A").clicked() {
             editor.select_all_text();
         }
+    }
+
+    /// The QR codes in the Copy text tool's selection (or the whole image): what they hold, to copy,
+    /// and a web link's to open. Nothing when there are none.
+    fn qr_code_options(&mut self, ui: &mut egui::Ui) {
+        let Some(editor) = &self.editor else { return };
+        let codes: Vec<String> = editor.qr_codes().iter().map(|c| c.text.clone()).collect();
+        let Some(first) = codes.first() else { return };
+        let muted = theme::palette(ui).muted;
+        let what = match codes.len() {
+            1 => format!("QR code: {}", crate::qr::shorten(first, 40)),
+            n => format!("{n} QR codes: {}", crate::qr::shorten(first, 30)),
+        };
+        ui.label(RichText::new(what).color(muted)).on_hover_text(codes.join("\n"));
+        let hover = if codes.len() == 1 { "Copy what the QR code holds" } else { "Copy what the QR codes hold, one to a line" };
+        if ui.button(theme::label(icon::QR_CODE, "Copy code")).on_hover_text(hover).clicked() {
+            match self.env.copy_text(&codes.join("\n")) {
+                Ok(()) => self.set_status(if codes.len() == 1 { "QR code copied".to_string() } else { format!("{} QR codes copied", codes.len()) }),
+                Err(e) => self.set_status(e),
+            }
+        }
+        if let Some(link) = codes.iter().find_map(|c| crate::qr::link(c)) {
+            if ui.button(theme::label(icon::ARROW_SQUARE_OUT, "Open link")).on_hover_text(link).clicked() {
+                self.env.open(Path::new(link));
+            }
+        }
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(4.0);
     }
 
     /// The Redact tool's Auto-redact button, where the system can read text.

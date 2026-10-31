@@ -831,6 +831,28 @@ fn copy_text(name: &str, lines: &[&str]) -> Harness<'static, App> {
     h
 }
 
+#[test]
+fn copy_text_offers_a_qr_codes_link_to_copy_or_open() {
+    let url = "https://example.com/rsnip-qr";
+    let mut h = harness_set_up("kittest-copy-text-qr", 1.0 / 60.0, move |env| {
+        crate::qr::example(url, 4, (20, 20), (320, 200)).save(env.dir.join("Screenshot a.png")).unwrap();
+    });
+    assert!(!shows(&h, &label(icon::QR_CODE, "Copy code")), "only with the Copy text tool");
+    click(&mut h, "Copy text");
+    let shown = format!("QR code: {url}");
+    for _ in 0..100 {
+        settle(&mut h);
+        if shows(&h, &shown) {
+            break;
+        }
+    }
+    assert!(shows(&h, &shown));
+    click(&mut h, &label(icon::QR_CODE, "Copy code"));
+    assert_eq!(h.state().env.sandboxed().copied.as_deref(), Some(url));
+    click(&mut h, &label(icon::ARROW_SQUARE_OUT, "Open link"));
+    assert_eq!(h.state().env.sandboxed().opened, [PathBuf::from(url)]);
+}
+
 /// Clicks at `pos` `times` times in a row.
 fn click_at(h: &mut Harness<App>, pos: Pos2, times: usize) {
     h.hover_at(pos);

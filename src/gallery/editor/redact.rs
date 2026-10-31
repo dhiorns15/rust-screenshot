@@ -445,7 +445,7 @@ mod tests {
         let ctx = egui::Context::default();
         editor.start_auto_redact();
         for _ in 0..200 {
-            editor.read_text(&ctx, None);
+            editor.read_text(&ctx, None, false);
             editor.finish_auto_redact(&ctx, Color32::BLUE);
             if !editor.auto_redacting() {
                 return;

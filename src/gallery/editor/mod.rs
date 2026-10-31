@@ -50,6 +50,8 @@ pub struct Editor {
     /// Reads the image's text for the Copy text tool, where the system can.
     pub reader: Option<ReadWords>,
     recognised: Option<copy_text::Recognised>,
+    /// The QR codes the Copy text tool found in the image.
+    codes: Option<copy_text::Codes>,
     /// Text is being selected by dragging across it.
     text_drag: bool,
     auto_redact: Option<redact::AutoRedact>,
@@ -73,6 +75,7 @@ impl Editor {
             crop_drag: None,
             reader: None,
             recognised: None,
+            codes: None,
             text_drag: false,
             auto_redact: None,
         }
@@ -117,7 +120,7 @@ impl Editor {
         self.sync_selection(tools);
         self.update_texture(ui.ctx(), font);
         if tools.tool == Tool::CopyText || self.auto_redacting() {
-            self.read_text(ui.ctx(), font);
+            self.read_text(ui.ctx(), font, tools.tool == Tool::CopyText);
         }
         self.finish_auto_redact(ui.ctx(), tools.colors[Tool::Redact as usize]);
         let size = self.doc.size();
