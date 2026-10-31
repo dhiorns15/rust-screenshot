@@ -70,8 +70,10 @@ jobs:
       # Recording, the background icon and copying files against real desktop services
       # (xdg-desktop-portal, PipeWire, Xvfb), with stand-ins for GNOME's picker, the panel and notifications.
       - run: ci/desktop-test.sh
-      # Random input against the editor for a while; the log prints the seed to replay a failure.
+      # Random input against the editor for a while; the log prints the seed to replay a failure
+      # and a line every hundred steps. It takes a few minutes, so a run that goes on far longer is stuck.
       - run: cargo test --locked panic_hunt_long -- --ignored --nocapture
+        timeout-minutes: 15
       - name: Tests that skipped
         if: always()
         run: ci/skipped-tests.sh

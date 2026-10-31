@@ -93,8 +93,10 @@ runs both on Windows and Linux and must pass. The suite has several layers:
   in the tests uses a real keyring: `src/secrets.rs`'s own test is `#[ignore]`d (run it with
   `cargo test secrets -- --ignored`, on Linux with a keyring unlocked).
 - **Panic hunt**: random clicks, drags, keys and undo/redo against the editor. A short run is part of
-  `cargo test`; CI's Linux job runs a longer one and prints its seed. Replay a failure with
-  `RSNIP_HUNT_SEED=<seed> RSNIP_HUNT_STEPS=<n> cargo test panic_hunt_long -- --ignored`.
+  `cargo test`; CI's Linux job runs a longer one (400 steps, a few minutes) and prints its seed
+  and, every hundred steps, how far it has got. Replay a failure with
+  `RSNIP_HUNT_SEED=<seed> RSNIP_HUNT_STEPS=<n> cargo test panic_hunt_long -- --ignored --nocapture`
+  (`--nocapture` shows the seed and the progress while it runs).
 - **Installer**: CI builds the installer, installs, upgrades (checking RSnip restarts) and uninstalls
   it; after each release it also updates the previous release with `rsnip --update`.
 

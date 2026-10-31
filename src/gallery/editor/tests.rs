@@ -619,11 +619,17 @@ impl Rng {
 
 /// Throws `steps` random clicks, drags, keys, typing, tool switches and undo/redo at the editor,
 /// checking it never panics and the document stays consistent (photocraft's "panic hunt").
+/// Every hundred steps it says how far it has got (shown with `--nocapture`), so a long run can
+/// be told from a stuck one.
 fn panic_hunt(seed: u64, steps: usize) {
+    let started = std::time::Instant::now();
     let mut h = Harness::new();
     let mut rng = Rng(seed | 1);
     let keys = [Key::Delete, Key::Backspace, Key::Escape, Key::Enter, Key::ArrowLeft, Key::ArrowRight, Key::ArrowUp, Key::ArrowDown, Key::A];
     for step in 0..steps {
+        if step > 0 && step % 100 == 0 {
+            println!("panic hunt: step {step} of {steps} after {:.0?}", started.elapsed());
+        }
         match rng.below(12) {
             0 => h.tools.tool = crate::gallery::editor::TOOLS[rng.below(crate::gallery::editor::TOOLS.len())].0,
             1 | 2 => {
@@ -670,6 +676,7 @@ fn panic_hunt(seed: u64, steps: usize) {
             assert_eq!((img.width() as f32, img.height() as f32), (size.x, size.y), "step {step}: render size");
         }
     }
+    println!("panic hunt: {steps} steps in {:.0?}", started.elapsed());
 }
 
 #[test]
@@ -678,7 +685,7 @@ fn panic_hunt_short() {
 }
 
 /// A long hunt, run on request (CI runs it on Linux):
-/// `RSNIP_HUNT_STEPS=20000 RSNIP_HUNT_SEED=42 cargo test panic_hunt_long -- --ignored`.
+/// `RSNIP_HUNT_STEPS=20000 RSNIP_HUNT_SEED=42 cargo test panic_hunt_long -- --ignored --nocapture`.
 /// Without a seed it picks one and prints it, so a failure can be replayed.
 #[test]
 #[ignore]
