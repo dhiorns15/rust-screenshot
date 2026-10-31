@@ -76,12 +76,14 @@ pub fn set_start_with_windows(on: bool) -> bool {
     file.parent().is_some_and(|dir| std::fs::create_dir_all(dir).is_ok()) && std::fs::write(&file, entry).is_ok()
 }
 
-/// `arg` quoted for a desktop entry's `Exec` line.
+/// `arg` quoted for a desktop entry's `Exec` line: a `%` would start a field code (`%u`, say).
 fn desktop_quote(arg: &str) -> String {
     let mut out = String::from('"');
     for c in arg.chars() {
-        if matches!(c, '"' | '`' | '$' | '\\') {
-            out.push('\\');
+        match c {
+            '"' | '`' | '$' | '\\' => out.push('\\'),
+            '%' => out.push('%'),
+            _ => {}
         }
         out.push(c);
     }
@@ -514,6 +516,7 @@ mod tests {
     fn quotes_paths_for_the_autostart_entry() {
         assert_eq!(desktop_quote("/home/a b/.local/bin/rsnip"), r#""/home/a b/.local/bin/rsnip""#);
         assert_eq!(desktop_quote(r#"/x/$y"z\w"#), r#""/x/\$y\"z\\w""#);
+        assert_eq!(desktop_quote("/opt/100%/rsnip"), r#""/opt/100%%/rsnip""#, "a % would be a field code");
     }
 
     #[test]
