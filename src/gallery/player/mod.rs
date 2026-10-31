@@ -232,11 +232,26 @@ fn gif_info(path: &Path) -> Result<Info, String> {
     Ok(Info { duration: Some(Duration::from_millis(hundredths * 10)), size: Some(size), sound: false })
 }
 
+/// The biggest GIF that's decoded, in pixels (an 8K screen's): each frame is drawn whole, so a
+/// file claiming a screen of 65535 × 65535 would take 17 GB a frame.
+const GIF_MAX_PIXELS: u64 = 8192 * 8192;
+
+/// Opens a GIF for its frames, if its screen isn't too big to draw (see `GIF_MAX_PIXELS`).
+fn gif_decoder(path: &Path) -> Result<image::codecs::gif::GifDecoder<std::io::BufReader<std::fs::File>>, String> {
+    use image::ImageDecoder;
+    let file = std::io::BufReader::new(std::fs::File::open(path).map_err(|e| e.to_string())?);
+    let decoder = image::codecs::gif::GifDecoder::new(file).map_err(|e| e.to_string())?;
+    let (w, h) = decoder.dimensions();
+    if w as u64 * h as u64 > GIF_MAX_PIXELS {
+        return Err(format!("The GIF is too big to play ({w} × {h})"));
+    }
+    Ok(decoder)
+}
+
 /// GIFs, decoded whole frame by whole frame (GIF frames can be patches over the one before).
 fn decode_gif(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> Result<(), String> {
     use image::AnimationDecoder;
-    let file = std::io::BufReader::new(std::fs::File::open(path).map_err(|e| e.to_string())?);
-    let frames = image::codecs::gif::GifDecoder::new(file).map_err(|e| e.to_string())?.into_frames();
+    let frames = gif_decoder(path)?.into_frames();
     let mut at = Duration::ZERO;
     for frame in frames {
         let frame = frame.map_err(|e| e.to_string())?;
@@ -269,8 +284,7 @@ pub fn trim_gif(src: &Path, dst: &Path, from: Duration, to: Duration) -> Result<
 
 fn copy_gif(src: &Path, dst: &Path, from: Duration, to: Duration) -> Result<(), String> {
     use image::AnimationDecoder;
-    let file = std::io::BufReader::new(std::fs::File::open(src).map_err(|e| e.to_string())?);
-    let frames = image::codecs::gif::GifDecoder::new(file).map_err(|e| e.to_string())?.into_frames();
+    let frames = gif_decoder(src)?.into_frames();
     let out = std::fs::File::create(dst).map_err(|e| format!("Couldn't write {}: {e}", dst.display()))?;
     let mut encoder: Option<gif::Encoder<std::io::BufWriter<std::fs::File>>> = None;
     let mut out = Some(std::io::BufWriter::new(out));
@@ -1034,6 +1048,26 @@ pub mod tests {
         assert!(player.playing() && player.position().abs_diff(from) < Duration::from_millis(50), "from its start: {:?}", player.position());
         player.update(&ctx);
         assert!(player.playing(), "and goes on");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A GIF claiming a screen far bigger than any (each frame would be drawn 17 GB big) is
+    /// refused rather than tried: in the library's thumbnails, the player and trimming.
+    #[test]
+    fn a_gif_too_big_to_draw_is_refused() {
+        let dir = std::env::temp_dir().join(format!("rsnip-player-huge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Recording.gif");
+        let mut out = gif::Encoder::new(std::fs::File::create(&path).unwrap(), u16::MAX, u16::MAX, &[]).unwrap();
+        out.write_frame(&gif::Frame::from_rgba_speed(1, 1, &mut [255, 0, 0, 255], 10)).unwrap();
+        drop(out);
+        assert_eq!(info(&path).size, Some((65535, 65535)));
+        assert!(first_frame(&path, MAX_SIZE).is_none());
+        let decoding = decode(&path, Duration::ZERO, MAX_SIZE, None);
+        assert!(decoding.frames.recv_timeout(Duration::from_secs(10)).is_err());
+        assert_eq!(decoding.failed.lock().unwrap().as_deref(), Some("The GIF is too big to play (65535 × 65535)"));
+        let trimmed = trimmed_path(&path);
+        assert!(trim(&path, &trimmed, Duration::ZERO, Duration::from_secs(1)).is_err() && !trimmed.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
