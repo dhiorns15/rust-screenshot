@@ -603,8 +603,7 @@ impl App {
         } else {
             image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(img).to_rgb8())
         };
-        let result = img.save_with_format(&path, image::ImageFormat::Png);
-        match result {
+        match save_png(&img, &path) {
             Ok(()) => {
                 editor.doc.mark_saved(path.clone());
                 let layers = editor.doc.save_layers(framed);
@@ -1534,6 +1533,28 @@ fn free_name(dir: &Path, file: &Path) -> PathBuf {
     candidate
 }
 
+/// Writes `img` as a PNG to a new file beside `path`, then renames it over `path`: a crash or a
+/// full disk half-way through leaves the screenshot as it was, not cut short. The file's modified
+/// time is the new one's, which the saved layers are stamped with after (see `Doc::save_layers`).
+fn save_png(img: &image::DynamicImage, path: &Path) -> Result<(), String> {
+    use std::io::Write;
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return Err("Bad file name".into()) };
+    // Not a name the library lists, so it's never shown or pushed half-written.
+    let temp = dir.join(format!(".{}.{}.saving", name.to_string_lossy(), std::process::id()));
+    let written = std::fs::File::create(&temp)
+        .and_then(|file| {
+            let mut file = std::io::BufWriter::new(file);
+            img.write_to(&mut file, image::ImageFormat::Png).map_err(std::io::Error::other)?;
+            file.flush()?;
+            file.into_inner().map_err(|e| e.into_error())?.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&temp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written.map_err(|e| e.to_string())
+}
+
 fn save_jpg(img: &image::RgbaImage, path: &Path) -> Result<(), String> {
     let rgb = image::DynamicImage::ImageRgba8(flatten(img)).to_rgb8();
     let file = std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| e.to_string())?);
@@ -1590,6 +1611,32 @@ mod tests {
         assert!(!working.exists());
         doc::prune_layers(&dir);
         assert!(path.exists());
+    }
+
+    #[test]
+    fn a_save_replaces_the_screenshot_whole_or_not_at_all() {
+        let dir = sandbox_dir("save-whole");
+        let path = dir.join("Screenshot a.png");
+        let left = || {
+            let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            names.sort();
+            names
+        };
+        let shade = |v: u8| image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([v, v, v])));
+        save_png(&shade(10), &path).unwrap();
+        assert_eq!(left(), ["Screenshot a.png"], "nothing else left beside it");
+        let before = std::fs::read(&path).unwrap();
+        save_png(&shade(200), &path).unwrap();
+        assert_eq!(left(), ["Screenshot a.png"]);
+        let after = std::fs::read(&path).unwrap();
+        assert!(after.starts_with(b"\x89PNG") && after != before, "written over");
+        assert_eq!(image::open(&path).unwrap().to_rgb8().get_pixel(0, 0).0, [200, 200, 200]);
+
+        // Where it can't be written (no such folder), nothing is left half-done.
+        let missing = dir.join("gone").join("Screenshot b.png");
+        assert!(save_png(&shade(10), &missing).is_err());
+        assert_eq!(left(), ["Screenshot a.png"]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
