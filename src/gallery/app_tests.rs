@@ -1582,6 +1582,25 @@ fn a_screenshot_deleted_elsewhere_doesnt_stay_open() {
 }
 
 #[test]
+fn cancelling_the_close_an_update_asked_for_forgets_the_restart() {
+    let mut h = harness("kittest-restart-cancelled");
+    drag_on_canvas(&mut h, (0.3, 0.3), (0.6, 0.6));
+    assert!(h.state().dirty());
+    // An update installed from Settings asks the library to close and start again; with unsaved
+    // edits, that's the "Unsaved changes" dialog (the harness has no window to close, so as `ui`
+    // would leave it).
+    std::fs::write(&h.state().env.request_file, "--restart").unwrap();
+    settle(&mut h);
+    assert!(h.state().restart);
+    h.state_mut().pending = Some(Pending::Close);
+    settle(&mut h);
+    click(&mut h, "Cancel");
+    assert!(h.state().pending.is_none());
+    assert!(!h.state().restart, "closing later, by hand, wouldn't start the library again");
+    assert!(h.state().dirty(), "the edits are still there");
+}
+
+#[test]
 fn a_folder_that_cant_be_read_lists_nothing_rather_than_the_last_one() {
     let mut h = harness("kittest-folder-gone");
     // Changed in Settings to one that isn't there yet.

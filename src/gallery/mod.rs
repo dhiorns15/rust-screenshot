@@ -1290,6 +1290,11 @@ impl App {
         let Some(choice) = choice else { return };
         let pending = self.pending.take().unwrap();
         if choice == "Cancel" || (choice == "Save" && !self.save(false)) {
+            // A close asked for by an update (see `poll`) is off: an ordinary close later
+            // shouldn't start the library again.
+            if matches!(pending, Pending::Close) {
+                self.restart = false;
+            }
             return;
         }
         match pending {
