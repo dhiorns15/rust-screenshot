@@ -25,7 +25,7 @@ command line or a desktop shortcut, with a few things Windows-only (see
   emails, keys and card numbers for you. [More](docs/editor.md#tools)
 - **Copy text** from a screenshot: pick out the words and copy them. [More](docs/editor.md#tools)
 - **Record** an area to MP4 or GIF, with the computer's sound, your microphone and your camera in
-  a round bubble on top, play it in the library with its sound and trim it to a new file without
+  a round bubble on top, pause it (on Windows) to leave a stretch out, play it in the library with its sound and trim it to a new file without
   re-encoding. [More](docs/capturing.md#sound-in-recordings), [the camera](docs/capturing.md#camera-in-recordings)
   and [the player](docs/editor.md#recordings)
 - **Library and Gallery**: browse every screenshot, grouped by date (the groups fold away), and
