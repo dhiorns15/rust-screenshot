@@ -35,8 +35,8 @@ jobs:
           esac
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test
-      - run: cargo build --release
+      - run: cargo test --locked
+      - run: cargo build --locked --release
         env:
           # Also writes target/release/rsnip.pdb, published below so the addresses in Windows crash
           # reports can be looked up. The exe only names the file, not the path it was built in.
@@ -78,7 +78,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deb,cargo-generate-rpm
-      - run: cargo build --release
+      - run: cargo build --locked --release
       # The .deb and .rpm, checked by installing them on Ubuntu, Fedora and openSUSE.
       - run: installer/linux/build-packages.sh
       - run: ci/test-packages.sh
