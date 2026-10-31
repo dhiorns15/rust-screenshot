@@ -9,7 +9,7 @@ rsnip                  start the tray app
 rsnip --region         start a region capture (uses the running instance if there is one)
 rsnip --full           capture all monitors
 rsnip --delay N        start a region capture in N seconds
-rsnip --text           select an area and copy the text in it
+rsnip --text           select an area and copy the text in it, or the QR code in it
 rsnip --last           capture the same area as last time
 rsnip --scroll         pick a window, scroll it and capture its whole length
 rsnip --record         pick an area and record it (run again to stop)
@@ -29,7 +29,7 @@ rsnip [file]           open the library, optionally with a file selected
 rsnip --region         pick an area of the screen and capture it
 rsnip --full           capture the whole screen
 rsnip --delay N        pick an area to capture in N seconds
-rsnip --text           select an area and copy the text in it (needs Tesseract)
+rsnip --text           select an area and copy the text in it (needs Tesseract), or the QR code in it
 rsnip --last           capture the same area as last time
 rsnip --scroll         drag over what scrolls, scroll it and capture its whole length (X11 only)
 rsnip --gallery [file] open the library, optionally with a file selected

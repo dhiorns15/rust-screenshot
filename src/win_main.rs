@@ -172,6 +172,8 @@ thread_local! {
     static UPDATE_BALLOON: Cell<bool> = const { Cell::new(false) };
     /// The last notification was about a crash, so clicking it shows the report.
     static CRASH_BALLOON: Cell<bool> = const { Cell::new(false) };
+    /// The last notification was about a QR code holding a web link, so clicking it opens that.
+    static LINK_BALLOON: RefCell<Option<String>> = const { RefCell::new(None) };
     /// The action whose shortcut the "press the new shortcut" prompt is recording.
     static RECORDING_SHORTCUT: Cell<shortcuts::Action> = const { Cell::new(shortcuts::Action::Region) };
 }
@@ -344,6 +346,7 @@ unsafe fn cancel_countdown(hwnd: HWND) {
 unsafe fn notify(hwnd: HWND, title: &str, text: &str) {
     UPDATE_BALLOON.set(false);
     CRASH_BALLOON.set(false);
+    LINK_BALLOON.with(|l| *l.borrow_mut() = None);
     tray::notify(hwnd, ICON_LARGE.get(), title, text);
 }
 
@@ -410,6 +413,11 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 WM_CONTEXTMENU => on_menu(hwnd),
                 tray::NIN_BALLOONUSERCLICK if UPDATE_BALLOON.get() => start_update(hwnd),
                 tray::NIN_BALLOONUSERCLICK if CRASH_BALLOON.get() => gallery::open_system_info(),
+                tray::NIN_BALLOONUSERCLICK if LINK_BALLOON.with(|l| l.borrow().is_some()) => {
+                    if let Some(link) = LINK_BALLOON.with(|l| l.borrow().clone()) {
+                        shell_open(Path::new(&link));
+                    }
+                }
                 tray::NIN_BALLOONUSERCLICK => {
                     let last = LAST_SAVED.with(|l| l.borrow().clone());
                     match last {
@@ -450,7 +458,7 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             0
         }
         WM_APP_OCR => {
-            on_text(hwnd, *Box::from_raw(lparam as *mut Result<String, String>));
+            on_text(hwnd, *Box::from_raw(lparam as *mut Result<qr::Found, String>));
             0
         }
         WM_APP_UPDATE_CHECKED => {
@@ -873,30 +881,36 @@ fn is_video(path: &Path) -> bool {
     matches!(path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(), Some("mp4" | "gif"))
 }
 
-/// Recognises the text in a capture on a worker thread; the result comes back as `WM_APP_OCR`.
+/// Reads a capture's QR codes, or else its text, on a worker thread; the result comes back as
+/// `WM_APP_OCR`.
 fn read_text(hwnd: HWND, img: Image) {
     let target = hwnd as isize;
     std::thread::spawn(move || {
-        let result = Box::into_raw(Box::new(ocr::recognize(&img)));
+        let result = Box::into_raw(Box::new(ocr::read_capture(&img)));
         if unsafe { PostMessageW(target as HWND, WM_APP_OCR, 0, result as LPARAM) } == 0 {
             drop(unsafe { Box::from_raw(result) });
         }
     });
 }
 
-unsafe fn on_text(hwnd: HWND, result: Result<String, String>) {
-    let text = match result {
-        Ok(text) if text.trim().is_empty() => return notify(hwnd, "No text found", "Try selecting the text more closely."),
-        Ok(text) => text,
+unsafe fn on_text(hwnd: HWND, result: Result<qr::Found, String>) {
+    let found = match result {
+        Ok(found) => found,
         Err(e) => return notify(hwnd, "Couldn't read the text", &e),
     };
-    if let Err(e) = output::copy_text_to_clipboard(hwnd, &text) {
+    let Some((copy, title, text)) = found.message() else {
+        return notify(hwnd, "No text found", "Try selecting the text more closely.");
+    };
+    if let Err(e) = output::copy_text_to_clipboard(hwnd, &copy) {
         return notify(hwnd, "Couldn't copy the text", &e);
     }
-    let lines = text.lines().count();
-    let first: String = text.lines().next().unwrap_or_default().chars().take(60).collect();
-    let title = if lines == 1 { "Copied 1 line of text".to_string() } else { format!("Copied {lines} lines of text") };
-    notify(hwnd, &title, &first);
+    match found.link() {
+        Some(link) => {
+            notify(hwnd, &title, &format!("{text}\nClick to open the link."));
+            LINK_BALLOON.with(|l| *l.borrow_mut() = Some(link.to_owned()));
+        }
+        None => notify(hwnd, &title, &text),
+    }
 }
 
 /// The window under the middle of `r` (screen coordinates).

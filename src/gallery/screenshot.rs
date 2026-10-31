@@ -18,7 +18,7 @@ use super::platform;
 use super::portal::{self, ScreenCast, Sources};
 use super::recorder::{self, Area};
 use super::words;
-use crate::options;
+use crate::{options, qr};
 
 /// Where the area picked last is kept (a text setting), for `--last`: "x y width height", then the
 /// size of the screenshot it was picked on, like "100 50 600 400 1920x1080".
@@ -86,20 +86,10 @@ impl Capture {
 /// Takes the screenshot and delivers it, saying so, or why not. True if it left something on the
 /// clipboard, which the process has to stay for.
 pub fn take(capture: Capture) -> bool {
-    let read = match capture.mode {
-        Mode::Text => match platform::read_words() {
-            Some(read) => Some(read),
-            None => {
-                notify("Couldn't read the text", "Copying text needs Tesseract: install the tesseract-ocr package");
-                return false;
-            }
-        },
-        Mode::Scroll if !x11() => {
-            notify("Scrolling capture needs an X11 session", "On Wayland, apps can't scroll other apps' windows. Sign in to an X11 session to use it: on Ubuntu, Ubuntu on Xorg, under the gear on the sign-in screen.");
-            return false;
-        }
-        _ => None,
-    };
+    if capture.mode == Mode::Scroll && !x11() {
+        notify("Scrolling capture needs an X11 session", "On Wayland, apps can't scroll other apps' windows. Sign in to an X11 session to use it: on Ubuntu, Ubuntu on Xorg, under the gear on the sign-in screen.");
+        return false;
+    }
     std::thread::sleep(Duration::from_secs(capture.delay.into()));
     let hide = options::HIDE_WHILE_CAPTURING.read(platform::setting) && platform::instance_running("Gallery");
     if hide {
@@ -111,11 +101,12 @@ pub fn take(capture: Capture) -> bool {
     if hide {
         tell_library("--show");
     }
-    match (image, read) {
-        (Ok(Some(image)), Some(read)) => copy_text(&image, &read),
-        (Ok(Some(image)), None) => deliver(&image),
-        (Ok(None), _) => false,
-        (Err(e), _) => {
+    match image {
+        // Tesseract is only needed for text: a QR code is read without it.
+        Ok(Some(image)) if capture.mode == Mode::Text => copy_text(&image, platform::read_words().as_ref()),
+        Ok(Some(image)) => deliver(&image),
+        Ok(None) => false,
+        Err(e) => {
             notify("Couldn't take the screenshot", &e);
             false
         }
@@ -326,27 +317,33 @@ fn write_png(image: &RgbaImage, path: &Path) -> Result<(), String> {
         .map_err(|e| format!("Can't encode PNG: {e}"))
 }
 
-/// Recognises the text in `image` and copies it. True if it was copied.
-fn copy_text(image: &RgbaImage, read: &ReadWords) -> bool {
-    let text = match read(image).map(|found| words::text(&found)) {
-        Ok(text) if text.trim().is_empty() => {
-            notify("No text found", "Try selecting the text more closely.");
-            return false;
-        }
-        Ok(text) => text,
+/// The QR codes in `image`, or else the text `read` recognises in it (`None`: Tesseract isn't
+/// installed).
+fn read_area(image: &RgbaImage, read: Option<&ReadWords>) -> Result<qr::Found, String> {
+    qr::code_or_text(qr::find_in_rgba(image), || match read {
+        Some(read) => read(image).map(|found| words::text(&found)),
+        None => Err("Copying text needs Tesseract: install the tesseract-ocr package".into()),
+    })
+}
+
+/// Copies the QR codes in `image`, or else its text. True if it was copied.
+fn copy_text(image: &RgbaImage, read: Option<&ReadWords>) -> bool {
+    let found = match read_area(image, read) {
+        Ok(found) => found,
         Err(e) => {
             notify("Couldn't read the text", &e);
             return false;
         }
     };
-    if let Err(e) = platform::copy_text(&text) {
+    let Some((copy, title, text)) = found.message() else {
+        notify("No text found", "Try selecting the text more closely.");
+        return false;
+    };
+    if let Err(e) = platform::copy_text(&copy) {
         notify("Couldn't copy the text", &e);
         return false;
     }
-    let lines = text.lines().count();
-    let first: String = text.lines().next().unwrap_or_default().chars().take(60).collect();
-    let title = if lines == 1 { "Copied 1 line of text".to_string() } else { format!("Copied {lines} lines of text") };
-    notify(&title, &first);
+    notify(&title, &text);
     true
 }
 
@@ -381,6 +378,17 @@ mod tests {
             assert_eq!(last_area(Some(saved), (1920, 1080)), None, "{saved:?}");
         }
         assert!(inside(Area { x: 1320, y: 680, width: 600, height: 400 }, (1920, 1080)), "up to the edge");
+    }
+
+    #[test]
+    fn copies_a_qr_code_without_tesseract() {
+        let url = "https://example.com/from-linux";
+        let found = read_area(&qr::example(url, 3, (20, 20), (300, 200)), None).unwrap();
+        assert_eq!(found, qr::Found::Codes(vec![url.into()]));
+        let plain = RgbaImage::from_pixel(300, 80, image::Rgba([255, 255, 255, 255]));
+        assert!(read_area(&plain, None).unwrap_err().contains("Tesseract"), "no code, and nothing to read the text");
+        let read: ReadWords = std::sync::Arc::new(|_| Ok(words::example(&["Hello there"])));
+        assert_eq!(read_area(&plain, Some(&read)), Ok(qr::Found::Text("Hello there".into())));
     }
 
     #[test]

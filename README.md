@@ -12,7 +12,7 @@ command line or a desktop shortcut, with a few things Windows-only (see
 ## Highlights
 
 - **Capture** a region, a window, one screen or all screens, the same area as last time, a long
-  page with a scrolling capture, after a delay, or just the text in an area (OCR). On Windows it
+  page with a scrolling capture, after a delay, or just the text (OCR) or QR code in an area. On Windows it
   takes over Print Screen (and optionally Win+Shift+S), freezes the screen to select from, and can
   pin a capture to the screen. Or click the tray icon for a capture panel with the options for an
   image or a video, and a red button to start. [More](docs/capturing.md)

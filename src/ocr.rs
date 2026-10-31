@@ -9,6 +9,19 @@ use windows::Storage::Streams::DataWriter;
 
 use crate::capture::Image;
 use crate::gallery::words::Word;
+use crate::qr;
+
+/// What Capture text copies from `img`: the QR codes in it if there are any (looked for first, at
+/// full size: it's quick), else its text.
+pub fn read_capture(img: &Image) -> Result<qr::Found, String> {
+    let w = img.width.max(0) as usize;
+    // BGRA, and a screen capture's alpha isn't meaningful: it's opaque.
+    let codes = qr::find(w, img.height.max(0) as usize, |x, y| {
+        let i = (y * w + x) * 4;
+        qr::luma(img.data[i + 2], img.data[i + 1], img.data[i], 255)
+    });
+    qr::code_or_text(codes, || recognize(img))
+}
 
 /// The recognised lines of text in `img`, joined with newlines.
 pub fn recognize(img: &Image) -> Result<String, String> {
@@ -94,5 +107,28 @@ mod tests {
         assert_eq!((four_k.width, four_k.height), (3840, 2160), "too big to enlarge");
         let mid = fit_for_ocr(&img(1500, 900), 2600);
         assert_eq!((mid.width, mid.height), (1500, 900), "over the engine's maximum enlarged");
+    }
+
+    /// `img` as a screen capture: BGRA, with nothing in the alpha channel (as BitBlt leaves it).
+    fn captured(img: &image::RgbaImage) -> Image {
+        let data = img.pixels().flat_map(|p| [p.0[2], p.0[1], p.0[0], 0]).collect();
+        Image { width: img.width() as i32, height: img.height() as i32, data }
+    }
+
+    #[test]
+    fn copies_a_qr_code_without_reading_the_text() {
+        let url = "https://example.com/from-a-capture";
+        let found = read_capture(&captured(&qr::example(url, 3, (40, 30), (400, 250)))).unwrap();
+        assert_eq!(found, qr::Found::Codes(vec![url.into()]));
+        assert_eq!(found.link(), Some(url), "offered to open");
+    }
+
+    #[test]
+    fn reads_the_text_where_there_is_no_qr_code() {
+        let plain = image::RgbaImage::from_pixel(300, 80, image::Rgba([255, 255, 255, 255]));
+        match read_capture(&captured(&plain)) {
+            Ok(found) => assert_eq!(found, qr::Found::Text(String::new()), "the engine read it, and found no text"),
+            Err(e) => crate::testing::skipped(format!("no text recognition here: {e}")),
+        }
     }
 }

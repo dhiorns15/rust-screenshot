@@ -35,6 +35,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-platform-verifier = "0.7"
 # The capture panel's X11 window and the camera bubble's, from eframe (which depends on it already).
 raw-window-handle = "0.6"
+# Reading QR codes, for Capture text and the editor's Copy text tool (src/qr.rs). Without its "img"
+# feature it takes plain brightness values, so it doesn't tie us to its version of `image`.
+rqrr = { version = "0.11", default-features = false }
 
 # Capture, tray, OCR, pinning and recording: Windows only.
 [target.'cfg(windows)'.dependencies]
@@ -89,6 +92,8 @@ trash = "5"
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["eframe"] }
 proptest = "1"
+# Drawing QR codes for the tests of reading them.
+qrcode = { version = "0.14", default-features = false }
 
 # Pixel snapshots render on a GPU, so they run on Linux with a software one (ci/Dockerfile).
 [target.'cfg(target_os = "linux")'.dev-dependencies]

@@ -19,7 +19,8 @@ To build it yourself instead, see [Building](building.md#on-linux).
 
 Run `rsnip --region` and drag over the part of the screen to capture, or
 `rsnip --full` for all of it, `rsnip --delay 5` for a region in 5 seconds, `rsnip --text` to copy
-the text in an area (it needs Tesseract), or `rsnip --last` for the same area as last time. As on
+the text in an area (it needs Tesseract) or the QR code in it (which it reads without), or
+`rsnip --last` for the same area as last time. As on
 Windows, the screenshot is copied to the clipboard and saved to RSnip's folder, and a notification
 says so. To get them on keys, see [Keyboard shortcuts](#keyboard-shortcuts). RSnip asks the desktop for the
 screenshot (its screenshot portal, which Wayland desktops and most X11 ones have), so GNOME may ask

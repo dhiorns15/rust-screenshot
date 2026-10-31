@@ -15,6 +15,7 @@ mod icon_art;
 mod mp4;
 mod options;
 mod push;
+mod qr;
 mod secrets;
 mod shortcuts;
 mod stitch;
