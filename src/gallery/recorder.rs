@@ -541,14 +541,26 @@ fn launch(args: &[String], pipewire: OwnedFd, stdout: Stdio) -> Result<(Child, O
     let fd = pipewire.as_raw_fd();
     let mut command = Command::new("gst-launch-1.0");
     command.args(args).stdin(Stdio::null()).stdout(stdout).stderr(Stdio::piped());
-    // Hand the connection over as fd 3 (dup2 also clears close-on-exec).
+    // Hand the connection over as fd 3.
     unsafe {
-        command.pre_exec(move || if libc::dup2(fd, PIPEWIRE_FD) < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+        command.pre_exec(move || hand_over(fd, PIPEWIRE_FD));
     }
     let mut child = command.spawn().map_err(|e| format!("Couldn't start GStreamer: {e}"))?;
     drop(pipewire);
     let said = said(&mut child);
     Ok((child, said))
+}
+
+/// Makes `fd` the program about to run's fd `to` (from `pre_exec`): dup2, which also clears
+/// close-on-exec, but does nothing at all when `fd` is `to` already, so then that's cleared
+/// by itself.
+fn hand_over(fd: libc::c_int, to: libc::c_int) -> std::io::Result<()> {
+    let done = unsafe { if fd == to { libc::fcntl(fd, libc::F_SETFD, 0) } else { libc::dup2(fd, to) } };
+    if done < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// Reads what a pipeline says on its standard error as it comes, so it never fills the pipe and
@@ -1126,6 +1138,32 @@ mod tests {
         // machine, so it's not held to the whole 3 s.
         assert!(movie.has_sound() && movie.duration() > Duration::from_millis(500), "the picture, with a sound track: {:?}", movie.duration());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The PipeWire connection reaches GStreamer as fd 3 whatever its number here, including 3,
+    /// when dup2 would do nothing and close-on-exec has to be cleared instead.
+    #[test]
+    fn hands_the_connection_over_as_fd_3() {
+        use std::os::fd::FromRawFd;
+        let mut fds = [0 as libc::c_int; 2];
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        let [r, w] = fds;
+        let cloexec = |fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } & libc::FD_CLOEXEC != 0;
+        // A program gets it as 3 (cat reads it there), and the copy here is as it was.
+        let mut cat = Command::new("cat");
+        cat.arg("/dev/fd/3").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        unsafe { cat.pre_exec(move || hand_over(r, PIPEWIRE_FD)) };
+        let cat = cat.spawn().unwrap();
+        let mut pipe = unsafe { std::fs::File::from_raw_fd(w) };
+        std::io::Write::write_all(&mut pipe, b"hi").unwrap();
+        drop(pipe);
+        let out = cat.wait_with_output().unwrap();
+        assert_eq!((String::from_utf8_lossy(&out.stdout).as_ref(), String::from_utf8_lossy(&out.stderr).as_ref()), ("hi", ""));
+        assert!(cloexec(r));
+        // Already the number wanted: dup2 would leave close-on-exec set, and the program without it.
+        hand_over(r, r).unwrap();
+        assert!(!cloexec(r), "close-on-exec cleared");
+        unsafe { libc::close(r) };
     }
 
     /// A GIF whose encoder fails (no room, say) is reported, and the part written isn't left in
