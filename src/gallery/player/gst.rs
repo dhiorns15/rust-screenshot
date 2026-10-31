@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::ColorImage;
 
+use super::super::recorder::said;
 use super::{fit, Frame, Kind, Sink, Sound};
 use crate::mp4::Movie;
 
@@ -76,6 +77,8 @@ pub fn decode(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> Resu
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Playing recordings needs GStreamer ({e})"))?;
+    // Read as it comes, so a chatty one (GST_DEBUG set) can't fill the pipe and stop.
+    let said = said(&mut child);
     let mut stdout = child.stdout.take().expect("piped");
     let mut buf = vec![0u8; width as usize * height as usize * 4];
     let half = Duration::from_secs(1) / FPS / 2;
@@ -98,10 +101,7 @@ pub fn decode(path: &Path, from: Duration, max: (u32, u32), sink: &Sink) -> Resu
     let _ = child.kill();
     let status = child.wait().map_err(|e| e.to_string())?;
     if sent == 0 && !sink.stopped() && !status.success() {
-        let mut err = String::new();
-        if let Some(mut stderr) = child.stderr.take() {
-            let _ = stderr.read_to_string(&mut err);
-        }
+        let err = said.and_then(|s| s.join().ok()).unwrap_or_default();
         return Err(if missing_decoder(&err) {
             DECODER_MISSING.into()
         } else {
@@ -168,16 +168,16 @@ fn start(path: &Path, from: Duration, due: Instant) -> Option<(Playing, Arc<Atom
         let _ = decoder.wait();
         return None;
     };
+    // What the decoder says is read as it comes (see `said`), so it can't fill the pipe and stop.
+    let complaints = said(&mut decoder);
     let (raw, speaker, said) = (decoder.stdout.take().expect("piped"), player.stdin.take().expect("piped"), player.stdout.take().expect("piped"));
-    let mut complaints = decoder.stderr.take().expect("piped");
     let failed = Failed::default();
     let failing = failed.clone();
     std::thread::spawn(move || {
         if let Ok(0) = feed(raw, speaker, bytes(from), due) {
             // No sound came out. If that's for want of a decoder, the player says so. (The decoder
             // has stopped, or stops now nothing reads what it decodes.)
-            let mut err = String::new();
-            let _ = complaints.read_to_string(&mut err);
+            let err = complaints.and_then(|c| c.join().ok()).unwrap_or_default();
             if missing_decoder(&err) {
                 *failing.lock().unwrap() = Some(SOUND_DECODER_MISSING.into());
             }
@@ -352,6 +352,33 @@ mod tests {
         // Due later, nothing is late.
         assert_eq!(feed(Slow(Duration::from_millis(50), second()), std::io::sink(), 0, later).unwrap(), PCM_PER_SECOND);
         assert_eq!(feed(std::io::empty(), std::io::sink(), 0, Instant::now()).unwrap(), 0);
+    }
+
+    /// A GStreamer with a lot to say (GST_DEBUG set) says more than a pipe holds; it's read as it
+    /// comes, so neither the picture's decoder nor the sound's is held up by it.
+    #[test]
+    fn a_chatty_gstreamer_still_plays() {
+        let dir = dir("chatty");
+        let path = dir.join("Recording.mp4");
+        if !recording_with_sound(&path, Kind::Mp4) {
+            return eprintln!("skipped: no GStreamer, or no encoders to make one with");
+        }
+        // Debug level 5 says hundreds of kilobytes about decoding 3 s, far more than a pipe holds.
+        std::env::set_var("GST_DEBUG", "5");
+        let decoding = super::super::decode(&path, Duration::from_millis(500), (320, 240), None);
+        let (mut playing, _, _) = start(&path, Duration::ZERO, Instant::now()).expect("GStreamer starts");
+        std::env::remove_var("GST_DEBUG");
+        let frames = std::iter::from_fn(|| decoding.frames.recv_timeout(Duration::from_secs(60)).ok()).count();
+        assert!((73..=77).contains(&frames), "{frames} frames, {:?}", decoding.failed.lock().unwrap());
+        // The sound's decoder gets to the end of the 3 s (or stops, with no sound output to play
+        // on) rather than waiting for ever to be heard.
+        let begun = Instant::now();
+        while playing.0[0].try_wait().unwrap().is_none() && begun.elapsed() < Duration::from_secs(20) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(playing.0[0].try_wait().unwrap().is_some(), "the sound's decoder has finished");
+        drop(playing);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
