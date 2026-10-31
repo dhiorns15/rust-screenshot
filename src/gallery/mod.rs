@@ -185,12 +185,23 @@ fn library_files_with_times(dir: &Path) -> Vec<(PathBuf, SystemTime)> {
     library_files(dir).into_iter().filter_map(|f| Some((f.clone(), std::fs::metadata(&f).and_then(|m| m.modified()).ok()?))).collect()
 }
 
+/// Whether a listed file is a screenshot or recording by name (see `options::screenshot_name`),
+/// rather than a picture kept in the same folder: all the clean-up and "Move them here" touch.
+fn is_screenshot(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| crate::options::screenshot_name(&name.to_string_lossy()))
+}
+
+/// The screenshots and recordings in `dir` by name (see `is_screenshot`).
+fn screenshot_files(dir: &Path) -> Vec<PathBuf> {
+    library_files(dir).into_iter().filter(|p| is_screenshot(p)).collect()
+}
+
 /// Moves the screenshots and recordings in `from` to `to`, with their edits and search data (see
-/// `doc::move_shot`). What moved before an error stays moved.
+/// `doc::move_shot`); pictures of the user's own there stay. What moved before an error stays moved.
 fn move_library(from: &Path, to: &Path) -> Result<env::MoveReport, String> {
     std::fs::create_dir_all(to).map_err(|e| format!("Can't create {}: {e}", to.display()))?;
     let mut report = env::MoveReport::default();
-    for path in library_files(from) {
+    for path in screenshot_files(from) {
         match doc::move_shot(&path, to)? {
             doc::Moved::Moved => report.moved += 1,
             doc::Moved::AlreadyThere => report.already_there += 1,

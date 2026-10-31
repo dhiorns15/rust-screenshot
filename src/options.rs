@@ -148,6 +148,14 @@ fn made_by_rsnip(name: &str) -> bool {
     digits(0..4) && b.get(4) == Some(&b'-') && digits(5..7) && b.get(7) == Some(&b'-') && digits(8..10) && b.get(10) == Some(&b' ') && digits(11..17)
 }
 
+/// Whether `name` is one a screenshot tool gives: RSnip's own (`made_by_rsnip`), Windows'
+/// ("Screenshot (3).png"), GNOME's ("Screenshot From …", "Screencast From …", which "Bring in the
+/// desktop's screenshots" moves into RSnip's folder) and the like. The clean-up and "Move them
+/// here" keep to these, so photos kept in the same folder (the Pictures folder, say) are left alone.
+pub fn screenshot_name(name: &str) -> bool {
+    ["Screenshot", "Screencast", "Recording"].iter().any(|tool| name.starts_with(tool))
+}
+
 pub const CHECK_UPDATES: Flag = Flag { name: "CheckUpdates", default: true };
 /// Offer release candidates too: versions to try before they're released (see `update::check`).
 pub const RELEASE_CANDIDATES: Flag = Flag { name: "ReleaseCandidates", default: false };
@@ -199,5 +207,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         assert!(made_by_rsnip("Screenshot 2026-10-24 091500 (2).png"));
         assert!(!made_by_rsnip("Screenshot 2026-10-24.png") && !made_by_rsnip("Recording.mp4"));
+    }
+
+    #[test]
+    fn a_screenshot_tools_names_are_known_and_photos_arent() {
+        for name in ["Screenshot 2026-10-24 091500.png", "Recording 2026-10-23 220500 (trimmed).mp4", "Screenshot (3).png", "Screenshot From 2026-10-24 09-15-00.png", "Screencast From 2026-10-24 09-15-00.webm"] {
+            assert!(screenshot_name(name), "{name}");
+        }
+        for name in ["IMG_1234.jpg", "holiday.png", "cat.gif", "screenshot.png"] {
+            assert!(!screenshot_name(name), "{name}");
+        }
     }
 }

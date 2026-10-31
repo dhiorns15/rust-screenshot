@@ -594,7 +594,7 @@ impl SettingsApp {
         // Counted again now and then, as they may be moved or deleted elsewhere.
         if self.moving.is_none() && self.counted.is_none_or(|at| at.elapsed() >= Duration::from_secs(2)) {
             self.left_behind = self.env.previous_folder().map(|dir| {
-                let n = super::library_files(&dir).len();
+                let n = super::screenshot_files(&dir).len();
                 (dir, n)
             });
             self.counted = Some(Instant::now());

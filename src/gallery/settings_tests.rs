@@ -480,12 +480,13 @@ fn offers_to_move_whats_in_the_previous_folder() {
     let dir = tests::sandbox_dir("settings-move");
     let elsewhere = dir.join("Elsewhere");
     std::fs::create_dir_all(dir.join(".rsnip")).unwrap();
-    for (file, data) in [("a.png", "png"), ("b.mp4", "mp4"), ("notes.txt", "notes"), (".rsnip/a.png.json", "edits"), (".rsnip/a.png.meta.json", "search")] {
+    // With a photo of the user's own in the folder, which isn't RSnip's to move.
+    for (file, data) in [("Screenshot a.png", "png"), ("Recording b.mp4", "mp4"), ("notes.txt", "notes"), ("holiday.jpg", "photo"), (".rsnip/Screenshot a.png.json", "edits"), (".rsnip/Screenshot a.png.meta.json", "search")] {
         std::fs::write(dir.join(file), data).unwrap();
     }
-    // The new folder has a b.mp4 of its own.
+    // The new folder has a Recording b.mp4 of its own.
     std::fs::create_dir_all(&elsewhere).unwrap();
-    std::fs::write(elsewhere.join("b.mp4"), "theirs").unwrap();
+    std::fs::write(elsewhere.join("Recording b.mp4"), "theirs").unwrap();
     let mut env = Env::sandbox(dir.clone());
     env.tray_app = true;
     env.sandboxed().picked_folder = Some(elsewhere.clone());
@@ -496,22 +497,23 @@ fn offers_to_move_whats_in_the_previous_folder() {
 
     click(&mut h, "Change…");
     settle(&mut h);
-    assert!(h.query_by_label_contains("2 screenshots and recordings are still in ~").is_some(), "not notes.txt");
+    assert!(h.query_by_label_contains("2 screenshots and recordings are still in ~").is_some(), "not notes.txt, nor the photo");
     click(&mut h, "Move them here");
     settle(&mut h);
     assert!(h.query_by_label_contains("Moved 1 screenshot or recording; 1 stayed").is_some());
-    assert_eq!(std::fs::read_to_string(elsewhere.join("a.png")).unwrap(), "png");
-    assert_eq!(std::fs::read_to_string(elsewhere.join(".rsnip/a.png.json")).unwrap(), "edits", "with its edits");
-    assert_eq!(std::fs::read_to_string(elsewhere.join(".rsnip/a.png.meta.json")).unwrap(), "search", "and search data");
-    assert_eq!(std::fs::read_to_string(elsewhere.join("b.mp4")).unwrap(), "theirs", "a name that's taken isn't replaced");
-    assert!(dir.join("b.mp4").exists() && dir.join("notes.txt").exists() && !dir.join("a.png").exists());
+    assert_eq!(std::fs::read_to_string(elsewhere.join("Screenshot a.png")).unwrap(), "png");
+    assert_eq!(std::fs::read_to_string(elsewhere.join(".rsnip/Screenshot a.png.json")).unwrap(), "edits", "with its edits");
+    assert_eq!(std::fs::read_to_string(elsewhere.join(".rsnip/Screenshot a.png.meta.json")).unwrap(), "search", "and search data");
+    assert_eq!(std::fs::read_to_string(elsewhere.join("Recording b.mp4")).unwrap(), "theirs", "a name that's taken isn't replaced");
+    assert!(dir.join("Recording b.mp4").exists() && dir.join("notes.txt").exists() && !dir.join("Screenshot a.png").exists());
+    assert!(dir.join("holiday.jpg").exists() && !elsewhere.join("holiday.jpg").exists(), "the photo is left where it was");
 
     // What stayed is still offered, until it's left there.
     assert!(h.query_by_label_contains("1 screenshot or recording is still in ~").is_some());
     click(&mut h, "Leave them");
     settle(&mut h);
     assert!(h.query_by_label("Move them here").is_none());
-    assert!(dir.join("b.mp4").exists());
+    assert!(dir.join("Recording b.mp4").exists());
 }
 
 #[test]
@@ -541,7 +543,8 @@ fn clean_up_is_off_until_asked_for_and_says_how_many_are_old_and_when_it_last_ra
     let title = format!("Move old screenshots and recordings to the {}", super::platform::RECYCLE_BIN);
     let mut h = settings("settings-clean-up", |env| {
         let now = std::time::SystemTime::now();
-        for (name, days) in [("a.png", 40), ("b.png", 35), ("c.mp4", 10), ("d.png", 1)] {
+        // With an old photo of the user's own, which is never counted.
+        for (name, days) in [("Screenshot a.png", 40), ("Screenshot b.png", 35), ("Recording c.mp4", 10), ("Screenshot d.png", 1), ("holiday.jpg", 400)] {
             std::fs::write(env.dir.join(name), b"data").unwrap();
             std::fs::File::options().write(true).open(env.dir.join(name)).unwrap().set_modified(now - Duration::from_secs(days * 86_400)).unwrap();
         }
@@ -549,7 +552,7 @@ fn clean_up_is_off_until_asked_for_and_says_how_many_are_old_and_when_it_last_ra
     open(&mut h, Section::Library);
     assert!(!is_on(&h, &title), "off by default");
     assert!(h.query_by_label_contains("Moved ").is_none(), "hasn't run");
-    assert!(h.query_by_label("2 are older than 30 days").is_some(), "30 days unless chosen");
+    assert!(h.query_by_label("2 are older than 30 days").is_some(), "30 days unless chosen; not the photo");
     click(&mut h, "7 days");
     assert_eq!(h.state().env.setting(options::CLEAN_UP_DAYS.name), Some(7));
     assert!(h.query_by_label("3 are older than 7 days").is_some());
@@ -558,7 +561,7 @@ fn clean_up_is_off_until_asked_for_and_says_how_many_are_old_and_when_it_last_ra
     toggle(&mut h, &title);
     assert!(is_on(&h, &title));
     assert_eq!(h.state().env.setting(options::CLEAN_UP.name), Some(1));
-    assert!(std::fs::exists(h.state().env.dir.join("a.png")).unwrap(), "Settings only counts");
+    assert!(std::fs::exists(h.state().env.dir.join("Screenshot a.png")).unwrap(), "Settings only counts");
 
     // What an automatic destination hasn't received yet doesn't count.
     let auto = Destination { auto: true, auto_since: Some(1), ..Destination::new(Kind::Immich { server: "https://photos.example.com".into() }) };
@@ -1423,7 +1426,7 @@ mod snapshots {
         let mut h = rendered("snap-settings-move", |env| {
             let previous = env.dir.join("Pictures").join("Screenshots");
             std::fs::create_dir_all(&previous).unwrap();
-            for name in ["a.png", "b.png", "c.mp4"] {
+            for name in ["Screenshot a.png", "Screenshot b.png", "Recording c.mp4"] {
                 std::fs::write(previous.join(name), b"").unwrap();
             }
             env.set_text_setting(options::PREVIOUS_SAVE_FOLDER, &previous.to_string_lossy());
