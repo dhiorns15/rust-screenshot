@@ -35,6 +35,7 @@ pub const CMD_STOP_RECORD: u32 = 18;
 pub const CMD_UPDATE: u32 = 20;
 pub const CMD_SETTINGS: u32 = 24;
 pub const CMD_CAPTURE_PANEL: u32 = 25;
+pub const CMD_PAUSE_RECORD: u32 = 26;
 /// `CMD_DELAY + n` starts a capture in `n` seconds.
 pub const CMD_DELAY: u32 = 100;
 pub const DELAYS: [u32; 3] = [3, 5, 10];
@@ -85,6 +86,8 @@ pub struct MenuState {
     /// Seconds left on a delayed capture, or 0.
     pub countdown: u32,
     pub recording: bool,
+    /// The recording is paused.
+    pub paused: bool,
     /// A newer version that is available.
     pub update: Option<Version>,
     /// Whether this copy was installed (and so can update itself).
@@ -113,6 +116,7 @@ pub unsafe fn show_menu(hwnd: HWND, settings: &Settings, state: &MenuState) -> u
     action(CMD_LAST, Action::Last);
     action(CMD_SCROLL, Action::Scroll);
     if state.recording {
+        item(CMD_PAUSE_RECORD, if state.paused { "Resume recording" } else { "Pause recording" });
         item(CMD_STOP_RECORD, "Stop recording");
     } else {
         action(CMD_RECORD, Action::Record);

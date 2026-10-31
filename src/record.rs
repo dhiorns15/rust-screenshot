@@ -25,7 +25,7 @@ use crate::gallery::camera::{Bubble, Launch};
 use windows_sys::core::PCWSTR;
 
 use crate::util::{inflate, rect, wide};
-use crate::WM_APP_STOP_RECORDING;
+use crate::{WM_APP_RECORDING_PAUSED, WM_APP_STOP_RECORDING};
 
 const BAR_CLASS: &str = "RSnip.RecordBar";
 const FRAME_CLASS: &str = "RSnip.RecordFrame";
@@ -39,6 +39,8 @@ const MAX_LENGTH: Duration = Duration::from_secs(30 * 60);
 
 pub struct Recording {
     stop: Arc<AtomicBool>,
+    /// Set while it's paused; the bar and the tray menu both change it.
+    paused: Arc<AtomicBool>,
     thread: JoinHandle<Result<Recorded, String>>,
     windows: [HWND; 2],
     /// The camera's bubble, if it's shown. It's a window of its own process, left in the recording.
@@ -163,13 +165,25 @@ pub fn start(main: HWND, area: RECT, format: Format) -> Result<Recording, String
         })
     };
     let started = ready_rx.recv().map_err(|_| "The recording didn't start".to_string())??;
-    let windows = unsafe { [frame_window(area), bar_window(main, area, started, paused)] };
+    let windows = unsafe { [frame_window(area), bar_window(main, area, started, paused.clone())] };
     // By the area's bottom right, in it.
     let camera = format.camera.map(|device| Bubble::start_for_sound(&Launch::in_area(device, [area.left, area.top, area.right, area.bottom]), microphone_delay));
-    Ok(Recording { stop, thread, windows, camera })
+    Ok(Recording { stop, paused, thread, windows, camera })
 }
 
 impl Recording {
+    /// Pauses the recording, or carries on with it.
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Relaxed);
+        // The bar shows it straight away rather than on its next tick.
+        unsafe { InvalidateRect(self.windows[1], null(), 1) };
+    }
+
+    /// Whether it's paused.
+    pub fn paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+
     /// Stops and returns the thread finishing the file.
     pub fn stop(self) -> JoinHandle<Result<Recorded, String>> {
         self.stop.store(true, Ordering::Relaxed);
@@ -501,6 +515,8 @@ unsafe extern "system" fn bar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 (*bar).paused.fetch_xor(true, Ordering::Relaxed);
                 (*bar).follow();
                 InvalidateRect(hwnd, null(), 1);
+                // So the tray icon's tip says so too.
+                PostMessageW((*bar).main, WM_APP_RECORDING_PAUSED, 0, 0);
             }
             0
         }

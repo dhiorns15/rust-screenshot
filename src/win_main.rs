@@ -79,6 +79,8 @@ pub const WM_APP_RECORD_SHORTCUT: u32 = WM_APP + 15;
 /// Something to tell the user from another thread; `lparam` is a `Box<(String, String)>`, the
 /// title and text.
 const WM_APP_NOTICE: u32 = WM_APP + 16;
+/// The recording's Pause (or Resume) button was clicked.
+pub const WM_APP_RECORDING_PAUSED: u32 = WM_APP + 17;
 
 const TIMER_REGION: usize = 1;
 const TIMER_FULL: usize = 2;
@@ -439,6 +441,10 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             stop_recording(hwnd);
             0
         }
+        WM_APP_RECORDING_PAUSED => {
+            set_recording_tip(hwnd);
+            0
+        }
         WM_APP_RECORDED => {
             on_recorded(hwnd, *Box::from_raw(lparam as *mut Result<record::Recorded, String>));
             0
@@ -563,6 +569,7 @@ unsafe fn on_menu(hwnd: HWND) {
     let state = tray::MenuState {
         countdown: COUNTDOWN.get(),
         recording: RECORDING.with(|r| r.borrow().is_some()),
+        paused: RECORDING.with(|r| r.borrow().as_ref().is_some_and(record::Recording::paused)),
         update: AVAILABLE.with(|a| a.borrow().as_ref().map(|r| r.version)),
         installed: update::installed(),
     };
@@ -592,6 +599,14 @@ unsafe fn on_menu(hwnd: HWND) {
         }
         tray::CMD_RECORD => {
             SetTimer(hwnd, TIMER_RECORD, 250, None);
+        }
+        tray::CMD_PAUSE_RECORD => {
+            RECORDING.with(|r| {
+                if let Some(recording) = r.borrow().as_ref() {
+                    recording.set_paused(!recording.paused());
+                }
+            });
+            set_recording_tip(hwnd);
         }
         tray::CMD_STOP_RECORD => stop_recording(hwnd),
         tray::CMD_GALLERY => open_gallery(None),
@@ -789,17 +804,25 @@ unsafe fn start_recording(hwnd: HWND, area: RECT) {
     match record::start(hwnd, area, format) {
         Ok(recording) => {
             RECORDING.with(|r| *r.borrow_mut() = Some(recording));
-            // Any capture shortcut stops it (see `capture`).
-            let key = shortcuts::get(&s.shortcuts, shortcuts::Action::Record);
-            let key = Some(key).filter(|&k| k != 0).map(|k| Hotkey::unpack(k).name()).or(main_shortcut(&s).map(|m| m.1));
-            let how = key.map_or("Click Stop".into(), |k| format!("Press {k} or Stop"));
-            tray::set_tip(hwnd, &format!("{APP_NAME} — recording. {how} to finish"));
+            set_recording_tip(hwnd);
         }
         Err(e) => {
             show_rsnip();
             notify(hwnd, "Couldn't start recording", &e);
         }
     }
+}
+
+/// The tray icon's tip while recording: that it is (and whether it's paused), and how to finish.
+unsafe fn set_recording_tip(hwnd: HWND) {
+    let Some(paused) = RECORDING.with(|r| r.borrow().as_ref().map(record::Recording::paused)) else { return };
+    let s = SETTINGS.get();
+    // Any capture shortcut stops it (see `capture`).
+    let key = shortcuts::get(&s.shortcuts, shortcuts::Action::Record);
+    let key = Some(key).filter(|&k| k != 0).map(|k| Hotkey::unpack(k).name()).or(main_shortcut(&s).map(|m| m.1));
+    let how = key.map_or("Click Stop".into(), |k| format!("Press {k} or Stop"));
+    let what = if paused { "recording (paused)" } else { "recording" };
+    tray::set_tip(hwnd, &format!("{APP_NAME} — {what}. {how} to finish"));
 }
 
 /// Stops recording; the file is finished on a worker thread and reported as `WM_APP_RECORDED`.
