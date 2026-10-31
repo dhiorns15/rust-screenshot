@@ -596,7 +596,7 @@ impl App {
         let Some(img) = self.rendered() else { return false };
         let framed = self.effects.any();
         let editor = self.editor.as_mut().unwrap();
-        let path = if as_copy { copy_path(&editor.doc.path, "png") } else { editor.doc.path.clone() };
+        let path = if as_copy { copy_path(&editor.doc.path, "png") } else { png_path(&editor.doc.path) };
         // Only a drop shadow needs transparency; plain screenshots stay smaller as RGB.
         let img = if img.pixels().any(|p| p[3] < 255) {
             image::DynamicImage::ImageRgba8(img)
@@ -1495,6 +1495,17 @@ fn check_for_update(ctx: &egui::Context, release_candidates: bool) -> Receiver<u
         }
     });
     rx
+}
+
+/// Where saving the screenshot at `path` goes: over itself when it's a PNG; else (a JPG copy
+/// opened again, say) a PNG beside it, "name.png" or else `copy_path`'s, as the editor saves PNGs
+/// and a JPG holding PNG data wouldn't open anywhere. The JPG stays as it was.
+fn png_path(path: &Path) -> PathBuf {
+    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
+        return path.to_owned();
+    }
+    let png = path.with_extension("png");
+    if png.exists() { copy_path(path, "png") } else { png }
 }
 
 /// "name (edited).png", "name (edited 2).png", ...

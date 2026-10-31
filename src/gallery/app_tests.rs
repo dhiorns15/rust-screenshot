@@ -140,6 +140,33 @@ fn save_is_enabled_by_an_edit_and_undo_disables_it_again() {
 }
 
 #[test]
+fn saving_a_jpg_writes_a_png_beside_it_and_leaves_the_jpg_as_it_was() {
+    let dir = fixtures("kittest-save-jpg");
+    let jpg = dir.join("Screenshot d.jpg");
+    image::RgbImage::from_pixel(320, 200, image::Rgb([200, 90, 90])).save(&jpg).unwrap();
+    let before = std::fs::read(&jpg).unwrap();
+    let env = Env::sandbox(dir.clone());
+    let mut h = Harness::builder().with_size(SIZE).build_eframe(move |cc| App::new(&cc.egui_ctx, env, Some(jpg.clone())));
+    settle(&mut h);
+    click(&mut h, "Arrow");
+    drag_on_canvas(&mut h, (0.2, 0.2), (0.6, 0.5));
+    click(&mut h, &label(icon::FLOPPY_DISK, "Save"));
+
+    let png = dir.join("Screenshot d.png");
+    assert!(shows(&h, "Saved Screenshot d.png"));
+    assert!(std::fs::read(&png).unwrap().starts_with(b"\x89PNG"), "the edit is a PNG, under a PNG's name");
+    assert_eq!(std::fs::read(dir.join("Screenshot d.jpg")).unwrap(), before, "the JPG isn't written over with PNG data");
+    assert!(h.state().editor.as_ref().is_some_and(|e| e.doc.path == png && !e.doc.dirty()), "the editor goes on with the PNG");
+    assert!(super::doc::has_layers(&png), "its edits stay editable, beside the PNG");
+
+    // Saved again, it's the PNG that's written; a second JPG edit goes to a copy, not over it.
+    drag_on_canvas(&mut h, (0.3, 0.6), (0.7, 0.8));
+    click(&mut h, &label(icon::FLOPPY_DISK, "Save"));
+    assert!(shows(&h, "Saved Screenshot d.png"));
+    assert_eq!(png_path(&dir.join("Screenshot d.jpg")), dir.join("Screenshot d (edited).png"));
+}
+
+#[test]
 fn export_menu_offers_what_this_system_supports() {
     let mut h = harness("kittest-export");
     h.get_by_label_contains("Export").click();
