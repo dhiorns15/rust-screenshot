@@ -43,6 +43,9 @@ pub struct Destination {
     pub auto: bool,
     /// When it was set to push automatically (Unix seconds); only what's saved after is pushed.
     pub auto_since: Option<u64>,
+    /// Screenshots wider than this many pixels are shrunk to it on the way (the file stays as it is).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_width: Option<u32>,
 }
 
 /// What kind of place it is, and what's needed to reach it apart from the secret.
@@ -410,7 +413,7 @@ impl Kind {
 impl Destination {
     /// A new, empty destination of `kind`, named for it, pushing by hand.
     pub fn new(kind: Kind) -> Destination {
-        Destination { id: new_id(), name: kind.name().to_owned(), kind, auto: false, auto_since: None }
+        Destination { id: new_id(), name: kind.name().to_owned(), kind, auto: false, auto_since: None, max_width: None }
     }
 
     /// What's missing or wrong before it can be saved, in words for the user.
@@ -627,6 +630,9 @@ pub fn push(destination: &Destination, saved: &mut Saved, file: &Path) -> Result
     let secret = saved.secret().unwrap_or_default().to_owned();
     let secret = secret.as_str();
     let name = file.file_name().ok_or("Not a file")?.to_string_lossy().into_owned();
+    // A smaller copy goes in its place, under the same name, and is deleted afterwards.
+    let shrunk = destination.max_width.map(|max| shrunk(file, max)).transpose()?.flatten();
+    let file = shrunk.as_ref().map_or(file, |s| s.file.as_path());
     let result = match &destination.kind {
         Kind::Sftp { host, port, user, folder, public_url } => {
             sftp::put(&sftp::Server { host, port: *port, user, folder }, &name, file)?;
@@ -670,6 +676,54 @@ fn without(message: String, secret: &str) -> String {
     } else {
         message
     }
+}
+
+/// A smaller copy of a screenshot, in a folder of its own that goes when it does.
+struct Shrunk {
+    file: std::path::PathBuf,
+}
+
+impl Drop for Shrunk {
+    fn drop(&mut self) {
+        if let Some(dir) = self.file.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+/// A copy of `file` at most `max` pixels wide, in the same format and under the same name, if it's
+/// a PNG or JPEG wider than that; `None` to send it as it is (narrow enough, a recording, or not
+/// an image that can be read).
+fn shrunk(file: &Path, max: u32) -> Result<Option<Shrunk>, String> {
+    let format = match file.extension().map(|e| e.to_string_lossy().to_lowercase()).as_deref() {
+        Some("png") => image::ImageFormat::Png,
+        Some("jpg" | "jpeg") => image::ImageFormat::Jpeg,
+        _ => return Ok(None),
+    };
+    match image::image_dimensions(file) {
+        Ok((width, _)) if max > 0 && width > max => {}
+        _ => return Ok(None),
+    }
+    let failed = |e: &dyn std::fmt::Display| format!("Couldn't shrink {}: {e}", file.display());
+    let img = image::ImageReader::open(file).and_then(|r| r.with_guessed_format()).map_err(|e| failed(&e))?.decode().map_err(|e| failed(&e))?;
+    let img = img.resize(max, u32::MAX, image::imageops::FilterType::Lanczos3);
+    let dir = std::env::temp_dir().join(format!("rsnip-shrunk-{}-{}", std::process::id(), new_id()));
+    let mut builder = std::fs::DirBuilder::new();
+    // Only this user can read it, as /tmp is shared on Linux.
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.recursive(true).create(&dir).map_err(|e| failed(&e))?;
+    let shrunk = Shrunk { file: dir.join(file.file_name().ok_or("Not a file")?) };
+    let written = std::fs::File::create(&shrunk.file).map_err(|e| e.to_string()).and_then(|f| {
+        let out = std::io::BufWriter::new(f);
+        match format {
+            image::ImageFormat::Jpeg => image::codecs::jpeg::JpegEncoder::new_with_quality(out, 90).encode_image(&img.to_rgb8()),
+            _ => img.write_with_encoder(image::codecs::png::PngEncoder::new(out)),
+        }
+        .map_err(|e| e.to_string())
+    });
+    written.map_err(|e| failed(&e))?;
+    Ok(Some(shrunk))
 }
 
 /// The SHA-256 fingerprint of an FTPS server's certificate, to show before it's trusted.
@@ -792,6 +846,73 @@ mod tests {
         let (server, _) = serve_each(vec![reply("401 Unauthorized")]);
         let d = to(Kind::WebDav { url: server, user: "me".into(), public_url: String::new() });
         assert_eq!(test(&d, Some("wrong")), Err("The server didn't accept the user name or password".into()));
+    }
+
+    /// A real 400 × 60 PNG to push, and the bytes of it.
+    fn wide_png(name: &str) -> (std::path::PathBuf, Vec<u8>) {
+        let file = shot(name);
+        image::RgbaImage::from_fn(400, 60, |x, _| image::Rgba([(x % 256) as u8, 90, 200, 255])).save(&file).unwrap();
+        let bytes = std::fs::read(&file).unwrap();
+        (file, bytes)
+    }
+
+    fn webdav_put(max_width: Option<u32>, file: &Path) -> crate::http::tests::Received {
+        let (server, requests) = serve_each(vec![("201 Created", "", String::new())]);
+        let kind = Kind::WebDav { url: format!("{server}/dav"), user: "me".into(), public_url: "https://files.example.com".into() };
+        let d = Destination { max_width, ..to(kind) };
+        let link = push(&d, Some("pw"), file).unwrap();
+        assert_eq!(link.as_deref(), Some("https://files.example.com/a%20b.png"), "under the file's own name");
+        let request = requests.join().unwrap().remove(0);
+        assert_eq!(request.path, "/dav/a%20b.png");
+        request
+    }
+
+    #[test]
+    fn a_wide_screenshot_is_shrunk_on_the_way() {
+        let (file, original) = wide_png("shrink");
+        let sent = webdav_put(Some(100), &file).body;
+        let img = image::load_from_memory_with_format(&sent, image::ImageFormat::Png).unwrap();
+        assert_eq!((img.width(), img.height()), (100, 15));
+        assert_eq!(std::fs::read(&file).unwrap(), original, "the file itself is left alone");
+        let leftovers = std::fs::read_dir(std::env::temp_dir()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with(&format!("rsnip-shrunk-{}-", std::process::id())));
+        assert_eq!(leftovers.count(), 0, "the smaller copy is deleted");
+
+        // A JPEG stays a JPEG.
+        let jpeg = file.with_extension("jpg");
+        image::open(&file).unwrap().to_rgb8().save(&jpeg).unwrap();
+        let copy = shrunk(&jpeg, 100).unwrap().expect("shrunk");
+        assert_eq!(copy.file.file_name(), jpeg.file_name());
+        let bytes = std::fs::read(&copy.file).unwrap();
+        assert_eq!(image::guess_format(&bytes).unwrap(), image::ImageFormat::Jpeg);
+        assert_eq!(image::image_dimensions(&copy.file).unwrap(), (100, 15));
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn screenshots_go_as_they_are_unless_too_wide() {
+        let (file, original) = wide_png("as-is");
+        assert_eq!(webdav_put(None, &file).body, original, "no limit");
+        assert_eq!(webdav_put(Some(400), &file).body, original, "no wider than the limit");
+        assert!(shrunk(&file, 0).unwrap().is_none(), "a limit of nothing is none");
+        // Recordings, and what can't be read as an image, aren't touched.
+        let gif = file.with_extension("gif");
+        std::fs::write(&gif, b"GIF89a").unwrap();
+        assert!(shrunk(&gif, 10).unwrap().is_none());
+        assert!(shrunk(&shot("not-png"), 10).unwrap().is_none(), "not really a PNG");
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_width_limit_is_kept_with_the_destination() {
+        let d = Destination { max_width: Some(1280), ..to(Kind::immich()) };
+        let json = serde_json::to_string(std::slice::from_ref(&d)).unwrap();
+        assert!(json.contains("\"max_width\":1280"), "{json}");
+        let back: Vec<Destination> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, std::slice::from_ref(&d));
+        let without = serde_json::to_string(&[Destination { max_width: None, ..d }]).unwrap();
+        assert!(!without.contains("max_width"), "left out when there's none, as before");
+        let older: Vec<Destination> = serde_json::from_str(&without).unwrap();
+        assert_eq!(older[0].max_width, None, "lists saved before it was there still load");
     }
 
     #[test]

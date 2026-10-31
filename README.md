@@ -35,7 +35,7 @@ command line or a desktop shortcut, with a few things Windows-only (see
   it. [More](docs/editor.md#the-library)
 - **Push to other places**, as they're saved or when you choose: SFTP, WebDAV, S3, SMB shares,
   FTPS, Dropbox, Google Drive, OneDrive, Discord, Slack, Immich, PhotoPrism, or any upload API
-  (ShareX `.sxcu` uploaders too). [More](docs/destinations.md)
+  (ShareX `.sxcu` uploaders too), shrinking screenshots to a width you choose on the way. [More](docs/destinations.md)
 - **Updates** itself when you want it to: it says when a new version is out, and an installed copy
   can download, check and install it. [Settings](docs/settings.md)
 - **Windows and Linux**: Windows has everything; Linux has the library and editor, screenshots and

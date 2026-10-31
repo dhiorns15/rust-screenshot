@@ -809,6 +809,31 @@ fn automatically_and_by_hand_are_remembered_with_the_time() {
 }
 
 #[test]
+fn screenshots_can_be_shrunk_on_the_way_to_each_destination() {
+    let mut h = settings("settings-push-shrink", |_| {});
+    add_webdav(&mut h);
+    assert_eq!(destinations(&h)[0].max_width, None, "full size unless asked");
+    assert!(h.query_by_label("Pushed at full size").is_some());
+    toggle(&mut h, "Shrink screenshots");
+    assert_eq!(destinations(&h)[0].max_width, Some(1280));
+    assert!(h.query_by_label("Wider ones are pushed 1280 pixels wide; your copy stays as it is").is_some());
+
+    click(&mut h, "Shrink to at most, in pixels");
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::A);
+    h.get_by_label("Shrink to at most, in pixels").type_text("800");
+    h.key_press(eframe::egui::Key::Enter);
+    settle(&mut h);
+    assert_eq!(destinations(&h)[0].max_width, Some(800));
+
+    // Editing it keeps the limit.
+    click(&mut h, "Edit");
+    click(&mut h, "Save");
+    assert_eq!(destinations(&h)[0].max_width, Some(800));
+    toggle(&mut h, "Shrink screenshots");
+    assert_eq!(destinations(&h)[0].max_width, None);
+}
+
+#[test]
 fn a_sharex_uploader_fills_in_the_form_and_its_token_is_kept_as_the_secret() {
     let mut h = settings("settings-push-sxcu", |_| {});
     let dir = h.state().env.dir.clone();

@@ -14,6 +14,7 @@ use eframe::egui::{self, Align, Color32, Layout, RichText, Ui};
 use super::{row, SettingsApp};
 use crate::gallery::env::{PickedFolder, PushEvent, TrayRequest};
 use crate::gallery::theme::{self, icon};
+use crate::gallery::{DEFAULT_MAX_WIDTH, MAX_MAX_WIDTH, MIN_MAX_WIDTH};
 use crate::push::history::{self, Entry};
 use crate::push::{self, CodeEvent, Destination, Kind, Pkce, SignIn as SignInWay};
 
@@ -186,6 +187,8 @@ fn app_key(kind: &Kind) -> &str {
 /// What a click in the list asks for.
 enum Action {
     Auto(String, bool),
+    /// Shrink screenshots wider than this on the way, or don't.
+    MaxWidth(String, Option<u32>),
     Test(Destination),
     Edit(Destination),
     AskRemove(String),
@@ -534,6 +537,12 @@ impl SettingsApp {
                 }
                 self.save_destinations(&list);
             }
+            Action::MaxWidth(id, max_width) => {
+                if let Some(d) = list.iter_mut().find(|d| d.id == id) {
+                    d.max_width = max_width;
+                }
+                self.save_destinations(&list);
+            }
             Action::Test(d) => {
                 let rx = self.env.test_destination(ui.ctx(), &d, None);
                 self.push.tests.insert(d.id, Test::Running(rx));
@@ -596,6 +605,24 @@ impl SettingsApp {
                         }
                     }
                 })
+            });
+            ui.separator();
+            let detail = match d.max_width {
+                Some(width) => format!("Wider ones are pushed {width} pixels wide; your copy stays as it is"),
+                None => "Pushed at full size".to_owned(),
+            };
+            row(ui, "Shrink screenshots", &detail, |ui| {
+                let mut on = d.max_width.is_some();
+                if theme::switch(ui, &mut on, "Shrink screenshots").changed() {
+                    action = Some(Action::MaxWidth(d.id.clone(), on.then_some(DEFAULT_MAX_WIDTH)));
+                }
+                let mut width = d.max_width.unwrap_or(DEFAULT_MAX_WIDTH);
+                let drag = egui::DragValue::new(&mut width).range(MIN_MAX_WIDTH..=MAX_MAX_WIDTH).speed(4.0).prefix("to at most ").suffix(" px wide");
+                let drag = ui.add_enabled(on, drag);
+                drag.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, on, "Shrink to at most, in pixels"));
+                if drag.changed() && on {
+                    action = Some(Action::MaxWidth(d.id.clone(), Some(width)));
+                }
             });
         });
         match self.push.tests.get(&d.id) {

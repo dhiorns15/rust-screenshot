@@ -12,6 +12,11 @@ tried again after a minute, five minutes and half an hour, then reported with a 
 *Recent pushes*, under the places, lists the last ten pushes, by hand and automatic, with what
 went wrong when one didn't, and a *Retry* on the latest failure of a file to a place.
 
+Each place can have **Shrink screenshots** on, to at most a width you choose (1280 pixels to
+start with): a PNG or JPEG wider than that is sent at that width, in the same format and under the
+same name, and the screenshot in your library stays as it is. Narrower ones, and recordings, go as
+they are.
+
 ## The places
 
 | Place | What it needs | Link |
