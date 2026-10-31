@@ -29,6 +29,14 @@ const POLL: Duration = Duration::from_millis(10);
 const TOLERANCE: i64 = RATE / 100;
 /// How long after its time a packet may still turn up before the mix moves past it (200 ms).
 const SLACK: i64 = RATE / 5;
+/// The most the microphone is held back, in milliseconds: a camera's lag is a few hundred, and
+/// a wild figure would put seconds of silence in the recording.
+const MAX_DELAY: u32 = 2000;
+/// A jump of this much (10 s) between one look at the clock and the next isn't time passing but
+/// the clock itself (the computer slept, and the performance counter counts through that): the
+/// sound ends there rather than an hour of silence being mixed in. Sound stamped that far ahead
+/// of what's there is dropped for the same reason.
+const JUMP: i64 = RATE * 10;
 /// WAVEFORMATEX's tags for plain integers and for 32-bit floats.
 const WAVE_FORMAT_PCM: u16 = 1;
 const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
@@ -166,6 +174,10 @@ impl Mixer {
         let mut samples = samples;
         if let Some(at) = at {
             let tolerance = if discontinuity { 0 } else { TOLERANCE };
+            if at > end + JUMP {
+                // Stamped far in the future: the clock jumped (see `JUMP`), not the sound.
+                return;
+            }
             if at > end + tolerance {
                 lane.extend(std::iter::repeat_n(0.0, (at - end) as usize * AUDIO_CHANNELS as usize));
             } else if at + tolerance < end {
@@ -267,13 +279,18 @@ impl Source {
                 std::ptr::copy_nonoverlapping(data, samples.as_mut_ptr() as *mut u8, len * 4);
             }
             self.capture.ReleaseBuffer(count)?;
-            // In 100 ns units on the performance counter, like the clock.
-            let delay = self.delay.load(Ordering::Relaxed) as i64 * 10_000;
-            let at = (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0).then(|| frames(position as i64 + delay - clock.0));
+            let at = (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0).then(|| packet_frame(position as i64, self.delay.load(Ordering::Relaxed), clock));
             mixer.push(self.lane, at, &samples, flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0);
         }
         Ok(())
     }
+}
+
+/// The frame on `clock`'s timeline that a packet WASAPI stamped `position` (in 100 ns units on
+/// the performance counter, like the clock) begins at, from a source held back `delay` ms (no
+/// more than `MAX_DELAY`).
+fn packet_frame(position: i64, delay: u32, clock: Clock) -> i64 {
+    frames(position + delay.min(MAX_DELAY) as i64 * 10_000 - clock.0)
 }
 
 /// Why something couldn't be used, in a few words.
@@ -335,15 +352,29 @@ fn run(sources: &Sources, clock: Clock, stop: &AtomicBool, ready: Sender<Result<
     let _ = ready.send(Ok(()));
 
     let mut mixer = Mixer::new(open.len());
-    while !stop.load(Ordering::Relaxed) {
-        std::thread::sleep(POLL);
+    let mut now = clock.frames();
+    loop {
+        let stopped = stop.load(Ordering::Relaxed);
+        if !stopped {
+            std::thread::sleep(POLL);
+        }
+        let then = now;
+        now = clock.frames();
+        if now - then > JUMP {
+            // The clock jumped (see `JUMP`): the sound ends where it was.
+            notes.push("The computer slept part way through the recording, so the sound stops there.".into());
+            now = then;
+            break;
+        }
         read_all(&mut open, &mut mixer, clock, &mut notes);
-        if let Some(chunk) = chunk(mixer.take(clock.frames())) {
+        if stopped {
+            break;
+        }
+        if let Some(chunk) = chunk(mixer.take(now)) {
             let _ = chunks.send(chunk);
         }
     }
-    read_all(&mut open, &mut mixer, clock, &mut notes);
-    if let Some(chunk) = chunk(mixer.finish(clock.frames())) {
+    if let Some(chunk) = chunk(mixer.finish(now)) {
         let _ = chunks.send(chunk);
     }
     for source in &open {
@@ -567,6 +598,28 @@ mod tests {
         let mut mixer = Mixer::new(1);
         mixer.push(0, Some(-1000), &stereo(1500, 0.1), false);
         assert_eq!(at(&mixer), 500);
+    }
+
+    /// A packet stamped far ahead of what's there (the clock jumped while the computer slept)
+    /// isn't placed there with silence up to it.
+    #[test]
+    fn sound_from_far_ahead_is_dropped() {
+        let mut mixer = Mixer::new(1);
+        mixer.push(0, Some(0), &stereo(100, 0.5), false);
+        mixer.push(0, Some(100 + JUMP + 1), &stereo(100, 0.5), false);
+        assert_eq!(mixer.lanes[0].len(), 200);
+        // Up to that, it's a gap to fill.
+        mixer.push(0, Some(100 + JUMP), &stereo(100, 0.5), false);
+        assert_eq!(mixer.lanes[0].len() as i64, (200 + JUMP) * 2);
+    }
+
+    /// The microphone is held back as far as the camera's bubble says it's behind, up to a point.
+    #[test]
+    fn the_microphone_is_held_back_no_more_than_two_seconds() {
+        let clock = Clock(5_000_000);
+        assert_eq!(packet_frame(clock.0 + 10_000_000, 0, clock), RATE);
+        assert_eq!(packet_frame(clock.0 + 10_000_000, 100, clock), RATE + RATE / 10);
+        assert_eq!(packet_frame(clock.0, u32::MAX, clock), 2 * RATE);
     }
 
     #[test]
