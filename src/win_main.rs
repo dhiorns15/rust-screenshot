@@ -302,12 +302,7 @@ unsafe fn run_tray(mode: Option<Mode>, delay: Option<u32>, update_now: bool) {
     SetTimer(hwnd, TIMER_UPDATE, UPDATE_FIRST_CHECK_MS, None);
     // Pushing new captures by themselves (see gallery's `auto_push`); it tells of failures here.
     let window = hwnd as isize;
-    gallery::start_auto_push(move |title, text| {
-        let notice = Box::into_raw(Box::new((title.to_owned(), text.to_owned())));
-        if PostMessageW(window as HWND, WM_APP_NOTICE, 0, notice as LPARAM) == 0 {
-            drop(Box::from_raw(notice));
-        }
-    });
+    gallery::start_auto_push(move |title, text| post_notice(window, title, text));
     match (delay, mode) {
         _ if update_now => start_check(hwnd, Check::Install),
         (Some(secs), _) => start_countdown(hwnd, secs),
@@ -348,6 +343,14 @@ unsafe fn notify(hwnd: HWND, title: &str, text: &str) {
     UPDATE_BALLOON.set(false);
     CRASH_BALLOON.set(false);
     tray::notify(hwnd, ICON_LARGE.get(), title, text);
+}
+
+/// `notify` from another thread: the main window (`window`) shows it as `WM_APP_NOTICE`.
+fn post_notice(window: isize, title: &str, text: &str) {
+    let notice = Box::into_raw(Box::new((title.to_owned(), text.to_owned())));
+    if unsafe { PostMessageW(window as HWND, WM_APP_NOTICE, 0, notice as LPARAM) } == 0 {
+        drop(unsafe { Box::from_raw(notice) });
+    }
 }
 
 /// Changes a setting. Starts from what's stored, so changes made in the Settings window meanwhile
@@ -722,7 +725,12 @@ unsafe fn capture(hwnd: HWND, mode: Mode) {
     match (image, mode) {
         (Some((image, true, _)), _) => {
             // Saving a big capture takes a moment; keep the hook's thread responsive.
-            std::thread::spawn(move || pin::pin_image(&image));
+            let window = hwnd as isize;
+            std::thread::spawn(move || {
+                if let Err(e) = pin::pin_image(&image) {
+                    post_notice(window, "Couldn't pin the screenshot", &e);
+                }
+            });
         }
         (Some((image, false, _)), Mode::Text) => read_text(hwnd, image),
         (Some((image, false, source)), _) => deliver(hwnd, image, source),

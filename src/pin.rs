@@ -63,10 +63,12 @@ fn anchored(left: i32, cursor: i32, old: i32, new: i32) -> i32 {
 }
 
 pub fn run(path: PathBuf) {
-    let Ok(img) = image::open(&path) else { return };
+    let img = image::open(&path);
+    // Whether or not it could be read: it was only ever for this pin.
     if path.starts_with(temp_dir()) {
         let _ = std::fs::remove_file(&path);
     }
+    let Ok(img) = img else { return };
     let rgba = img.to_rgba8();
     let (width, height) = (rgba.width() as i32, rgba.height() as i32);
     let data = rgba.into_raw().chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255]).collect();
