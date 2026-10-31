@@ -1063,6 +1063,27 @@ fn pasting_while_typing_text_pastes_an_annotation_as_one_and_other_text_into_the
     assert!(app.tools.selection.is_some_and(|s| s.kind == Tool::Arrow));
 }
 
+/// A file dropped on the window, as egui-winit hands it over.
+#[derive(Debug)]
+struct Dropped(PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+fn drop_files(h: &mut Harness<App>, files: &[PathBuf]) {
+    for file in files {
+        h.input_mut().dropped_files.push(std::sync::Arc::new(Dropped(file.clone())));
+    }
+    settle(h);
+}
+
 /// What's in the library besides screenshots a, b and c.
 fn added(h: &Harness<App>) -> Vec<PathBuf> {
     let fixtures = ["Screenshot a", "Screenshot b", "Screenshot c"];
@@ -1080,6 +1101,54 @@ fn picture_elsewhere(test: &str, name: &str, w: u32, h: u32) -> PathBuf {
     let path = tests::sandbox_dir(test).join(name);
     image::RgbImage::from_pixel(w, h, image::Rgb([200, 40, 90])).save(&path).unwrap();
     path
+}
+
+#[test]
+fn a_picture_dropped_on_the_window_is_added_to_the_library_and_opened() {
+    let mut h = harness("kittest-drop-picture");
+    let picture = picture_elsewhere("kittest-drop-picture-from", "holiday.jpg", 64, 48);
+    drop_files(&mut h, std::slice::from_ref(&picture));
+
+    let new = added(&h);
+    assert_eq!(new.len(), 1, "one new screenshot");
+    let name = new[0].file_name().unwrap().to_string_lossy().into_owned();
+    assert!(name.starts_with("Screenshot ") && name.ends_with(".png"), "named like a capture: {name}");
+    assert_eq!(open_in_editor(&h), (Vec2::new(64.0, 48.0), new[0].clone()), "and open in the editor");
+    assert!(h.state().selected.contains(&new[0]), "selected in the library");
+    assert!(shows(&h, &format!("Added {name} to the library")));
+    assert!(picture.exists(), "the dropped file stays where it was");
+
+    // Several at once, from the Gallery page: all of them go in, and the editor shows the first.
+    click(&mut h, "Gallery");
+    let more = [picture_elsewhere("kittest-drop-more", "one.png", 30, 20), picture_elsewhere("kittest-drop-more-2", "two.png", 50, 10)];
+    drop_files(&mut h, &more);
+    assert_eq!(added(&h).len(), 3);
+    assert!(h.state().page == Page::Editor);
+    assert_eq!(open_in_editor(&h).0, Vec2::new(30.0, 20.0));
+    assert!(shows(&h, "Added 2 pictures to the library"));
+}
+
+#[test]
+fn files_that_arent_pictures_are_left_out_when_dropped() {
+    let mut h = harness("kittest-drop-other");
+    let dir = tests::sandbox_dir("kittest-drop-other-from");
+    let (notes, fake) = (dir.join("notes.txt"), dir.join("fake.png"));
+    std::fs::write(&notes, "hello").unwrap();
+    std::fs::write(&fake, "not really a PNG").unwrap();
+    drop_files(&mut h, std::slice::from_ref(&notes));
+    assert!(added(&h).is_empty(), "nothing added");
+    assert!(open_in_editor(&h).1.ends_with("Screenshot a.png"), "what was open stays open");
+    assert!(shows(&h, "notes.txt isn't a picture, so it can't be added to the library"));
+
+    drop_files(&mut h, &[notes.clone(), fake]);
+    assert!(added(&h).is_empty());
+    assert!(shows(&h, "None of those are pictures, so nothing was added to the library"));
+
+    // Along with a picture, the picture goes in and the rest are counted out.
+    let picture = picture_elsewhere("kittest-drop-other-picture", "real.png", 20, 20);
+    drop_files(&mut h, &[notes, picture]);
+    assert_eq!(added(&h).len(), 1);
+    assert!(h.state().status.as_ref().is_some_and(|(s, _)| s.ends_with("; 1 file wasn't a picture")), "{:?}", h.state().status);
 }
 
 #[test]
@@ -1796,6 +1865,14 @@ mod snapshots {
         let _gpu = super::super::tests::gpu();
         let mut h = window(tests::sandbox_dir("snap-empty"), SIZE, |_| {});
         snapshot(&mut h, "empty_library");
+    }
+
+    #[test]
+    fn files_dragged_over_the_window() {
+        let _gpu = super::super::tests::gpu();
+        let mut h = library("snap-drop");
+        h.input_mut().hovered_files.push(egui::HoveredFile { path: Some(PathBuf::from("/tmp/picture.png")), mime: String::new() });
+        snapshot(&mut h, "drop_files");
     }
 
     /// Renders the window to a PNG, to look at a UI change without opening it on a desktop or

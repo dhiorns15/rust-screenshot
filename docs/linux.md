@@ -11,7 +11,9 @@ screenshots*, in the same place; the background icon or the library does it). Re
 to search by it) uses [Tesseract](https://github.com/tesseract-ocr/tesseract) when it's installed
 (`tesseract-ocr` on Debian and Ubuntu; the installer's check recommends it). Copying as files
 (screenshots, recordings, several from the library) works as on Windows, to paste into a folder,
-chat or email; pinning and dragging files out are Windows-only.
+chat or email; pinning and dragging files out are Windows-only. Pasting a picture into the library
+with Ctrl+V works everywhere, but dropping picture files on it works only in an X11 session: the
+window toolkit RSnip uses doesn't receive dropped files on Wayland yet.
 
 To build it yourself instead, see [Building](building.md#on-linux).
 

@@ -813,15 +813,36 @@ impl App {
             }
         }
         match self.env.paste_image() {
-            Ok(Some(img)) => self.add_pictures(vec![img]),
+            Ok(Some(img)) => self.add_pictures(vec![img], 0),
             Ok(None) => self.set_status("There's no picture on the clipboard to paste"),
             Err(e) => self.set_status(format!("Couldn't paste: {e}")),
         }
     }
 
+    /// Files dropped on the window: the pictures among them are added to the library as new
+    /// screenshots, and the rest are left out, saying so.
+    fn drop_files(&mut self, dropped: Vec<egui::DroppedFileHandle>) {
+        let (mut pictures, mut others) = (Vec::new(), Vec::new());
+        for file in &dropped {
+            match read_picture(file.path()) {
+                Some(img) => pictures.push(img),
+                None => others.push(file.path().file_name().unwrap_or_default().to_string_lossy().into_owned()),
+            }
+        }
+        if pictures.is_empty() {
+            match &others[..] {
+                [one] => self.set_status(format!("{one} isn't a picture, so it can't be added to the library")),
+                _ => self.set_status("None of those are pictures, so nothing was added to the library"),
+            }
+        } else {
+            self.add_pictures(pictures, others.len());
+        }
+    }
+
     /// Saves `pictures` in the library as new screenshots, named as captures are, and opens the
     /// first (asking first, as opening any other does, if the open one has unsaved edits).
-    fn add_pictures(&mut self, pictures: Vec<image::RgbaImage>) {
+    /// `skipped` files weren't pictures, which the status line says too.
+    fn add_pictures(&mut self, pictures: Vec<image::RgbaImage>, skipped: usize) {
         let dir = self.env.dir.clone();
         if let Err(e) = std::fs::create_dir_all(&dir) {
             return self.set_status(format!("Couldn't add it to the library: can't create {}: {e}", dir.display()));
@@ -837,12 +858,17 @@ impl App {
         }
         self.rescan();
         let name = |path: &Path| path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        let status = match (&added[..], failed) {
+        let mut status = match (&added[..], failed) {
             ([], Some(e)) => format!("Couldn't add it to the library: {e}"),
             ([one], None) => format!("Added {} to the library", name(one)),
             (all, None) => format!("Added {} pictures to the library", all.len()),
             (all, Some(e)) => format!("Added {} pictures to the library, but not every one: {e}", all.len()),
         };
+        match skipped {
+            0 => {}
+            1 => status.push_str("; 1 file wasn't a picture"),
+            n => status.push_str(&format!("; {n} files weren't pictures")),
+        }
         if let Some(first) = added.first().cloned() {
             self.selected = added.iter().cloned().collect();
             self.anchor = Some(first.clone());
@@ -850,6 +876,23 @@ impl App {
             self.request_open(first);
         }
         self.set_status(status);
+    }
+
+    /// Lights the window up while files are dragged over it, to say they can be dropped.
+    fn drop_highlight(&self, ctx: &egui::Context) {
+        if ctx.input(|i| i.raw.hovered_files.is_empty()) {
+            return;
+        }
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop-files")));
+        let rect = ctx.content_rect().shrink(4.0);
+        painter.rect_filled(rect, 8.0, theme::ACCENT.gamma_multiply(0.18));
+        painter.rect_stroke(rect, 8.0, Stroke::new(2.0f32, theme::ACCENT), egui::StrokeKind::Inside);
+        let text = "Drop pictures here to add them to the library";
+        let font = egui::FontId::proportional(20.0);
+        let galley = painter.layout_no_wrap(text.into(), font, theme::palette(ctx).text);
+        let at = rect.center() - galley.size() / 2.0;
+        painter.rect_filled(egui::Rect::from_min_size(at, galley.size()).expand2(Vec2::new(16.0, 10.0)), 8.0, theme::palette(ctx).panel);
+        painter.galley(at, galley, theme::palette(ctx).text);
     }
 
     /// Moves screenshots to the Recycle Bin, with their editing data.
@@ -1614,6 +1657,10 @@ impl eframe::App for App {
         }
         if self.pending.is_none() {
             self.shortcuts(ctx);
+            let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+            if !dropped.is_empty() {
+                self.drop_files(dropped);
+            }
         }
 
         let p = theme::palette(ctx);
@@ -1678,6 +1725,7 @@ impl eframe::App for App {
             }
         });
         self.unsaved_dialog(ctx);
+        self.drop_highlight(ctx);
     }
 }
 
