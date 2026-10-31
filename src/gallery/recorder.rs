@@ -1093,7 +1093,7 @@ mod tests {
     #[test]
     fn pipelines_record_playable_files() {
         if available().is_err() || !installed("videotestsrc") {
-            return eprintln!("skipped: no GStreamer");
+            return crate::testing::skipped("no GStreamer");
         }
         let dir = std::env::temp_dir().join(format!("rsnip-gst-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1119,7 +1119,7 @@ mod tests {
         let (encoder, _) = encoder(false);
         let audio = audio_encoder(encoder.extension == "mp4", &installed);
         if available().is_err() || !installed("videotestsrc") || encoder.extension != "mp4" || audio.is_err() {
-            return eprintln!("skipped: no GStreamer MP4 with sound");
+            return crate::testing::skipped("no GStreamer MP4 with sound");
         }
         let dir = std::env::temp_dir().join(format!("rsnip-silent-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1189,7 +1189,7 @@ mod tests {
     #[test]
     fn a_pipeline_that_dies_doesnt_save_a_broken_file() {
         if available().is_err() || !installed("videotestsrc") {
-            return eprintln!("skipped: no GStreamer");
+            return crate::testing::skipped("no GStreamer");
         }
         let dir = std::env::temp_dir().join(format!("rsnip-died-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1224,7 +1224,7 @@ mod tests {
     fn recordings_trim_and_play_from_anywhere() {
         let (encoder, _) = encoder(false);
         if available().is_err() || encoder.extension != "mp4" || !["avdec_h264", "openh264dec"].into_iter().any(installed) {
-            return eprintln!("skipped: no GStreamer H.264");
+            return crate::testing::skipped("no GStreamer H.264");
         }
         let dir = std::env::temp_dir().join(format!("rsnip-trim-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

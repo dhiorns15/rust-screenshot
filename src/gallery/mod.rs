@@ -1769,7 +1769,7 @@ mod tests {
     fn reads_rendered_text_back() {
         use super::doc::{load_font, render, Shape, Snapshot};
         let Some(read) = super::platform::read_words() else {
-            eprintln!("skipped: no text recognition here");
+            crate::testing::skipped("no text recognition here");
             return;
         };
         let base = image::RgbaImage::from_pixel(420, 80, image::Rgba([255, 255, 255, 255]));
@@ -1791,7 +1791,7 @@ mod tests {
                 assert!(words[1].rect.left() > hello.right(), "{words:?}");
             }
             // Server images (like CI's) may not have an OCR language installed.
-            Err(e) if e.starts_with("No text-recognition language") => eprintln!("skipped: {e}"),
+            Err(e) if e.starts_with("No text-recognition language") => crate::testing::skipped(e),
             Err(e) => panic!("{e}"),
         }
     }

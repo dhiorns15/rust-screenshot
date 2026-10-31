@@ -321,7 +321,7 @@ mod tests {
         for (kind, name) in [(Kind::Mp4, "Recording.mp4"), (Kind::WebM, "Recording.webm")] {
             let path = dir.join(name);
             if !recording_with_sound(&path, kind) {
-                eprintln!("skipped {name}: no GStreamer, or no encoders to make one with");
+                crate::testing::skipped(format!("{name}: no GStreamer, or no encoders to make one with"));
                 continue;
             }
             assert!(super::super::info(&path).sound, "{name} has sound");
@@ -366,7 +366,7 @@ mod tests {
         for (kind, name, sound) in [(Kind::Mp4, "Sound.mp4", true), (Kind::WebM, "Sound.webm", true), (Kind::Mp4, "Silent.mp4", false), (Kind::WebM, "Silent.webm", false)] {
             let path = dir.join(name);
             if !(if sound { recording_with_sound(&path, kind) } else { silent(&path, kind) }) {
-                eprintln!("skipped {name}: no GStreamer, or no encoders to make one with");
+                crate::testing::skipped(format!("{name}: no GStreamer, or no encoders to make one with"));
                 continue;
             }
             assert_eq!(super::super::info(&path).sound, sound, "{name}");
@@ -393,7 +393,7 @@ mod tests {
         let dir = dir("window");
         let path = dir.join("Recording.mp4");
         if !recording_with_sound(&path, Kind::Mp4) {
-            return eprintln!("skipped: no GStreamer, or no encoders to make one with");
+            return crate::testing::skipped("no GStreamer, or no encoders to make one with");
         }
         let (movie, ms) = (Movie::open(&path).unwrap(), Duration::from_millis);
         let whole = std::fs::metadata(&path).unwrap().len();
@@ -452,7 +452,7 @@ mod tests {
         let dir = dir("chatty");
         let path = dir.join("Recording.mp4");
         if !recording_with_sound(&path, Kind::Mp4) {
-            return eprintln!("skipped: no GStreamer, or no encoders to make one with");
+            return crate::testing::skipped("no GStreamer, or no encoders to make one with");
         }
         // Debug level 5 says hundreds of kilobytes about decoding 3 s, far more than a pipe holds.
         std::env::set_var("GST_DEBUG", "5");
@@ -482,7 +482,7 @@ mod tests {
             .arg(format!("location={}", path.display()))
             .output();
         if !made.is_ok_and(|o| o.status.success()) {
-            return eprintln!("skipped: no GStreamer, or no VP8 encoder");
+            return crate::testing::skipped("no GStreamer, or no VP8 encoder");
         }
         assert!(!super::super::info(&path).sound);
         let _ = std::fs::remove_dir_all(&dir);

@@ -1259,10 +1259,10 @@ pub(crate) mod tests {
     #[test]
     fn a_cut_of_a_file_from_mp4mux_has_both_streams_and_plays() {
         let Some(aac) = ["fdkaacenc", "avenc_aac", "voaacenc"].into_iter().find(|e| gst_inspect(e)) else {
-            return eprintln!("skipped: no AAC encoder");
+            return crate::testing::skipped("no AAC encoder");
         };
         if !runs_here("gst-launch-1.0") || !gst_inspect("x264enc") || !gst_inspect("mp4mux") || !gst_inspect("avdec_h264") {
-            return eprintln!("skipped: no GStreamer x264enc, mp4mux and an H.264 decoder");
+            return crate::testing::skipped("no GStreamer x264enc, mp4mux and an H.264 decoder");
         }
         let dir = temp_dir("gst");
         let whole = dir.join("whole.mp4");

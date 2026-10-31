@@ -832,7 +832,7 @@ pub mod tests {
         let mut mp4: Box<dyn Encoder> = match Mp4::new(&path, 320, 240, 30, false) {
             Ok(mp4) => Box::new(mp4),
             // Server installs (like CI's) may not include Media Foundation.
-            Err(e) => return eprintln!("skipped: {e}"),
+            Err(e) => return crate::testing::skipped(e),
         };
         for i in 0..90u32 {
             let data = (0..320 * 240).flat_map(|p| [(p % 251) as u8, (i * 2) as u8, 90, 255]).collect();
@@ -869,13 +869,13 @@ pub mod tests {
     fn plays_windows_recordings_sound() {
         if let Err(e) = crate::audio::Speaker::open(48_000, 2) {
             // CI's machines may have no sound device.
-            return eprintln!("skipped: {e}");
+            return crate::testing::skipped(e);
         }
         let dir = std::env::temp_dir().join(format!("rsnip-player-sound-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("Recording.mp4");
         if let Err(e) = crate::encode::tests::recording_with_tone(&path, 3) {
-            return eprintln!("skipped: {e}");
+            return crate::testing::skipped(e);
         }
         assert!(info(&path).sound);
 

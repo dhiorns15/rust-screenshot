@@ -18,6 +18,8 @@ mod push;
 mod secrets;
 mod shortcuts;
 mod stitch;
+#[cfg(test)]
+mod testing;
 mod update;
 
 #[cfg(windows)]

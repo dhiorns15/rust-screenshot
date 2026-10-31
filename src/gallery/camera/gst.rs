@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn pictures_come_from_gstreamer() {
         if !recorder::available().is_ok_and(|()| Command::new("gst-inspect-1.0").args(["--exists", "aspectratiocrop"]).status().is_ok_and(|s| s.success())) {
-            return eprintln!("skipped: no GStreamer");
+            return crate::testing::skipped("no GStreamer");
         }
         let (tx, rx) = std::sync::mpsc::sync_channel(2);
         let running = std::thread::spawn(move || run("videotestsrc is-live=true pattern=red", &Sink { tx, ctx: None }));

@@ -635,7 +635,7 @@ mod tests {
         let capture = match Capture::start(&sources, Clock::now()) {
             Ok(capture) => capture,
             // CI's machines may have no sound device.
-            Err(e) => return eprintln!("skipped: {e}"),
+            Err(e) => return crate::testing::skipped(e),
         };
         std::thread::sleep(Duration::from_millis(300));
         let (chunks, notes) = capture.stop();

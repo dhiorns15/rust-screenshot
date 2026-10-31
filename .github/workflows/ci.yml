@@ -15,6 +15,9 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      # Tests that skip (no sound device, no encoder) say so here; see src/testing.rs.
+      RSNIP_SKIPS: target/skips.txt
     steps:
       - uses: actions/checkout@v7
       # Installs the toolchain pinned in rust-toolchain.toml.
@@ -23,6 +26,10 @@ jobs:
       # --locked: a Cargo.lock that doesn't match Cargo.toml fails rather than being rewritten here.
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      - name: Tests that skipped
+        if: always()
+        shell: bash
+        run: ci/skipped-tests.sh
       - run: cargo build --locked
       # The built exe captures the runner's screen as `rsnip --full` does: the tray app, the
       # capture and the save, end to end.
@@ -46,6 +53,8 @@ jobs:
   linux:
     runs-on: ubuntu-24.04
     container: rust:1.97.1
+    env:
+      RSNIP_SKIPS: target/skips.txt
     steps:
       - uses: actions/checkout@v7
       - name: Install the software GPU, fonts, Tesseract, GStreamer and desktop services (as in ci/Dockerfile)
@@ -63,6 +72,9 @@ jobs:
       - run: ci/desktop-test.sh
       # Random input against the editor for a while; the log prints the seed to replay a failure.
       - run: cargo test --locked panic_hunt_long -- --ignored --nocapture
+      - name: Tests that skipped
+        if: always()
+        run: ci/skipped-tests.sh
       - name: Upload snapshot differences
         if: failure()
         uses: actions/upload-artifact@v7

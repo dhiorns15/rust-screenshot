@@ -352,7 +352,7 @@ pub(crate) mod tests {
         let mut mp4: Box<dyn Encoder> = match Mp4::new(&path, 64, 48, fps, hevc) {
             Ok(mp4) => Box::new(mp4),
             // Server installs (like CI's) may not include Media Foundation.
-            Err(e) => return eprintln!("skipped: {e}"),
+            Err(e) => return crate::testing::skipped(e),
         };
         for (i, img) in frames(15, 64, 48).iter().enumerate() {
             mp4.frame(img, Duration::from_millis(i as u64 * 1000 / fps as u64)).unwrap();
@@ -395,7 +395,7 @@ pub(crate) mod tests {
     fn mp4_with_sound_has_a_video_and_a_sound_track_of_the_same_length() {
         let path = std::env::temp_dir().join(format!("rsnip-test-sound-{}.mp4", std::process::id()));
         if let Err(e) = recording_with_tone(&path, 2) {
-            return eprintln!("skipped: {e}");
+            return crate::testing::skipped(e);
         }
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(handlers(&bytes), ["vide", "soun"]);
@@ -423,7 +423,7 @@ pub(crate) mod tests {
         let path = std::env::temp_dir().join(format!("rsnip-test-silent-{}.mp4", std::process::id()));
         let mut mp4: Box<dyn Encoder> = match Mp4::new(&path, 64, 48, 30, false) {
             Ok(mp4) => Box::new(mp4),
-            Err(e) => return eprintln!("skipped: {e}"),
+            Err(e) => return crate::testing::skipped(e),
         };
         mp4.frame(&frames(1, 64, 48)[0], Duration::ZERO).unwrap();
         mp4.audio(&[1, 2, 3, 4], Duration::ZERO).unwrap();
@@ -436,7 +436,7 @@ pub(crate) mod tests {
     #[test]
     fn hevc_writes_a_playable_file_where_theres_an_encoder() {
         if !hevc_available() {
-            return eprintln!("skipped: no H.265 encoder");
+            return crate::testing::skipped("no H.265 encoder");
         }
         writes_a_playable_mp4(true, 30);
     }

@@ -575,7 +575,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("rsnip-rec-{}.mp4", std::process::id()));
         let encoder = match Mp4::new(&path, 64, 48, 30, false) {
             Ok(mp4) => Box::new(mp4),
-            Err(e) => return eprintln!("skipped: {e}"),
+            Err(e) => return crate::testing::skipped(e),
         };
         let stop = AtomicBool::new(false);
         let started = Instant::now();
@@ -610,7 +610,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("rsnip-rec-pause-{}.mp4", std::process::id()));
         let encoder = match Mp4::new(&path, 64, 48, 30, false) {
             Ok(mp4) => Box::new(mp4),
-            Err(e) => return eprintln!("skipped: {e}"),
+            Err(e) => return crate::testing::skipped(e),
         };
         let (stop, paused) = (AtomicBool::new(false), AtomicBool::new(false));
         let started = Instant::now();
@@ -629,7 +629,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("rsnip-rec-pause-sound-{}.mp4", std::process::id()));
         let encoder = match Mp4::with_sound(&path, 64, 48, 30, false, true) {
             Ok(mp4) => Box::new(mp4),
-            Err(e) => return eprintln!("skipped: {e}"),
+            Err(e) => return crate::testing::skipped(e),
         };
         let started = Instant::now();
         let sources = audio::Sources { computer: Some(None), ..Default::default() };
@@ -639,7 +639,7 @@ mod tests {
             Err(e) => {
                 drop(encoder);
                 let _ = std::fs::remove_file(&path);
-                return eprintln!("skipped: {e}");
+                return crate::testing::skipped(e);
             }
         };
         let (stop, paused) = (AtomicBool::new(false), AtomicBool::new(false));
@@ -752,11 +752,11 @@ mod tests {
         let sound = match audio::Capture::start(&sources, audio::Clock::now()) {
             Ok(sound) => sound,
             // CI's machines may have no sound device, or no Media Foundation.
-            Err(e) => return eprintln!("skipped: {e}"),
+            Err(e) => return crate::testing::skipped(e),
         };
         let encoder = match Mp4::with_sound(&path, 64, 48, 30, false, true) {
             Ok(mp4) => Box::new(mp4),
-            Err(e) => return eprintln!("skipped: {e}"),
+            Err(e) => return crate::testing::skipped(e),
         };
         let stop = AtomicBool::new(false);
         std::thread::scope(|s| {
@@ -781,7 +781,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("rsnip-rec-long-{}.mp4", std::process::id()));
         let encoder = match Mp4::new(&path, 64, 48, 30, false) {
             Ok(mp4) => Box::new(mp4),
-            Err(e) => return eprintln!("skipped: {e}"),
+            Err(e) => return crate::testing::skipped(e),
         };
         let begun = Instant::now();
         let stop = AtomicBool::new(false);
