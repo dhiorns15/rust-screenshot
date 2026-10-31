@@ -906,8 +906,10 @@ impl App {
         // them; when it isn't, the actions go on a row of their own. (A row around the
         // right-to-left layout keeps it from taking the panel's whole height.)
         let history = self.page_width + 2.0 * (IconButton::new(icon::ARROW_CLOCKWISE, "Redo").size(ui).x + 8.0);
-        let captioned = history + self.tools_spacing + tool_buttons_width(ui, true) <= width;
-        let tools = self.tools_spacing + tool_buttons_width(ui, captioned);
+        let captioned = history + self.tools_spacing + tool_buttons_width(ui, true, false) <= width;
+        // Narrower buttons where even plain ones won't fit beside undo and redo.
+        let narrow = !captioned && history + self.tools_spacing + tool_buttons_width(ui, false, false) > width;
+        let tools = self.tools_spacing + tool_buttons_width(ui, captioned, narrow);
         let room = width - tools - ACTIONS_GAP - self.actions_width;
         let fits = room >= history;
         let centred = (width - tools) / 2.0;
@@ -933,8 +935,8 @@ impl App {
             self.page_buttons(ui);
             self.history(ui);
             ui.add_space((indent - history).max(0.0));
-            let drawn = ui.add_enabled_ui(enabled, |ui| self.tool_buttons(ui, captioned)).response.rect.width();
-            self.tools_spacing = drawn - tool_buttons_width(ui, captioned);
+            let drawn = ui.add_enabled_ui(enabled, |ui| self.tool_buttons(ui, captioned, narrow)).response.rect.width();
+            self.tools_spacing = drawn - tool_buttons_width(ui, captioned, narrow);
             if fits {
                 self.actions_row(ui, enabled);
             }
@@ -971,12 +973,13 @@ impl App {
         }
     }
 
-    /// The tools as icon buttons, one rounded group per kind of tool.
-    fn tool_buttons(&mut self, ui: &mut egui::Ui, captioned: bool) {
+    /// The tools as icon buttons, one rounded group per kind of tool; `narrow` ones in a window
+    /// short of room.
+    fn tool_buttons(&mut self, ui: &mut egui::Ui, captioned: bool, narrow: bool) {
         for group in tool_groups() {
             theme::group_top(ui, |ui| {
                 for (tool, label, _, help) in group {
-                    let button = IconButton::new(theme::tool_icon(tool), label).selected(self.tools.tool == tool).captioned(captioned);
+                    let button = IconButton::new(theme::tool_icon(tool), label).selected(self.tools.tool == tool).captioned(captioned).narrow(narrow);
                     let response = ui.add(button).on_hover_ui(|ui| {
                         ui.label(RichText::new(label).strong());
                         ui.label(help);
@@ -1535,8 +1538,8 @@ fn tool_groups() -> Vec<Vec<(Tool, &'static str, Key, &'static str)>> {
 const ACTIONS_GAP: f32 = 16.0;
 
 /// How wide the tool buttons are, without the space around and between them.
-fn tool_buttons_width(ui: &egui::Ui, captioned: bool) -> f32 {
-    TOOLS.iter().map(|t| IconButton::new(theme::tool_icon(t.0), t.1).captioned(captioned).size(ui).x).sum()
+fn tool_buttons_width(ui: &egui::Ui, captioned: bool, narrow: bool) -> f32 {
+    TOOLS.iter().map(|t| IconButton::new(theme::tool_icon(t.0), t.1).captioned(captioned).narrow(narrow).size(ui).x).sum()
 }
 
 /// Looks for a newer release in the background (see `Env::check_updates`: on Windows the tray app

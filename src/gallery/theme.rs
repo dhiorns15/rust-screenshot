@@ -203,6 +203,7 @@ pub struct IconButton {
     label: &'static str,
     selected: bool,
     captioned: bool,
+    narrow: bool,
 }
 
 /// The size of the name under a captioned button's icon.
@@ -210,7 +211,13 @@ const CAPTION: f32 = 11.0;
 
 impl IconButton {
     pub fn new(icon: &'static str, label: &'static str) -> Self {
-        IconButton { icon, label, selected: false, captioned: false }
+        IconButton { icon, label, selected: false, captioned: false, narrow: false }
+    }
+
+    /// A little narrower, uncaptioned, for a row that's short of room.
+    pub fn narrow(mut self, narrow: bool) -> Self {
+        self.narrow = narrow;
+        self
     }
 
     pub fn selected(mut self, selected: bool) -> Self {
@@ -226,7 +233,7 @@ impl IconButton {
     /// How big it is.
     pub fn size(&self, ui: &Ui) -> Vec2 {
         if !self.captioned {
-            return Vec2::new(30.0, 28.0);
+            return Vec2::new(if self.narrow { 26.0 } else { 30.0 }, 28.0);
         }
         let caption = ui.painter().layout_no_wrap(self.label.to_owned(), egui::FontId::proportional(CAPTION), Color32::WHITE);
         Vec2::new((caption.size().x + 10.0).max(40.0).ceil(), 44.0)

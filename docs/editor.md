@@ -5,7 +5,7 @@
 The toolbar has the tools in the middle, each named under its icon, grouped as selecting, drawing,
 text and marking up, hiding, and cropping (hover one for its key and how to use it). Undo and redo
 are on the left, and *Copy*, *Save* and the *Export* menu on the right. In a narrow window the names
-are left out, and the actions move to a row of their own. The row below shows only the options for the current tool or selected
+are left out (and the buttons slimmed down where it's narrower still), and the actions move to a row of their own. The row below shows only the options for the current tool or selected
 annotation (colour, size, shadow, delete) and a hint on how to use it.
 
 ## Tools
