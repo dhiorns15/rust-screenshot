@@ -735,8 +735,11 @@ unsafe fn hide_rsnip() {
         }
     }
     if !hidden.is_empty() {
-        // Windows fades them out; wait until they're gone from the screen.
-        std::thread::sleep(std::time::Duration::from_millis(250));
+        // Windows fades them out; wait until they're gone from the screen. Keep dispatching
+        // messages meanwhile: the keyboard hook runs on this thread, and a plain sleep would hold
+        // back the shortcut's own release (which the hook must swallow) and could get the hook
+        // dropped for not answering in time.
+        capture::pump_messages_for(std::time::Duration::from_millis(250));
         windows_sys::Win32::Graphics::Dwm::DwmFlush();
     }
     HIDDEN.with(|h| h.borrow_mut().extend(hidden));
