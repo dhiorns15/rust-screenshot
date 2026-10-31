@@ -101,7 +101,8 @@ impl Editor {
         let max = ctx.input(|i| i.max_texture_side) as u32;
         if img.width() > max || img.height() > max {
             let k = max as f32 / img.width().max(img.height()) as f32;
-            let (w, h) = ((img.width() as f32 * k) as u32, (img.height() as f32 * k) as u32);
+            // Never a side of 0 (a hairline crop of a very wide image), which the GPU refuses.
+            let (w, h) = (((img.width() as f32 * k) as u32).max(1), ((img.height() as f32 * k) as u32).max(1));
             img = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
         }
         let color = ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());

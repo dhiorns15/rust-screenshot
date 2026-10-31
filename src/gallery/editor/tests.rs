@@ -16,6 +16,8 @@ struct Harness {
     font: Option<FontVec>,
     time: f64,
     modifiers: egui::Modifiers,
+    /// The GPU's texture limit, where a test sets one.
+    max_texture_side: Option<usize>,
 }
 
 impl Harness {
@@ -36,6 +38,7 @@ impl Harness {
             font: bytes.and_then(|b| FontVec::try_from_vec(b).ok()),
             time: 0.0,
             modifiers: egui::Modifiers::NONE,
+            max_texture_side: None,
         };
         h.frame(vec![]);
         h.frame(vec![]);
@@ -48,6 +51,7 @@ impl Harness {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 600.0))),
             time: Some(self.time),
             events: std::iter::once(Event::ModifiersChanged(self.modifiers)).chain(events).collect(),
+            max_texture_side: self.max_texture_side,
             ..Default::default()
         };
         let (editor, tools, font) = (&mut self.editor, &mut self.tools, self.font.as_ref());
@@ -205,6 +209,16 @@ fn key(h: &mut Harness, key: Key) {
 
 fn image_point(h: &Harness, x: f32, y: f32) -> Pos2 {
     h.editor.canvas.min + Vec2::new(x, y) * h.editor.shown_scale
+}
+
+/// A hairline crop of an image wider than the GPU allows scales to a texture 1 pixel tall, not 0.
+#[test]
+fn a_hairline_image_past_the_texture_limit_still_gets_a_texture() {
+    let mut h = Harness::new();
+    h.editor = Editor::new(Doc::from_image(RgbaImage::from_pixel(40_000, 1, image::Rgba([255, 255, 255, 255]))));
+    h.max_texture_side = Some(1024);
+    h.frame(vec![]);
+    assert_eq!(h.editor.texture.as_ref().expect("a texture").size(), [1024, 1]);
 }
 
 #[test]
