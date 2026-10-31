@@ -1582,6 +1582,28 @@ fn a_screenshot_deleted_elsewhere_doesnt_stay_open() {
 }
 
 #[test]
+fn a_folder_that_cant_be_read_lists_nothing_rather_than_the_last_one() {
+    let mut h = harness("kittest-folder-gone");
+    // Changed in Settings to one that isn't there yet.
+    let gone = h.state().env.dir.join("not-yet");
+    h.state().env.set_text_setting(crate::options::SAVE_FOLDER, &gone.to_string_lossy());
+    h.state_mut().last_scan = std::time::Instant::now() - RESCAN_EVERY;
+    settle(&mut h);
+    assert_eq!(h.state().env.dir, gone);
+    assert!(h.state().entries.is_empty(), "the old folder's files aren't what's there");
+    assert!(!shows(&h, "Screenshot a") && shows(&h, "No screenshots yet. Press your capture hotkey to take one."));
+    assert!(h.state().status.as_ref().is_some_and(|(s, _)| s.starts_with("Can't read ")), "{:?}", h.state().status);
+    assert!(h.state().metas.is_empty(), "nothing of them is kept");
+
+    // Once it's made (a first screenshot saved there), it's read as usual.
+    std::fs::create_dir_all(&gone).unwrap();
+    image::RgbaImage::from_pixel(32, 32, image::Rgba([0, 0, 0, 255])).save(gone.join("Screenshot n.png")).unwrap();
+    h.state_mut().last_scan = std::time::Instant::now() - RESCAN_EVERY;
+    settle(&mut h);
+    assert!(shows(&h, "Screenshot n"));
+}
+
+#[test]
 fn the_info_panel_shows_the_description_and_which_model_wrote_it() {
     let (mut h, b) = described("kittest-info-description");
     super::search::record_description(&b, "A bar chart of sales.\nKeywords: chart, sales", "claude-opus-5-5").unwrap();

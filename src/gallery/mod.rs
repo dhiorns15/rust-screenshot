@@ -458,18 +458,28 @@ impl App {
 
     fn rescan(&mut self) {
         self.last_scan = Instant::now();
-        let Ok(dir) = std::fs::read_dir(&self.env.dir) else { return };
-        let mut entries: Vec<Entry> = dir
-            .flatten()
-            .filter(|e| is_library_file(&e.path()))
-            .filter_map(|e| {
-                let meta = e.metadata().ok()?;
-                let modified = meta.modified().ok()?;
-                let name = e.path().file_stem()?.to_string_lossy().into_owned();
-                let video = is_video(&e.path());
-                Some(Entry { path: e.path(), name, modified, len: meta.len(), video })
-            })
-            .collect();
+        let mut entries: Vec<Entry> = match std::fs::read_dir(&self.env.dir) {
+            Ok(dir) => dir
+                .flatten()
+                .filter(|e| is_library_file(&e.path()))
+                .filter_map(|e| {
+                    let meta = e.metadata().ok()?;
+                    let modified = meta.modified().ok()?;
+                    let name = e.path().file_stem()?.to_string_lossy().into_owned();
+                    let video = is_video(&e.path());
+                    Some(Entry { path: e.path(), name, modified, len: meta.len(), video })
+                })
+                .collect(),
+            Err(e) => {
+                // Changed in Settings to a folder that isn't there yet, say: nothing is listed,
+                // rather than the last folder's files, which aren't what's there.
+                if !self.entries.is_empty() {
+                    let why = format!("Can't read {}: {e}", self.env.dir.display());
+                    self.set_status(why);
+                }
+                Vec::new()
+            }
+        };
         entries.sort_by_key(|e| std::cmp::Reverse(e.modified));
         let listed: HashSet<&Path> = entries.iter().map(|e| e.path.as_path()).collect();
         let vanished = self.entries.iter().any(|e| !listed.contains(e.path.as_path()));
