@@ -45,14 +45,33 @@ pub struct Pushed {
     /// Where it can be seen there, if the place gives a link.
     #[serde(default)]
     pub link: Option<String>,
+    /// When the file was last changed as it was pushed (seconds since 1970), if that was noted:
+    /// an edit saved during a long push is newer, so the automatic pusher sends it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub of: Option<u64>,
+}
+
+impl Pushed {
+    /// The file as it was when pushed: the time it was last changed then, if known, else when the
+    /// push finished (a push finishes after the file settles, so that's at least as late).
+    pub fn of(&self) -> u64 {
+        self.of.unwrap_or(self.at)
+    }
 }
 
 /// Notes that `path` was pushed to the destination `id`, and the link to it there.
 pub fn record_push(path: &Path, id: &str, link: Option<String>) -> Result<(), String> {
-    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    record_push_of(path, id, link, None)
+}
+
+/// The same, for a push of the file as it was last changed at `modified` (what the automatic
+/// pusher saw before pushing it).
+pub fn record_push_of(path: &Path, id: &str, link: Option<String>, modified: Option<std::time::SystemTime>) -> Result<(), String> {
+    let secs = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let at = secs(std::time::SystemTime::now());
     // From the file, not a copy kept since: another process may have written it.
     let mut meta = load(path);
-    meta.pushed.insert(id.to_owned(), Pushed { at, link });
+    meta.pushed.insert(id.to_owned(), Pushed { at, link, of: modified.map(secs) });
     save(path, &meta)
 }
 

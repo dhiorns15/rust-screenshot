@@ -123,7 +123,7 @@ fn run_once(tries: &mut Tries, now: SystemTime, notify: &dyn Fn(&str, &str)) {
         if needs_secret && !tries.keyring_ready(&destination.id, now) {
             continue;
         }
-        let due: Vec<PathBuf> = files.iter().filter(|(file, modified)| is_due(destination, file, *modified, now, tries)).map(|(f, _)| f.clone()).collect();
+        let due: Vec<(PathBuf, SystemTime)> = files.iter().filter(|(file, modified)| is_due(destination, file, *modified, now, tries)).cloned().collect();
         if due.is_empty() {
             continue;
         }
@@ -141,7 +141,8 @@ fn run_once(tries: &mut Tries, now: SystemTime, notify: &dyn Fn(&str, &str)) {
                 // Said once (with a Retry in Recent pushes, which can unlock it), and tried again
                 // later; notified only when nothing else is waiting for it already.
                 let first = tries.keyring_told.is_empty();
-                let waiting = tries.keyring_failed(&destination.id, &due, now);
+                let files: Vec<PathBuf> = due.iter().map(|(file, _)| file.clone()).collect();
+                let waiting = tries.keyring_failed(&destination.id, &files, now);
                 for file in &waiting {
                     push::history::record(&push::history::file(), &push::history::Entry::new(destination, file, true, Some(e.clone())));
                 }
@@ -151,12 +152,13 @@ fn run_once(tries: &mut Tries, now: SystemTime, notify: &dyn Fn(&str, &str)) {
                 continue;
             }
         };
-        for file in due {
+        for (file, modified) in due {
             let result = match &mut saved {
                 Ok(saved) => push::push(destination, saved, &file),
                 Err(e) => Err(e.clone()),
             };
-            let result = result.and_then(|link| search::record_push(&file, &destination.id, link));
+            // Noted as the file was before the push: an edit saved meanwhile goes next time.
+            let result = result.and_then(|link| search::record_push_of(&file, &destination.id, link, Some(modified)));
             push::history::record(&push::history::file(), &push::history::Entry::new(destination, &file, true, result.clone().err()));
             match result {
                 Ok(()) => {
@@ -193,7 +195,7 @@ pub fn to_push(destination: &Destination, file: &Path, modified: SystemTime) -> 
     }
     // Pushes are noted to the second; one finishes at least SETTLE after the file last changed.
     let changed = modified.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    search::load(file).pushed.get(&destination.id).is_none_or(|pushed| changed > pushed.at)
+    search::load(file).pushed.get(&destination.id).is_none_or(|pushed| changed > pushed.of())
 }
 
 #[cfg(test)]
@@ -222,6 +224,11 @@ mod tests {
         assert!(!is_due(&d, &file, at(2_000), at(2_100), &tries), "pushed already");
         let edited = SystemTime::now() + Duration::from_secs(10);
         assert!(is_due(&d, &file, edited, edited + Duration::from_secs(60), &tries), "edited and saved since");
+        // A push that took a while, of the file as it was at 2_000: an edit saved at 2_030, while
+        // it went, is newer than that, though not than the push's end.
+        search::record_push_of(&file, &d.id, None, Some(at(2_000))).unwrap();
+        assert!(!is_due(&d, &file, at(2_000), at(2_100), &tries), "pushed as it is");
+        assert!(is_due(&d, &file, at(2_030), at(2_100), &tries), "edited during the push");
         let other = Destination { auto: true, auto_since: Some(1_500), ..Destination::new(Kind::discord()) };
         assert!(is_due(&other, &file, at(2_000), at(2_100), &tries), "each destination for itself");
     }
