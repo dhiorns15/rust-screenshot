@@ -714,8 +714,17 @@ fn playable(path: &Path) -> bool {
 }
 
 impl Recording {
-    /// Stops it and finishes the file.
-    pub fn stop(mut self) -> Result<Recorded, String> {
+    /// Stops it and finishes the file; nothing is left in the working folder if that fails.
+    pub fn stop(self) -> Result<Recorded, String> {
+        let working = self.working.clone();
+        let result = self.finish();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&working);
+        }
+        result
+    }
+
+    fn finish(mut self) -> Result<Recorded, String> {
         unsafe { libc::kill(self.child.id() as i32, libc::SIGINT) };
         // Closed once the recording has stopped, so it's there to the end.
         let camera = self.camera.take().and_then(Bubble::stop);
@@ -744,7 +753,6 @@ impl Recording {
             // RSnip's own encoder finishes a GIF, whatever the pipeline did.
             let kept = if is_gif { std::fs::metadata(&self.working).is_ok_and(|m| m.len() > 0) } else { playable(&self.working) };
             if !kept {
-                let _ = std::fs::remove_file(&self.working);
                 return Err(format!("GStreamer stopped before it finished the recording{why}, so it can't be played"));
             }
             let stopped = format!("GStreamer stopped before it finished the recording{why}, so its end may be missing.");
@@ -1117,6 +1125,23 @@ mod tests {
         // Held up, it wrote nothing and never stopped. GStreamer may be slow to start on a busy
         // machine, so it's not held to the whole 3 s.
         assert!(movie.has_sound() && movie.duration() > Duration::from_millis(500), "the picture, with a sound track: {:?}", movie.duration());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A GIF whose encoder fails (no room, say) is reported, and the part written isn't left in
+    /// the working folder.
+    #[test]
+    fn a_gif_that_cant_be_written_isnt_left_behind() {
+        let dir = std::env::temp_dir().join(format!("rsnip-gif-failed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (path, working) = (dir.join("Recording.gif"), dir.join("working.gif"));
+        std::fs::write(&working, b"GIF89a").unwrap();
+        // The pipeline has already ended, as it would have when the encoder stopped reading.
+        let child = Command::new("true").spawn().unwrap();
+        let gif = std::thread::spawn(|| Err("No room left".to_string()));
+        let recording = Recording { child, said: None, path: path.clone(), working: working.clone(), started: Instant::now(), gif: Some(gif), note: None, camera: None };
+        assert_eq!(recording.stop().err().as_deref(), Some("No room left"));
+        assert!(!working.exists() && !path.exists(), "nothing left behind");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
