@@ -26,6 +26,7 @@ pub fn capture(area: RECT, window: Option<HWND>) -> Option<Image> {
         }
         let mut saved: POINT = zeroed();
         GetCursorPos(&mut saved);
+        let restore = RestoreCursor(saved);
         // The wheel scrolls whatever is under the mouse.
         SetCursorPos(centre.x, centre.y);
         settle();
@@ -56,9 +57,18 @@ pub fn capture(area: RECT, window: Option<HWND>) -> Option<Image> {
                 break;
             }
         }
-        SetCursorPos(saved.x, saved.y);
+        drop(restore);
         let out = stitcher.finish();
         Some(Image { width: out.width as i32, height: out.height as i32, data: out.data })
+    }
+}
+
+/// Puts the mouse back where it was when dropped, however the capture ends.
+struct RestoreCursor(POINT);
+
+impl Drop for RestoreCursor {
+    fn drop(&mut self) {
+        unsafe { SetCursorPos(self.0.x, self.0.y) };
     }
 }
 
