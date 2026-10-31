@@ -99,6 +99,13 @@ Recordings appear with an MP4/GIF badge and play in the library (below).
 
 Drag a library thumbnail into Explorer, a chat app or an email to drop the file there.
 
+To annotate a picture from elsewhere, paste it with Ctrl+V: a picture copied in another app, or a
+picture file copied in Explorer or a file manager. It's saved in the library as a new screenshot,
+named like a capture (`Screenshot 2026-10-31 101500.png`), and opened in the editor, after the
+usual question if the open one has unsaved edits; a copied file stays where it was. This works on
+the Gallery page too. An annotation copied in the editor pastes as an annotation instead (see
+[Editing](#editing)), and with the Copy text tool Ctrl+V does nothing.
+
 Right-click a library thumbnail to open it externally, show it in Explorer, pin it, or move it to the Recycle Bin.
 
 ## The Gallery

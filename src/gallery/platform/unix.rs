@@ -808,6 +808,22 @@ pub fn paste_text() -> Option<String> {
     with_clipboard(|c| c.get_text()).ok()
 }
 
+/// The picture on the clipboard, if it has one.
+pub fn paste_image() -> Result<Option<RgbaImage>, String> {
+    let got = with_clipboard(|c| match c.get_image() {
+        Ok(data) => Ok(Some(data)),
+        Err(arboard::Error::ContentNotAvailable) => Ok(None),
+        Err(e) => Err(e),
+    })?;
+    let Some(data) = got else { return Ok(None) };
+    RgbaImage::from_raw(data.width as u32, data.height as u32, data.bytes.into_owned()).map(Some).ok_or_else(|| "The picture on the clipboard is damaged".into())
+}
+
+/// The files on the clipboard (copied in a file manager, as `text/uri-list`), if any.
+pub fn paste_files() -> Vec<PathBuf> {
+    with_clipboard(|c| c.get().file_list()).unwrap_or_default()
+}
+
 /// Puts files on the clipboard, to paste into a folder, chat or email: as GNOME's Files does where
 /// that reaches the apps, else as `text/uri-list`.
 pub fn copy_files(paths: &[PathBuf]) -> Result<(), String> {

@@ -1063,6 +1063,73 @@ fn pasting_while_typing_text_pastes_an_annotation_as_one_and_other_text_into_the
     assert!(app.tools.selection.is_some_and(|s| s.kind == Tool::Arrow));
 }
 
+/// What's in the library besides screenshots a, b and c.
+fn added(h: &Harness<App>) -> Vec<PathBuf> {
+    let fixtures = ["Screenshot a", "Screenshot b", "Screenshot c"];
+    h.state().entries.iter().filter(|e| !fixtures.contains(&e.name.as_str())).map(|e| e.path.clone()).collect()
+}
+
+/// The size of the screenshot open in the editor, and its file.
+fn open_in_editor(h: &Harness<App>) -> (Vec2, PathBuf) {
+    let editor = h.state().editor.as_ref().expect("something open");
+    (editor.doc.size(), editor.doc.path.clone())
+}
+
+/// A picture `w` by `h` outside the library, at `name` in a folder of the test's own.
+fn picture_elsewhere(test: &str, name: &str, w: u32, h: u32) -> PathBuf {
+    let path = tests::sandbox_dir(test).join(name);
+    image::RgbImage::from_pixel(w, h, image::Rgb([200, 40, 90])).save(&path).unwrap();
+    path
+}
+
+#[test]
+fn ctrl_v_adds_a_picture_on_the_clipboard_to_the_library() {
+    let mut h = harness("kittest-paste-picture");
+    press_ctrl_v(&mut h, None);
+    assert!(added(&h).is_empty());
+    assert!(shows(&h, "There's no picture on the clipboard to paste"));
+
+    // As another app copies a picture: no text, so egui reports only V let go of.
+    h.state().env.sandboxed().clipboard_image = Some(image::RgbaImage::from_pixel(40, 30, image::Rgba([10, 200, 10, 255])));
+    press_ctrl_v(&mut h, None);
+    let new = added(&h);
+    assert_eq!(new.len(), 1);
+    assert_eq!(open_in_editor(&h), (Vec2::new(40.0, 30.0), new[0].clone()));
+    let saved = image::open(&new[0]).unwrap();
+    assert_eq!(saved.color(), image::ColorType::Rgb8, "opaque, so saved without transparency");
+
+    // A picture file copied in a file manager, on the Gallery page.
+    h.state().env.sandboxed().clipboard_image = None;
+    let file = picture_elsewhere("kittest-paste-file", "copied.png", 25, 25);
+    let notes = file.with_file_name("notes.txt");
+    std::fs::write(&notes, "not a picture").unwrap();
+    h.state().env.sandboxed().copied_files = vec![notes, file];
+    click(&mut h, "Gallery");
+    press_ctrl_v(&mut h, None);
+    assert_eq!(added(&h).len(), 2);
+    assert_eq!(open_in_editor(&h).0, Vec2::new(25.0, 25.0), "the first file that's a picture");
+    assert!(h.state().page == Page::Editor);
+
+    // The Copy text tool leaves Ctrl+V alone.
+    click(&mut h, "Copy text");
+    press_ctrl_v(&mut h, None);
+    assert_eq!(added(&h).len(), 2);
+}
+
+#[test]
+fn a_pasted_picture_waits_for_unsaved_edits_to_be_kept_or_discarded() {
+    let mut h = harness("kittest-paste-unsaved");
+    click(&mut h, "Arrow");
+    drag_on_canvas(&mut h, (0.2, 0.2), (0.6, 0.5));
+    h.state().env.sandboxed().clipboard_image = Some(image::RgbaImage::from_pixel(40, 30, image::Rgba([10, 200, 10, 255])));
+    press_ctrl_v(&mut h, None);
+    assert_eq!(added(&h).len(), 1, "it's in the library straight away");
+    assert!(shows(&h, "Unsaved changes"));
+    assert!(open_in_editor(&h).1.ends_with("Screenshot a.png"), "but not opened over the edits");
+    click(&mut h, "Discard");
+    assert_eq!(open_in_editor(&h), (Vec2::new(40.0, 30.0), added(&h)[0].clone()));
+}
+
 /// Opens the Redact tool on screenshot a, with `lines` of text "read" from it, and clicks Auto-redact.
 fn auto_redact(name: &str, lines: &[&str]) -> Harness<'static, App> {
     let mut h = harness_at(name, 1.0 / 60.0);

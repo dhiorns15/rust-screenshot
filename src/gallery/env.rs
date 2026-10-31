@@ -166,8 +166,10 @@ pub struct Sandbox {
     pub restarts: usize,
     /// The text last put on the clipboard, which is what pasting text finds there.
     pub copied: Option<String>,
-    /// The files last put on the clipboard.
+    /// The files last put on the clipboard, which pasting a picture looks through.
     pub copied_files: Vec<PathBuf>,
+    /// A picture on the clipboard, as another app would have copied it, for pasting.
+    pub clipboard_image: Option<RgbaImage>,
     /// Files, folders and links opened in other apps.
     pub opened: Vec<PathBuf>,
     /// Why opening a link in the browser failed (`None`: it opened).
@@ -676,6 +678,27 @@ impl Env {
             Some(s) => s.borrow().copied.clone(),
             None => platform::paste_text(),
         }
+    }
+
+    /// The picture on the clipboard, or else the first picture among files copied to it (in a
+    /// file manager), if either.
+    pub fn paste_image(&self) -> Result<Option<RgbaImage>, String> {
+        let files = match &self.sandbox {
+            Some(s) => {
+                let s = s.borrow();
+                if let Some(img) = &s.clipboard_image {
+                    return Ok(Some(img.clone()));
+                }
+                s.copied_files.clone()
+            }
+            None => {
+                if let Some(img) = platform::paste_image()? {
+                    return Ok(Some(img));
+                }
+                platform::paste_files()
+            }
+        };
+        Ok(files.iter().find_map(|file| super::read_picture(file)))
     }
 
     /// Puts files on the clipboard, to paste into a folder, chat or email.

@@ -21,7 +21,8 @@ eframe = { version = "0.36", default-features = false, features = ["default_font
 egui = { version = "0.36", default-features = false, features = ["serde"] }
 egui-phosphor = "0.14"
 gif = "0.14"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+# BMP for pictures pasted from Windows' clipboard, which come as bitmaps.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

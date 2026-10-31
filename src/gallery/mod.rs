@@ -701,13 +701,7 @@ impl App {
         let framed = self.effects.any();
         let editor = self.editor.as_mut().unwrap();
         let path = if as_copy { copy_path(&editor.doc.path, "png") } else { png_path(&editor.doc.path) };
-        // Only a drop shadow needs transparency; plain screenshots stay smaller as RGB.
-        let img = if img.pixels().any(|p| p[3] < 255) {
-            image::DynamicImage::ImageRgba8(img)
-        } else {
-            image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(img).to_rgb8())
-        };
-        match save_png(&img, &path) {
+        match save_png(&rgb_unless_transparent(img), &path) {
             Ok(()) => {
                 editor.doc.mark_saved(path.clone());
                 let layers = editor.doc.save_layers(framed);
@@ -809,10 +803,53 @@ impl App {
         }
     }
 
-    /// Ctrl+V in the editor: pastes an annotation copied there.
+    /// Ctrl+V: an annotation copied in the editor pastes into it; a picture on the clipboard (or a
+    /// picture file copied in a file manager) is added to the library as a new screenshot, and
+    /// opened.
     fn paste(&mut self) {
-        let (Some(text), Some(editor)) = (self.env.paste_text(), &mut self.editor) else { return };
-        editor.paste(&text, &mut self.tools, self.font.as_ref());
+        if let (Some(text), Some(editor), Page::Editor) = (self.env.paste_text(), &mut self.editor, self.page) {
+            if editor.paste(&text, &mut self.tools, self.font.as_ref()) {
+                return;
+            }
+        }
+        match self.env.paste_image() {
+            Ok(Some(img)) => self.add_pictures(vec![img]),
+            Ok(None) => self.set_status("There's no picture on the clipboard to paste"),
+            Err(e) => self.set_status(format!("Couldn't paste: {e}")),
+        }
+    }
+
+    /// Saves `pictures` in the library as new screenshots, named as captures are, and opens the
+    /// first (asking first, as opening any other does, if the open one has unsaved edits).
+    fn add_pictures(&mut self, pictures: Vec<image::RgbaImage>) {
+        let dir = self.env.dir.clone();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return self.set_status(format!("Couldn't add it to the library: can't create {}: {e}", dir.display()));
+        }
+        let mut added = Vec::new();
+        let mut failed = None;
+        for img in pictures {
+            let path = platform::new_path(&dir, "Screenshot", "png");
+            match save_png(&rgb_unless_transparent(img), &path) {
+                Ok(()) => added.push(path),
+                Err(e) => failed = Some(e),
+            }
+        }
+        self.rescan();
+        let name = |path: &Path| path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let status = match (&added[..], failed) {
+            ([], Some(e)) => format!("Couldn't add it to the library: {e}"),
+            ([one], None) => format!("Added {} to the library", name(one)),
+            (all, None) => format!("Added {} pictures to the library", all.len()),
+            (all, Some(e)) => format!("Added {} pictures to the library, but not every one: {e}", all.len()),
+        };
+        if let Some(first) = added.first().cloned() {
+            self.selected = added.iter().cloned().collect();
+            self.anchor = Some(first.clone());
+            self.set_page(Page::Editor);
+            self.request_open(first);
+        }
+        self.set_status(status);
     }
 
     /// Moves screenshots to the Recycle Bin, with their editing data.
@@ -984,7 +1021,16 @@ impl App {
             }
         }
         let typing = self.editor.as_ref().is_some_and(|e| e.is_typing()) || ctx.egui_wants_keyboard_input();
-        if typing || self.editor.is_none() || self.page != Page::Editor {
+        if typing {
+            return;
+        }
+        let editing = self.editor.is_some() && self.page == Page::Editor;
+        // Pictures paste on either page, and with nothing open; the Copy text tool leaves Ctrl+V
+        // alone.
+        if paste && !(editing && self.tools.tool == Tool::CopyText) {
+            self.paste();
+        }
+        if !editing {
             return;
         }
         let shortcut = |m, k| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, k)));
@@ -1014,10 +1060,6 @@ impl App {
                 (None, None) if copy => self.copy(),
                 _ => {}
             }
-        }
-        // The Copy text tool leaves Ctrl+V alone.
-        if paste && !copying_text {
-            self.paste();
         }
         if shortcut(Modifiers::COMMAND, Key::Num0) {
             self.editor.as_mut().unwrap().zoom = None;
@@ -1814,6 +1856,23 @@ fn save_png(img: &image::DynamicImage, path: &Path) -> Result<(), String> {
         let _ = std::fs::remove_file(&temp);
     }
     written.map_err(|e| e.to_string())
+}
+
+/// `img` to save as a PNG: RGB, which is smaller, unless it has transparency (a drop shadow, or a
+/// pasted picture with see-through parts).
+fn rgb_unless_transparent(img: image::RgbaImage) -> image::DynamicImage {
+    if img.pixels().any(|p| p[3] < 255) {
+        image::DynamicImage::ImageRgba8(img)
+    } else {
+        image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(img).to_rgb8())
+    }
+}
+
+/// The picture in the file at `path`, if it is one, whatever its name says.
+fn read_picture(path: &Path) -> Option<image::RgbaImage> {
+    let reader = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+    reader.format()?;
+    Some(reader.decode().ok()?.to_rgba8())
 }
 
 fn save_jpg(img: &image::RgbaImage, path: &Path) -> Result<(), String> {

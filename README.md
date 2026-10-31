@@ -33,7 +33,7 @@ command line or a desktop shortcut, with a few things Windows-only (see
   search by the words in them, the app and window they came from, their name, and (if you turn on
   AI descriptions, with your own key) what they show. The Gallery page
   shows large thumbnails, sorted by date, name, size or type, with the selected one's details beside
-  it. [More](docs/editor.md#the-library)
+  it. Paste in a picture from elsewhere to annotate it too. [More](docs/editor.md#the-library)
 - **Push to other places**, as they're saved or when you choose: SFTP, WebDAV, S3, SMB shares,
   FTPS, Dropbox, Google Drive, OneDrive, Discord, Slack, Immich, PhotoPrism, or any upload API
   (ShareX `.sxcu` uploaders too), shrinking screenshots to a width you choose on the way. [More](docs/destinations.md)

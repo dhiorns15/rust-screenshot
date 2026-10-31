@@ -234,6 +234,28 @@ pub fn paste_text() -> Option<String> {
     crate::output::clipboard_text(null_mut()).ok().flatten()
 }
 
+/// The picture on the clipboard, if it has one.
+pub fn paste_image() -> Result<Option<RgbaImage>, String> {
+    let Some(bytes) = crate::output::clipboard_picture(null_mut())? else { return Ok(None) };
+    let mut img = image::load_from_memory(&bytes).map_err(|e| format!("Can't read the picture on the clipboard: {e}"))?.to_rgba8();
+    // A bitmap with every pixel see-through doesn't mean it: its fourth byte is simply unused.
+    if img.pixels().all(|p| p[3] == 0) {
+        img.pixels_mut().for_each(|p| p[3] = 255);
+    }
+    Ok(Some(img))
+}
+
+/// The files on the clipboard (copied in Explorer), if any.
+pub fn paste_files() -> Vec<PathBuf> {
+    crate::output::clipboard_files(null_mut()).unwrap_or_default()
+}
+
+/// A new file in `dir` named like captures: "Screenshot 2026-10-23 181500.png", with " (2)" and so
+/// on if that's taken.
+pub fn new_path(dir: &Path, kind: &str, ext: &str) -> PathBuf {
+    crate::output::new_path_in(dir, kind, ext)
+}
+
 pub fn copy_files(paths: &[PathBuf]) -> Result<(), String> {
     crate::output::copy_files_to_clipboard(null_mut(), paths)
 }

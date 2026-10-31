@@ -22,9 +22,15 @@ use crate::util::from_wide_ptr;
 const CF_DIB: u32 = 8;
 const CF_HDROP: u32 = 15;
 const CF_UNICODETEXT: u32 = 13;
+const CF_DIBV5: u32 = 17;
 
 /// Puts the image on the clipboard as a 24-bit DIB, which every app that accepts images understands.
 pub fn copy_to_clipboard(owner: HWND, img: &Image) -> Result<(), String> {
+    set_clipboard(owner, CF_DIB, &dib(img))
+}
+
+/// `img` as a 24-bit device-independent bitmap: a `BITMAPINFOHEADER`, then the rows bottom-up.
+fn dib(img: &Image) -> Vec<u8> {
     let (w, h) = (img.width as usize, img.height as usize);
     let stride = (w * 3 + 3) & !3;
     let header = size_of::<BITMAPINFOHEADER>();
@@ -50,7 +56,65 @@ pub fn copy_to_clipboard(owner: HWND, img: &Image) -> Result<(), String> {
             dst.copy_from_slice(&px[..3]);
         }
     }
-    set_clipboard(owner, CF_DIB, &data)
+    data
+}
+
+/// The picture on the clipboard as the bytes of an image file, if it has one: a PNG where the app
+/// that copied it gave one (browsers and Office do), which keeps its transparency, else a BMP made
+/// from its bitmap (which Windows makes for any picture copied).
+pub fn clipboard_picture(owner: HWND) -> Result<Option<Vec<u8>>, String> {
+    let png = unsafe { RegisterClipboardFormatW(crate::util::wide("PNG").as_ptr()) };
+    with_clipboard(owner, || unsafe {
+        let png = (png != 0).then(|| clipboard_bytes(png)).flatten();
+        png.or_else(|| [CF_DIB, CF_DIBV5].into_iter().find_map(|format| clipboard_bytes(format).and_then(|dib| bmp_file(&dib))))
+    })
+}
+
+/// A device-independent bitmap (a `BITMAPINFOHEADER` or a later one, any colour table, then the
+/// pixels) as a BMP file: the file header in front, saying where the pixels start.
+fn bmp_file(dib: &[u8]) -> Option<Vec<u8>> {
+    let u32_at = |at: usize| Some(u32::from_le_bytes(dib.get(at..at + 4)?.try_into().ok()?));
+    let header = u32_at(0)?;
+    if header < 40 || dib.len() < header as usize {
+        return None;
+    }
+    let bits = u32::from(u16::from_le_bytes(dib.get(14..16)?.try_into().ok()?));
+    let (compression, colours_used) = (u32_at(16)?, u32_at(32)?);
+    // A plain info header is followed by the colour masks, for BI_BITFIELDS and BI_ALPHABITFIELDS;
+    // later headers have them inside.
+    let masks = match (header, compression) {
+        (40, 3) => 12,
+        (40, 6) => 16,
+        _ => 0,
+    };
+    let colours = if bits <= 8 && colours_used == 0 { 1 << bits } else { colours_used.min(256) };
+    let start = 14 + header + masks + colours * 4;
+    let mut file = Vec::with_capacity(14 + dib.len());
+    file.extend_from_slice(b"BM");
+    file.extend_from_slice(&(14 + dib.len() as u32).to_le_bytes());
+    file.extend_from_slice(&[0; 4]);
+    file.extend_from_slice(&start.to_le_bytes());
+    file.extend_from_slice(dib);
+    Some(file)
+}
+
+/// The files on the clipboard (copied in Explorer), if any.
+pub fn clipboard_files(owner: HWND) -> Result<Vec<PathBuf>, String> {
+    with_clipboard(owner, || unsafe { clipboard_bytes(CF_HDROP) }.map(|bytes| dropped_files(&bytes)).unwrap_or_default())
+}
+
+/// The paths in a `DROPFILES` (see `drop_files`).
+fn dropped_files(bytes: &[u8]) -> Vec<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let u32_at = |at: usize| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
+    let (Some(start), Some(wide)) = (u32_at(0), u32_at(16)) else { return Vec::new() };
+    let list = bytes.get(start as usize..).unwrap_or_default();
+    if wide == 0 {
+        // In the ANSI code page, from a very old app; ASCII paths at least come through.
+        return list.split(|&b| b == 0).take_while(|p| !p.is_empty()).map(|p| PathBuf::from(String::from_utf8_lossy(p).into_owned())).collect();
+    }
+    let units: Vec<u16> = list.chunks_exact(2).map(|u| u16::from_le_bytes([u[0], u[1]])).collect();
+    units.split(|&u| u == 0).take_while(|p| !p.is_empty()).map(|p| PathBuf::from(std::ffi::OsString::from_wide(p))).collect()
 }
 
 pub fn copy_text_to_clipboard(owner: HWND, text: &str) -> Result<(), String> {
@@ -176,6 +240,12 @@ pub fn next_path() -> Result<PathBuf, String> {
 pub fn new_path(kind: &str, ext: &str) -> Result<PathBuf, String> {
     let dir = screenshots_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("Can't create {}: {e}", dir.display()))?;
+    Ok(new_path_in(&dir, kind, ext))
+}
+
+/// A new, unused "`kind` YYYY-MM-DD HHMMSS.`ext`" path in `dir`, with " (2)" and so on if that's
+/// taken.
+pub fn new_path_in(dir: &Path, kind: &str, ext: &str) -> PathBuf {
     let mut t = unsafe { std::mem::zeroed() };
     unsafe { GetLocalTime(&mut t) };
     let base = format!(
@@ -188,7 +258,7 @@ pub fn new_path(kind: &str, ext: &str) -> Result<PathBuf, String> {
         path = dir.join(format!("{base} ({n}).{ext}"));
         n += 1;
     }
-    Ok(path)
+    path
 }
 
 pub fn save_png(img: &Image, path: &Path) -> Result<(), String> {
@@ -221,6 +291,38 @@ mod tests {
         let units: Vec<u16> = data[20..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         let expected: Vec<u16> = "C:\\a.png\0b\0\0".encode_utf16().collect();
         assert_eq!(units, expected);
+        assert_eq!(dropped_files(&data), [PathBuf::from(r"C:\a.png"), PathBuf::from("b")], "and read back");
+        assert!(dropped_files(&[1, 2]).is_empty(), "nothing from what isn't one");
+    }
+
+    #[test]
+    fn a_copied_bitmap_reads_back_as_a_bmp_file() {
+        // BGRA, so the first pixel is red, the second green: 3 by 2, padded rows.
+        let mut data = Vec::new();
+        for i in 0..6u8 {
+            data.extend_from_slice(&[i * 10, 200 - i * 10, 50 + i, 255]);
+        }
+        let img = Image { width: 3, height: 2, data: data.clone() };
+        let read = image::load_from_memory(&bmp_file(&dib(&img)).unwrap()).unwrap().to_rgba8();
+        assert_eq!(read.dimensions(), (3, 2));
+        let pixels: Vec<u8> = read.pixels().flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+        assert_eq!(pixels, data, "top row first, as copied");
+
+        // 32 bits with colour masks after a plain header: the pixels start after the masks.
+        let mut masked = vec![0u8; 40 + 12 + 4];
+        masked[..4].copy_from_slice(&40u32.to_le_bytes());
+        masked[4..8].copy_from_slice(&1u32.to_le_bytes());
+        masked[8..12].copy_from_slice(&1u32.to_le_bytes());
+        masked[12..14].copy_from_slice(&1u16.to_le_bytes());
+        masked[14..16].copy_from_slice(&32u16.to_le_bytes());
+        masked[16..20].copy_from_slice(&3u32.to_le_bytes());
+        for (at, mask) in [(40, 0x00ff_0000u32), (44, 0x0000_ff00), (48, 0x0000_00ff)] {
+            masked[at..at + 4].copy_from_slice(&mask.to_le_bytes());
+        }
+        masked[52..56].copy_from_slice(&[30, 20, 10, 0]);
+        let read = image::load_from_memory(&bmp_file(&masked).unwrap()).unwrap().to_rgba8();
+        assert_eq!(read.get_pixel(0, 0).0[..3], [10, 20, 30]);
+        assert!(bmp_file(&[0; 12]).is_none(), "not a header it knows");
     }
 
     #[test]
