@@ -155,6 +155,9 @@ pub struct SettingsApp {
     recording_support: Option<RecordingSupport>,
     /// The outputs and microphones there are, looked for when the Recording section opens.
     sound_devices: settings_rows::SoundDevices,
+    /// The home folder, to show paths under it as `~`: read once with the rest of what's known
+    /// about the machine (see `Env::host`), which isn't cheap.
+    home: Option<PathBuf>,
     /// The folder chooser, while it's open.
     picking: Option<PickedFolder>,
     /// The previous save folder and how many screenshots and recordings are still there.
@@ -189,7 +192,8 @@ impl SettingsApp {
         theme::add_icons(&mut fonts);
         ctx.set_fonts(fonts);
         let section = Section::General;
-        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, checking_recording: None, recording_support: None, sound_devices: Default::default(), picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, restart_tray: false, push: Default::default(), describe: Default::default(), gnome: Default::default() }
+        let home = env.host().home;
+        SettingsApp { env, section, update: UpdateCheck::Idle, note: None, gpu: None, report: None, crash: None, checking_recording: None, recording_support: None, sound_devices: Default::default(), home, picking: None, left_behind: None, counted: None, moving: None, old: None, installing: Installing::Idle, restart_tray: false, push: Default::default(), describe: Default::default(), gnome: Default::default() }
     }
 
     pub fn sections(&self) -> Vec<Section> {
@@ -580,7 +584,7 @@ impl SettingsApp {
         }
         self.env.refresh_dir();
         let env_dir = self.env.dir.clone();
-        let home = self.env.host().home.clone();
+        let home = self.home.clone();
         let shown = system_info::tidy_path(&env_dir, home.as_deref());
         if let Some(result) = self.moving.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.moving = None;

@@ -153,6 +153,9 @@ pub struct Sandbox {
     pub words: Arc<std::sync::Mutex<Vec<Word>>>,
     /// What System info reports about the machine.
     pub host: Host,
+    /// How many times that was asked for: on a real machine it runs programs and reads files, so
+    /// not something to do each frame.
+    pub host_reads: usize,
     /// The folder "picked" in the folder chooser (`None`: cancelled).
     pub picked_folder: Option<PathBuf>,
     /// The file "picked" in the file chooser (`None`: cancelled).
@@ -644,10 +647,15 @@ impl Env {
         rx
     }
 
-    /// The facts about this machine that System info reports.
+    /// The facts about this machine that System info reports. Not cheap: on Linux it runs
+    /// fc-match and looks along PATH, on Windows it reads the registry; so read once, not a frame.
     pub fn host(&self) -> Host {
         match &self.sandbox {
-            Some(s) => s.borrow().host.clone(),
+            Some(s) => {
+                let mut s = s.borrow_mut();
+                s.host_reads += 1;
+                s.host.clone()
+            }
             None => platform::host(),
         }
     }

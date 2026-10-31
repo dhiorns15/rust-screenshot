@@ -473,6 +473,11 @@ fn chooses_where_screenshots_and_recordings_are_saved() {
     click(&mut h, "Change…");
     settle(&mut h);
     assert_eq!(h.state().env.dir, elsewhere);
+
+    // The home folder (for the ~) comes with the facts about the machine, which on Linux means
+    // running fc-match: read once when the window opens, not again every frame.
+    settle(&mut h);
+    assert_eq!(h.state().env.sandboxed().host_reads, 1);
 }
 
 #[test]
