@@ -125,7 +125,7 @@ use eframe::egui::{
 };
 
 use crate::update;
-use doc::{apply_effects, flatten, render, Doc, Effects};
+use doc::{apply_effects, flatten, render, Doc, Effects, Scale};
 use editor::{Editor, TextStatus, Tool, ToolState, GROUP_STARTS, PALETTE, PALETTE_NAMES, TEXT_SIZES, TOOLS};
 use env::Env;
 use pushing::Pushing;
@@ -1707,12 +1707,24 @@ fn open_with_shell(path: &Path) {
     platform::open(path);
 }
 
+/// The width "Max width" starts at, and the narrowest it can be.
+const DEFAULT_MAX_WIDTH: u32 = 1280;
+const MIN_MAX_WIDTH: u32 = 16;
+const MAX_MAX_WIDTH: u32 = 20_000;
+
 fn load_effects(env: &Env) -> Effects {
     let get = |name| env.setting(name);
     let [_, r, g, b] = get("ExportBorderColor").unwrap_or(0x202020).to_be_bytes();
+    let max_width = get("ExportMaxWidth").filter(|w| (MIN_MAX_WIDTH..=MAX_MAX_WIDTH).contains(w)).unwrap_or(DEFAULT_MAX_WIDTH);
     Effects {
         border: (get("ExportBorder") == Some(1)).then_some(Color32::from_rgb(r, g, b)),
         shadow: get("ExportShadow") == Some(1),
+        scale: match get("ExportScale") {
+            Some(1) => Scale::Half,
+            Some(2) => Scale::Third,
+            Some(3) => Scale::MaxWidth(max_width),
+            _ => Scale::Full,
+        },
     }
 }
 
@@ -1811,6 +1823,19 @@ mod tests {
         let fx = load_effects(&env);
         assert_eq!(fx.border, Some(Color32::WHITE));
         assert!(!fx.shadow);
+
+        assert_eq!(fx.scale, Scale::Full, "full size by default");
+        for (value, scale) in [(0, Scale::Full), (1, Scale::Half), (2, Scale::Third), (3, Scale::MaxWidth(DEFAULT_MAX_WIDTH)), (7, Scale::Full)] {
+            env.set_setting("ExportScale", value);
+            assert_eq!(load_effects(&env).scale, scale, "ExportScale {value}");
+        }
+        env.set_setting("ExportScale", 3);
+        env.set_setting("ExportMaxWidth", 800);
+        assert_eq!(load_effects(&env).scale, Scale::MaxWidth(800));
+        for junk in [0, 3, u32::MAX] {
+            env.set_setting("ExportMaxWidth", junk);
+            assert_eq!(load_effects(&env).scale, Scale::MaxWidth(DEFAULT_MAX_WIDTH), "ExportMaxWidth {junk}");
+        }
     }
 
     #[test]

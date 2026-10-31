@@ -957,16 +957,43 @@ fn shadow_mask_rect(pos: Pos2, extent: Vec2, pad: i64, w: i64, h: i64) -> Option
     (x1 > x0 && y1 > y0).then_some((x0 as i64, y0 as i64, (x1 - x0) as usize, (y1 - y0) as usize))
 }
 
-/// Framing added to exported images; never part of the editable document.
+/// Framing and resizing added to exported images; never part of the editable document.
 #[derive(Clone, Copy, PartialEq, Default)]
 pub struct Effects {
     pub border: Option<Color32>,
     pub shadow: bool,
+    pub scale: Scale,
 }
 
 impl Effects {
     pub fn any(&self) -> bool {
-        self.border.is_some() || self.shadow
+        self.border.is_some() || self.shadow || self.scale != Scale::Full
+    }
+}
+
+/// How big an exported image is, relative to the screenshot (with its border and shadow).
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum Scale {
+    #[default]
+    Full,
+    Half,
+    Third,
+    /// At most this many pixels wide; a narrower image stays as it is.
+    MaxWidth(u32),
+}
+
+impl Scale {
+    /// The size a `w`×`h` image becomes: never larger, never empty.
+    pub fn size(self, w: u32, h: u32) -> (u32, u32) {
+        let factor = match self {
+            Scale::Full => return (w, h),
+            Scale::Half => 0.5,
+            Scale::Third => 1.0 / 3.0,
+            Scale::MaxWidth(max) if max > 0 && w > max => max as f64 / w as f64,
+            Scale::MaxWidth(_) => return (w, h),
+        };
+        let by = |n: u32| ((n as f64 * factor).round() as u32).clamp(1, n.max(1));
+        (by(w), by(h))
     }
 }
 
@@ -1003,7 +1030,16 @@ pub fn apply_effects(mut img: RgbaImage, fx: Effects) -> RgbaImage {
         image::imageops::replace(&mut out, &img, pad as i64, pad as i64);
         img = out;
     }
-    img
+    resize(img, fx.scale)
+}
+
+/// `img` at `scale`, smoothly: Lanczos keeps small text legible when it's shrunk.
+pub fn resize(img: RgbaImage, scale: Scale) -> RgbaImage {
+    let (w, h) = scale.size(img.width(), img.height());
+    if (w, h) == img.dimensions() {
+        return img;
+    }
+    image::imageops::resize(&img, w, h, image::imageops::FilterType::Lanczos3)
 }
 
 /// Composites `img` over white, for formats without transparency (JPG, the clipboard's DIB).
@@ -1529,12 +1565,12 @@ mod tests {
     #[test]
     fn export_effects_frame_the_image() {
         let img = RgbaImage::from_pixel(40, 20, image::Rgba([10, 200, 10, 255]));
-        let bordered = apply_effects(img.clone(), Effects { border: Some(Color32::RED), shadow: false });
+        let bordered = apply_effects(img.clone(), Effects { border: Some(Color32::RED), ..Effects::default() });
         assert_eq!(bordered.dimensions(), (44, 24));
         assert_eq!(bordered.get_pixel(0, 0).0, [255, 0, 0, 255]);
         assert_eq!(bordered.get_pixel(2, 2).0, [10, 200, 10, 255]);
 
-        let shadowed = apply_effects(img, Effects { border: None, shadow: true });
+        let shadowed = apply_effects(img, Effects { shadow: true, ..Effects::default() });
         let pad = SHADOW_PAD;
         assert_eq!(shadowed.dimensions(), (40 + 2 * pad, 20 + 2 * pad));
         assert_eq!(shadowed.get_pixel(0, 0).0[3], 0, "far corner is transparent");
@@ -1542,5 +1578,36 @@ mod tests {
         assert!(below[3] > 40 && below[..3] == [0, 0, 0], "shadow under the image: {below:?}");
         assert_eq!(shadowed.get_pixel(pad + 5, pad + 5).0, [10, 200, 10, 255]);
         assert_eq!(flatten(&shadowed).get_pixel(0, 0).0, [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn export_scale_shrinks_after_the_frame() {
+        let img = RgbaImage::from_pixel(300, 120, image::Rgba([10, 200, 10, 255]));
+        let size = |fx: Effects| apply_effects(img.clone(), fx).dimensions();
+        let scaled = |scale| Effects { scale, ..Effects::default() };
+        assert_eq!(size(scaled(Scale::Full)), (300, 120));
+        assert_eq!(size(scaled(Scale::Half)), (150, 60));
+        assert_eq!(size(scaled(Scale::Third)), (100, 40));
+        assert_eq!(size(scaled(Scale::MaxWidth(100))), (100, 40));
+        assert_eq!(size(scaled(Scale::MaxWidth(1000))), (300, 120), "never larger");
+        assert_eq!(size(scaled(Scale::MaxWidth(300))), (300, 120));
+        assert_eq!(size(scaled(Scale::MaxWidth(0))), (300, 120), "no limit");
+        assert!(!Effects::default().any() && scaled(Scale::Half).any() && scaled(Scale::MaxWidth(1000)).any());
+
+        // The border and shadow are added first, and shrink with the rest.
+        let framed = |scale| Effects { border: Some(Color32::RED), shadow: true, scale };
+        let (fw, fh) = (300 + 2 * BORDER_WIDTH + 2 * SHADOW_PAD, 120 + 2 * BORDER_WIDTH + 2 * SHADOW_PAD);
+        assert_eq!(size(framed(Scale::Full)), (fw, fh));
+        assert_eq!(size(framed(Scale::Half)), (fw / 2, fh / 2));
+        assert_eq!(size(framed(Scale::Third)), ((fw as f64 / 3.0).round() as u32, (fh as f64 / 3.0).round() as u32));
+        let (w, h) = size(framed(Scale::MaxWidth(200)));
+        assert_eq!((w, h), (200, (fh as f64 * 200.0 / fw as f64).round() as u32));
+        assert_eq!(size(framed(Scale::MaxWidth(fw + 1))), (fw, fh));
+        let bordered = apply_effects(img.clone(), Effects { border: Some(Color32::RED), scale: Scale::Half, ..Effects::default() });
+        assert_eq!(bordered.get_pixel(75, 30).0, [10, 200, 10, 255], "a flat image stays flat");
+
+        // Even a sliver keeps a pixel.
+        let sliver = RgbaImage::from_pixel(1000, 1, image::Rgba([0, 0, 0, 255]));
+        assert_eq!(apply_effects(sliver, scaled(Scale::Third)).dimensions(), (333, 1));
     }
 }
