@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 if (!$env:CI) { throw 'Run this on CI only: it changes RSnip''s settings and closes RSnip.' }
 
 $exe = Join-Path $PSScriptRoot '..\target\debug\rsnip.exe'
-if (!(Test-Path $exe)) { throw "No $exe: run cargo build first" }
+if (!(Test-Path $exe)) { throw "No ${exe}: run cargo build first" }
 $dir = Join-Path ([IO.Path]::GetTempPath()) 'rsnip-capture-test'
 if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
 $null = New-Item -ItemType Directory $dir
