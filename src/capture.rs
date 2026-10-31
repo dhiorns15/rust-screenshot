@@ -359,9 +359,12 @@ fn file_description(exe: &std::path::Path) -> Option<String> {
         if bytes < 4 {
             return None;
         }
-        let (lang, codepage) = (*translation, *translation.add(1));
+        // The values point into the byte buffer, so they needn't be aligned for 16-bit reads.
+        let (lang, codepage) = (translation.read_unaligned(), translation.add(1).read_unaligned());
         let (text, len) = query(&format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription"))?;
-        let text = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
+        let mut units = vec![0u16; len];
+        std::ptr::copy_nonoverlapping(text.cast::<u8>(), units.as_mut_ptr().cast::<u8>(), len * size_of::<u16>());
+        let text = String::from_utf16_lossy(&units);
         Some(text.trim_end_matches('\0').trim().to_string())
     }
 }
