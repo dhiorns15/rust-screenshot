@@ -19,3 +19,7 @@ updates:
         patterns: [windows, windows-core]
       minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # windows-core is what windows' #[implement] names, so it can only move together with windows
+      # (the windows group above): a windows pull request is the cue to bump it by hand.
+      - dependency-name: windows-core
