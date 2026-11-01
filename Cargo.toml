@@ -17,8 +17,11 @@ png = "0.18"
 
 [dependencies]
 ab_glyph = "0.2"
-eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow"] }
-egui = { version = "0.36", default-features = false, features = ["serde"] }
+# "clipboard": copying and pasting text through the system's clipboard (in 0.36 eframe always had it).
+eframe = { version = "0.37", default-features = false, features = ["clipboard", "default_fonts", "glow"] }
+# "monochrome_emoji_fonts": the symbol and emoji fonts egui bundled with "default_fonts" until 0.37,
+# which draw the UI's ▶ and ✔ (without them, or eframe's "system_fonts", they come out as boxes).
+egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts", "serde"] }
 egui-phosphor = "0.14"
 gif = "0.14"
 # BMP for pictures pasted from Windows' clipboard, which come as bitmaps, and BMP files dropped on
@@ -84,7 +87,7 @@ ksni = { version = "0.3", default-features = false, features = ["async-io", "blo
 # The screen-cast portal and notifications, on the same D-Bus library as the tray icon.
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
-eframe = { version = "0.36", default-features = false, features = ["x11", "wayland"] }
+eframe = { version = "0.37", default-features = false, features = ["x11", "wayland"] }
 libc = "0.2"
 # Copying files to the clipboard in every format a file manager or chat reads (arboard has one),
 # and scrolling a window for a scrolling capture (XTEST's fake mouse wheel).
@@ -92,16 +95,21 @@ x11rb = { version = "0.14", features = ["xtest"] }
 trash = "5"
 
 [dev-dependencies]
-egui_kittest = { version = "0.36", features = ["eframe"] }
+egui_kittest = { version = "0.37", features = ["eframe"] }
 proptest = "1"
 # Drawing QR codes for the tests of reading them.
 qrcode = { version = "0.14", default-features = false }
 
 # Pixel snapshots render on a GPU, so they run on Linux with a software one (ci/Dockerfile).
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-egui_kittest = { version = "0.36", features = ["eframe", "snapshot", "wgpu"] }
+egui_kittest = { version = "0.37", features = ["eframe", "snapshot", "wgpu"] }
 # eframe's own, to open the camera's bubble in a test's thread (see gallery/camera's `run`).
 winit = { version = "0.30", default-features = false, features = ["x11"] }
+
+[patch.crates-io]
+# Until egui-phosphor is released for egui 0.37: its pull request for it (amPerl/egui-phosphor#49),
+# which is 0.14.0 with the egui requirement changed (and one `const fn`); the fonts are the same.
+egui-phosphor = { git = "https://github.com/xangelix/egui-phosphor", rev = "01e8c114" }
 
 [profile.release]
 lto = true

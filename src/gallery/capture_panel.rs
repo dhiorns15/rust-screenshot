@@ -458,7 +458,7 @@ impl CapturePanel {
         // Clicks too, so a press waits to be a drag: one that's only dragged is taken as dragged as
         // soon as it's pressed, even on a button drawn over it, and on X11 moving the window takes
         // the focus away, which would close the panel at every click.
-        let behind = ui.interact(ui.max_rect(), ui.id().with("move"), Sense::click_and_drag());
+        let behind = ui.interact(ui.max_rect(), ui.scope_id().with("move"), Sense::click_and_drag());
         if behind.drag_started() {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
             self.dragged = true;
@@ -584,12 +584,13 @@ impl CapturePanel {
     fn field(ui: &mut Ui, name: &str, control: impl FnOnce(&mut Ui)) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            ui.allocate_ui_with_layout(Vec2::new(LABEL, 26.0), Layout::left_to_right(Align::Center), |ui| {
+            let label = ui.allocate_ui_with_layout(Vec2::new(LABEL, 26.0), Layout::left_to_right(Align::Center), |ui| {
                 // A fixed-width column, so the controls line up.
                 ui.set_min_size(Vec2::new(LABEL, 26.0));
-                ui.label(RichText::new(name).color(theme::palette(ui).muted));
+                ui.label(RichText::new(name).color(theme::palette(ui).muted)).id
             });
-            control(ui);
+            // The name names the control too, for screen readers.
+            ui.label_inputs_by(label.inner, control);
         });
     }
 
@@ -736,7 +737,7 @@ impl CapturePanel {
 /// A tab: its icon over its name, filled when it's the one showing.
 fn tab_button(ui: &mut Ui, tab: Tab, selected: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 58.0), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, tab.label()));
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, tab.label()));
     if ui.is_rect_visible(rect) {
         let p = theme::palette(ui);
         let fill = if selected {
@@ -758,7 +759,7 @@ fn tab_button(ui: &mut Ui, tab: Tab, selected: bool) -> egui::Response {
 /// The big round red button, with `name` in it.
 fn capture_button(ui: &mut Ui, name: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(BUTTON), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
     if ui.is_rect_visible(rect) {
         let fill = if response.is_pointer_button_down_on() {
             Color32::from_rgb(190, 38, 32)

@@ -665,8 +665,8 @@ fn lag(lags: &mut [Duration]) -> Duration {
 
 /// A small round button on the picture, named `name`, with `glyph` drawn in it.
 fn round_button(ui: &mut Ui, at: Rect, name: &str, selected: bool, glyph: impl FnOnce(&egui::Painter, Color32)) -> egui::Response {
-    let response = ui.interact(at, ui.id().with(name), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, name));
+    let response = ui.interact(at, ui.scope_id().with(name), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, name));
     let fill = if selected {
         ACCENT
     } else if response.hovered() {
@@ -696,7 +696,7 @@ impl eframe::App for CameraBubble {
         let window = ui.max_rect();
         let circle = Rect::from_center_size(window.center(), Vec2::splat(self.size.diameter()));
         // First, so the buttons drawn over it take their own clicks.
-        let behind = ui.interact(circle, ui.id().with("bubble"), Sense::click_and_drag());
+        let behind = ui.interact(circle, ui.scope_id().with("bubble"), Sense::click_and_drag());
         if behind.drag_started() {
             if !self.moves_itself(frame) {
                 ctx.send_viewport_cmd(ViewportCommand::StartDrag);
@@ -1182,7 +1182,7 @@ pub(super) mod tests {
         settle(&mut h);
         assert!(h.query_by_label("Large").is_none() && h.query_by_label("Close").is_none(), "no buttons in the recording");
         let wheel = |h: &mut Harness<CameraBubble>, unit, y: f32| {
-            h.event(egui::Event::MouseWheel { unit, delta: Vec2::new(0.0, y), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move });
+            h.event(egui::Event::MouseWheel { unit, delta: Vec2::new(0.0, y), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Unknown });
             h.step();
         };
         wheel(&mut h, egui::MouseWheelUnit::Line, 1.0);

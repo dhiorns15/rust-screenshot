@@ -245,7 +245,7 @@ impl IconButton {
 impl Widget for IconButton {
     fn ui(self, ui: &mut Ui) -> Response {
         let (rect, response) = ui.allocate_exact_size(self.size(ui), Sense::click());
-        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), self.selected, self.label));
+        response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), self.selected, self.label));
         if ui.is_rect_visible(rect) {
             let p = palette(ui);
             let enabled = ui.is_enabled();
@@ -320,7 +320,7 @@ pub fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
         response.mark_changed();
     }
     let enabled = ui.is_enabled();
-    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, enabled, *on, label));
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, enabled, *on, label));
     if ui.is_rect_visible(rect) {
         let p = palette(ui);
         let track = match (*on, enabled) {
@@ -340,7 +340,7 @@ pub fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
 /// A full-width item in a sidebar: icon and text on the left, filled when selected.
 pub fn nav_item(ui: &mut Ui, icon: &str, text: &str, selected: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, text));
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, text));
     if ui.is_rect_visible(rect) {
         let p = palette(ui);
         let fill = if selected {
@@ -379,7 +379,9 @@ pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 pub fn row<R>(ui: &mut Ui, title: &str, detail: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
     ui.horizontal(|ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let inner = control(ui);
+            // A control with no name of its own (a drop-down) is named by the title, for screen
+            // readers. The title comes after it here, so it can't be pointed to.
+            let inner = ui.name_inputs(title, control);
             if detail.is_empty() {
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| ui.label(title));
             } else {

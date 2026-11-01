@@ -19,7 +19,7 @@ struct State {
 }
 
 pub fn picker(ui: &mut Ui, color: &mut Color32) {
-    let id = ui.id().with("colour_picker");
+    let id = ui.scope_id().with("colour_picker");
     let mut state = ui
         .data(|d| d.get_temp::<State>(id))
         .filter(|s| s.color == *color)

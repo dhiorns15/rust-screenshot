@@ -107,7 +107,7 @@ impl Editor {
 
         let (mut apply, mut cancel) = (false, false);
         // Below the selection's bottom-right corner; egui keeps the Area on screen.
-        egui::Area::new(ui.id().with("crop-confirm"))
+        egui::Area::new(ui.scope_id().with("crop-confirm"))
             .fixed_pos(r.right_bottom() + Vec2::new(0.0, 10.0))
             .pivot(Align2::RIGHT_TOP)
             .order(egui::Order::Foreground)

@@ -125,7 +125,7 @@ impl Editor {
         let color = tools.text_color();
         let font = preview_font(tools.text_size * scale, matching_font);
         let margin = Vec2::new(2.0, 0.0);
-        let entry = egui::Area::new(ui.id().with("text-entry"))
+        let entry = egui::Area::new(ui.scope_id().with("text-entry"))
             .fixed_pos(to_screen(pending.pos) - margin)
             // Stay anchored to the text even when it runs past the window edge.
             .constrain(false)
@@ -168,7 +168,7 @@ impl Editor {
             });
 
         let box_rect = entry.response.rect;
-        let handle = egui::Area::new(ui.id().with("text-resize"))
+        let handle = egui::Area::new(ui.scope_id().with("text-resize"))
             .fixed_pos(box_rect.right_bottom() - Vec2::splat(3.0))
             .constrain(false)
             .order(egui::Order::Foreground)
@@ -189,7 +189,7 @@ impl Editor {
         }
 
         // Dragging inside the box selects letters, so moving selected text uses a grip.
-        let grip = egui::Area::new(ui.id().with("text-move"))
+        let grip = egui::Area::new(ui.scope_id().with("text-move"))
             .fixed_pos(box_rect.left_top() - Vec2::splat(12.0))
             .constrain(false)
             .order(egui::Order::Foreground)

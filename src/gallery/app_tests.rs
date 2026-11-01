@@ -106,17 +106,19 @@ fn opens_the_newest_screenshot_in_the_sandbox() {
 
 #[test]
 fn tools_select_and_show_only_their_options() {
+    // The Size label names the slider and its number box too, so look for the slider.
+    let size = |h: &Harness<App>| h.query_by_role_and_label(egui::accesskit::Role::Slider, "Size").is_some();
     let mut h = harness("kittest-tools");
     click(&mut h, "Text");
     assert!(h.state().tools.tool == Tool::Text);
-    assert!(shows(&h, "Shadow") && shows(&h, "Red") && shows(&h, "Size"));
+    assert!(shows(&h, "Shadow") && shows(&h, "Red") && size(&h));
 
     click(&mut h, "Blur");
     assert!(h.state().tools.tool == Tool::Blur);
-    assert!(!shows(&h, "Shadow") && !shows(&h, "Red") && !shows(&h, "Size"), "Blur has no options");
+    assert!(!shows(&h, "Shadow") && !shows(&h, "Red") && !size(&h), "Blur has no options");
 
     click(&mut h, "Arrow");
-    assert!(shows(&h, "Red") && shows(&h, "Size") && !shows(&h, "Shadow"));
+    assert!(shows(&h, "Red") && size(&h) && !shows(&h, "Shadow"));
     click(&mut h, "Blue");
     assert_eq!(*h.state_mut().tools.color_mut(), PALETTE[4]);
 }

@@ -619,7 +619,7 @@ impl SettingsApp {
                 let mut width = d.max_width.unwrap_or(DEFAULT_MAX_WIDTH);
                 let drag = egui::DragValue::new(&mut width).range(MIN_MAX_WIDTH..=MAX_MAX_WIDTH).speed(4.0).prefix("to at most ").suffix(" px wide");
                 let drag = ui.add_enabled(on, drag);
-                drag.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, on, "Shrink to at most, in pixels"));
+                drag.widget_info(|| egui::WidgetInfo::labeled(egui::Role::SpinButton, on, "Shrink to at most, in pixels"));
                 if drag.changed() && on {
                     action = Some(Action::MaxWidth(d.id.clone(), Some(width)));
                 }

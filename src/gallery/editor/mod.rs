@@ -144,7 +144,7 @@ impl Editor {
             let (outer, _) = ui.allocate_exact_size(shown.max(ui.available_size()), Sense::hover());
             let rect = Rect::from_min_size(outer.min + ((outer.size() - shown) / 2.0).max(Vec2::ZERO), shown);
             self.canvas = rect;
-            let response = ui.interact(rect, ui.id().with("canvas"), Sense::click_and_drag());
+            let response = ui.interact(rect, ui.scope_id().with("canvas"), Sense::click_and_drag());
             let painter = ui.painter_at(outer);
 
             painter.rect_filled(rect.expand(1.0), 0.0, Color32::from_black_alpha(90));

@@ -119,7 +119,7 @@ impl SettingsApp {
                         ui.label(RichText::new(problem).color(Color32::from_rgb(255, 120, 110)));
                     }
                     let image = egui::Image::new((preview.texture.id(), PREVIEW)).corner_radius(4);
-                    ui.add(image).widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, "Watermark preview"));
+                    ui.add(image).widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Watermark preview"));
                 }
             } else {
                 let what = if kind == 1 { "Type the text to put on" } else { "Choose a picture to put on" };

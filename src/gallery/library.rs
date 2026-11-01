@@ -297,8 +297,8 @@ impl App {
         let mut color = theme::palette(ui).muted;
         let mut action = None;
         if !self.searching() {
-            let response = ui.interact(rect, ui.id().with(("group", label)), Sense::click());
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{}, {count}", heading_name(label))));
+            let response = ui.interact(rect, ui.scope_id().with(("group", label)), Sense::click());
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{}, {count}", heading_name(label))));
             if response.hovered() {
                 color = theme::palette(ui).text;
                 ui.set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -314,8 +314,8 @@ impl App {
 
     /// A folded date in the filmstrip: a chip in place of its thumbnails.
     fn chip(&self, ui: &mut egui::Ui, rect: Rect, label: &str, count: usize) -> Option<Action> {
-        let response = ui.interact(rect, ui.id().with(("group", label)), Sense::click());
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{label}, {count}")));
+        let response = ui.interact(rect, ui.scope_id().with(("group", label)), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{label}, {count}")));
         let p = theme::palette(ui);
         let fill = if response.hovered() { p.hover } else { p.raised };
         ui.painter().rect_filled(rect, 8.0, fill);
@@ -476,9 +476,9 @@ impl App {
     /// One thumbnail row; returns what was done with it.
     pub(super) fn item(&mut self, ui: &mut egui::Ui, rect: Rect, i: usize, thumb: Vec2) -> Option<Action> {
         let entry = &self.entries[i];
-        let response = ui.interact(rect, ui.id().with(("entry", &entry.path)), Sense::click_and_drag());
+        let response = ui.interact(rect, ui.scope_id().with(("entry", &entry.path)), Sense::click_and_drag());
         let selected = self.selected.contains(&entry.path);
-        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, &entry.name));
+        response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &entry.name));
         // Where it came from, and why it matched the search.
         let tip = self.metas.get(&entry.path).and_then(|m| search::describe(&self.filter, m));
         let response = match tip {

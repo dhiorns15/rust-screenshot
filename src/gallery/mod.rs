@@ -883,7 +883,7 @@ impl App {
         if ctx.input(|i| i.raw.hovered_files.is_empty()) {
             return;
         }
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop-files")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("drop-files")));
         let rect = ctx.content_rect().shrink(4.0);
         painter.rect_filled(rect, 8.0, theme::ACCENT.gamma_multiply(0.18));
         painter.rect_stroke(rect, 8.0, Stroke::new(2.0f32, theme::ACCENT), egui::StrokeKind::Inside);
@@ -1282,7 +1282,7 @@ impl App {
                 for (color, name) in PALETTE.into_iter().zip(PALETTE_NAMES) {
                     let (rect, response) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
                     let selected = *self.tools.color_mut() == color;
-                    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, name));
+                    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, name));
                     let center = rect.center();
                     if selected {
                         ui.painter().circle_stroke(center, 9.5, Stroke::new(2.0f32, Color32::WHITE));
@@ -1302,15 +1302,16 @@ impl App {
                 ui.add_space(4.0);
             }
             if self.tools.style_tool() == Tool::Text {
-                ui.label(RichText::new("Size").color(theme::palette(ui).muted));
-                ui.add(editor::size_slider(self.tools.text_size_mut(), TEXT_SIZES))
+                // The label names the slider and its number box, for screen readers.
+                let size = ui.label(RichText::new("Size").color(theme::palette(ui).muted)).id;
+                ui.label_inputs_by(size, |ui| ui.add(editor::size_slider(self.tools.text_size_mut(), TEXT_SIZES)))
                     .on_hover_text("Text size. Or drag the handle on the selected text's corner.");
                 ui.add_space(4.0);
                 ui.checkbox(self.tools.shadow_mut(), "Shadow")
                     .on_hover_text("Drop shadow behind text, for readability on busy backgrounds");
             } else if self.tools.uses_width() {
-                ui.label(RichText::new("Size").color(theme::palette(ui).muted));
-                ui.add(editor::size_slider(self.tools.width_mut(), 1.0..=24.0));
+                let size = ui.label(RichText::new("Size").color(theme::palette(ui).muted)).id;
+                ui.label_inputs_by(size, |ui| ui.add(editor::size_slider(self.tools.width_mut(), 1.0..=24.0)));
             } else if self.tools.tool == Tool::CopyText {
                 self.copy_text_options(ui);
             } else if self.tools.tool == Tool::Redact {
@@ -1431,7 +1432,7 @@ impl App {
     /// A rainbow ring that opens a full colour picker; it shows the colour when it isn't a swatch.
     fn custom_color(&mut self, ui: &mut egui::Ui) {
         let (rect, response) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Pick any colour"));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Pick any colour"));
         let center = rect.center();
         let segments = 24;
         for k in 0..segments {
@@ -1532,7 +1533,7 @@ impl App {
             let radio = ui.radio(limited, "Max width").on_hover_text("Narrower images stay as they are");
             let drag = egui::DragValue::new(&mut width).range(MIN_MAX_WIDTH..=MAX_MAX_WIDTH).speed(4.0).suffix(" px");
             let typed = ui.add(drag);
-            typed.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, "Max width in pixels"));
+            typed.widget_info(|| egui::WidgetInfo::labeled(egui::Role::SpinButton, true, "Max width in pixels"));
             let typed = typed.changed();
             if radio.clicked() || typed {
                 fx.scale = Scale::MaxWidth(width);

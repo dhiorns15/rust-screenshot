@@ -608,7 +608,7 @@ pub fn load_font_bytes() -> Option<Vec<u8>> {
 /// Ubuntu Light, which eframe bundles (its `default_fonts` feature).
 fn bundled_font_bytes() -> Option<Vec<u8>> {
     let fonts = eframe::egui::FontDefinitions::default();
-    fonts.font_data.get("Ubuntu-Light").map(|data| data.font.to_vec())
+    fonts.font_data.get("Ubuntu-Light").map(|data| data.bytes().to_vec())
 }
 
 /// Arrow geometry shared by the preview and the renderer: end of the shaft and the head triangle.
