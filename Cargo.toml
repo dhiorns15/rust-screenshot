@@ -26,7 +26,7 @@ gif = "0.14"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 tiny-skia = "0.12"
 # Uploads to other places (see src/push): HTTP with rustls and the system's certificates.
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
